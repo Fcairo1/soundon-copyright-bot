@@ -1,7 +1,57 @@
+# ── Python cache ─────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# ── Virtual environments ─────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# ── Environment & secrets (NEVER commit) ─────────────────────────────────────
+.env
+.env.*
+!.env.example
+secrets.json
 lark_mail_oauth.json
 aime_env_refresh.json
-secrets.json
+*.pem
+*.key
+
+# ── Logs ─────────────────────────────────────────────────────────────────────
+logs/*
+!logs/.gitkeep
 *.log
-__pycache__/
-*.pyc
-.env
+
+# ── PID / process output files ───────────────────────────────────────────────
+*.pid
+*.out
+
+# ── Runtime / generated state (kept locally, never committed) ────────────────
+runtime/*
+!runtime/.gitkeep
+*_result.json
+*_output.json
+scan_checkpoint*.json
+posted_cards.json
+posted_claims*.json
+spotify_dm_sent.json
+last_card*.json
+last_patch_card.json
+last_dm_card*.json
+command_state.json
+bot_p2p_chats.json
+
+# ── OS / editor files ────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
