@@ -1,0 +1,15 @@
+# Runtime Python dependencies for the SoundOn Copyright Alert Bot.
+# Install with: pip install -r requirements.txt
+#
+# NOTE: The bot also relies on external, non-pip tooling that must be present
+# on the host (see README "Setup" section):
+#   - lark-cli            (Lark/Feishu CLI binary on PATH)
+#   - INNER_SKILLS_DIR    (AIME inner_skills dir providing feishu-im-send and
+#                          aeolus-platform-analysis helper scripts)
+
+# Lark/Feishu OpenAPI SDK — used by the persistent callback websocket daemon.
+lark-oapi>=1.2.0
+
+# Everything else the bot uses (json, urllib, subprocess, email, zoneinfo,
+# datetime, csv, threading, concurrent.futures, ...) ships with the Python
+# standard library. Python 3.9+ is required (zoneinfo).

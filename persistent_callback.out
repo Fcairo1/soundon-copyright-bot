@@ -1,4 +1,0 @@
-Starting Lark persistent connection client for cli_aa94690b12b81cde from /workspace/iris_ddc11f6d-0341-45c3-a7d8-42c5bc34776c/copyright_alert/persistent_callback.py (PID 1041437)
-✓ Reactive JWT refresh enabled (on-demand refresh on rc=4)
-[Lark] [2026-07-03 22:22:24,021] [INFO] connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7658306934168243435&access_key=b27846d86b7253e612656f40b269db74&service_id=33554678&ticket=8dfcc425-6787-4bf1-99d8-e40be1936d3d [conn_id=7658306934168243435]
-[Lark] [2026-07-03 22:23:09,097] [ERROR] handle message failed, message_type: event, message_id: 86ce31ea-8ecc-4d66-9114-731d3cb25628, trace_id: 52be4449486fb03d73cdb14edaec8758, err: processor not found, type: im.message.reaction.created_v1 [conn_id=7658306934168243435]
