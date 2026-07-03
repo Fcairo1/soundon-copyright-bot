@@ -77,7 +77,8 @@ Copy `.env.example` to `.env` and fill in the values, then load it
 | `BOT_SECRET` | ✅ | App secret for the Lark copyright bot (`cli_aa94690b12b81cde`). Read first by `run_alert.py`. |
 | `LARK_APP_SECRET` | ✅ (fallback) | Used if `BOT_SECRET` is unset. |
 | `INNER_SKILLS_DIR` | ✅ (prod) | Absolute path to the AIME `inner_skills/` directory providing `feishu-im-send` and `aeolus-platform-analysis` helper scripts. Defaults to `<repo>/inner_skills` if unset. |
-| `AEOLUS_SCRIPT` | optional | Full path to the Aeolus dataset SQL query script; derived from `INNER_SKILLS_DIR` if unset. |
+| `LARK_MAILBOX` | optional | Mailbox override for environments that do not want the default inbox baked into the code. |
+| `DEFAULT_REGION` | optional | Default region override for wrapper scripts or future deployment config. |
 
 ### 3. External tools (not installed via pip)
 
