@@ -1,0 +1,46 @@
+{
+  "by_open_id": {
+    "ou_dec135cea21446b576b21d911df61f53": {
+      "chat_id": "oc_ea9c991a385e249c6f9b933cf118af0b",
+      "operator_open_id": "ou_dec135cea21446b576b21d911df61f53",
+      "last_seen_at": "2026-07-03 04:58:55"
+    },
+    "ou_b0be769000b08971e717c7c01323dabe": {
+      "chat_id": "oc_48de5eacf06bffee6cd4aa422e1e9855",
+      "operator_open_id": "ou_b0be769000b08971e717c7c01323dabe",
+      "last_seen_at": "2026-07-01 00:21:55"
+    },
+    "ou_9cd2b961d55ed59e1b0e79e0b52a677c": {
+      "chat_id": "oc_842a762dacdea52dd8cd4017da3a94d5",
+      "operator_open_id": "ou_9cd2b961d55ed59e1b0e79e0b52a677c",
+      "last_seen_at": "2026-07-03 03:16:12"
+    },
+    "ou_93861fe013df2b06455b2f1238ad8be5": {
+      "chat_id": "oc_5a18e707c8aafc294d6c3136c224ce97",
+      "operator_open_id": "ou_93861fe013df2b06455b2f1238ad8be5",
+      "last_seen_at": "2026-06-26 04:13:21"
+    }
+  },
+  "by_chat_id": {
+    "oc_ea9c991a385e249c6f9b933cf118af0b": {
+      "chat_id": "oc_ea9c991a385e249c6f9b933cf118af0b",
+      "operator_open_id": "ou_dec135cea21446b576b21d911df61f53",
+      "last_seen_at": "2026-07-03 04:58:55"
+    },
+    "oc_48de5eacf06bffee6cd4aa422e1e9855": {
+      "chat_id": "oc_48de5eacf06bffee6cd4aa422e1e9855",
+      "operator_open_id": "ou_b0be769000b08971e717c7c01323dabe",
+      "last_seen_at": "2026-07-01 00:21:55"
+    },
+    "oc_842a762dacdea52dd8cd4017da3a94d5": {
+      "chat_id": "oc_842a762dacdea52dd8cd4017da3a94d5",
+      "operator_open_id": "ou_9cd2b961d55ed59e1b0e79e0b52a677c",
+      "last_seen_at": "2026-07-03 03:16:12"
+    },
+    "oc_5a18e707c8aafc294d6c3136c224ce97": {
+      "chat_id": "oc_5a18e707c8aafc294d6c3136c224ce97",
+      "operator_open_id": "ou_93861fe013df2b06455b2f1238ad8be5",
+      "last_seen_at": "2026-06-26 04:13:21"
+    }
+  }
+}

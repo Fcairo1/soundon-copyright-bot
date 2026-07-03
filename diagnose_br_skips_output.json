@@ -1,0 +1,803 @@
+  Aeolus batch chunk 1/1: querying 20 UPC(s)
+  Aeolus raw (first 500): {
+  "datasetId": 374690,
+  "file": "/workspace/iris_ddc11f6d-0341-45c3-a7d8-42c5bc34776c/dataset_sql_query_374690_1781715282.json",
+  "totalRows": 24545,
+  "truncated": true,
+  "note": "共24545行，完整结果已写入file，sampleRows为前5行预览",
+  "columns": [
+    "upc",
+    "isrc",
+    "album_title",
+    "user_region",
+    "multiIf(equals(source_type[dim_user], 6), 'A&R', equals(source_type[dim_user], 5), 'AP', equals(source_type[dim_user], 7), 'UG-Paid ads', equals(source_type[dim_user], 8), 'UG-Referral', equals(
+  ✓ Aeolus batch rows kept: 5/20 unique UPC(s)
+  ✓ Qualifies: source='Organic', tier='High Quality'
+  ✓ Qualifies: source='AP', tier='High Quality'
+  ✓ Qualifies: source='AP', tier='High Quality'
+  ✓ Qualifies: source='Organic', tier='High Quality'
+  ✓ Qualifies: source='Organic', tier='High Quality'
+{
+  "cutoff": "2026-06-03T00:00:00+00:00",
+  "target_count": 20,
+  "results": [
+    {
+      "upc": "5063964388275",
+      "reason": "qualified and not deduped — would need deeper run-specific investigation",
+      "inbox": {
+        "matches_total": 1,
+        "matches_after_cutoff": 1,
+        "matches_before_cutoff": 0,
+        "exact_after_cutoff": 1,
+        "exact_before_cutoff": 0,
+        "sample_after_cutoff": [
+          {
+            "message_id": "NzNnSElQdXgrNlUwUzdlaFFBRXhKQWhuS3dBPQ==",
+            "thread_id": "NzNnSElQdXgrNlUwUzdlaFFBRXhKQWhuS3dBPQ==",
+            "date": "2026-06-05T02:53:23Z",
+            "date_formatted": "2026-06-05T02:53:23+00:00",
+            "subject": "Possibly Infringing - Notification Warning No 1 - DJ MENOR ML - Claim 24100230 - ref:_00D0992XChO._500QvdyjiB:ref",
+            "prefilter_reason": null,
+            "body_found": true,
+            "extracted_upc": "5063964388275",
+            "extracted_isrc": "N/A",
+            "ref_id": "ref:_00D0992XChO._500QvdyjiB:ref",
+            "claim_id_from_subject": "24100230",
+            "after_cutoff": true
+          }
+        ],
+        "sample_before_cutoff": []
+      },
+      "aeolus": {
+        "upc": "5063964388275",
+        "isrc": "QT8BV2634413",
+        "album_title": "Mtg Dança",
+        "user_region": "BR",
+        "source_type_name": "Organic",
+        "User Tier": "High Quality",
+        "display_artist": "[\"DJ MENOR ML\",\"Mc Roba Cena\",\"Mc Creu\"]",
+        "bd_manager_list": null,
+        "operation_manager_list": "[\"leonardo.migdaleski\"]",
+        "p_date": "2026-06-16",
+        "multiIf(equals(source_type[dim_user], 6), 'A&R', equals(source_type[dim_user], 5), 'AP', equals(source_type[dim_user], 7), 'UG-Paid ads', equals(source_type[dim_user], 8), 'UG-Referral', equals(source_type[dim_user], 0), 'Organic', equals(source_type[dim_user], 9), 'UG-SEO', NULL)": "Organic",
+        "multiIf(equals(user_tier_tag, 100), 'Low Quality', equals(user_tier_tag, 200), 'Basic', equals(user_tier_tag, 300), 'Normal', equals(user_tier_tag, 400), 'High Quality', 'Other')": "High Quality"
+      },
+      "aeolus_qualifies": true,
+      "dedup_hits": []
+    },
+    {
+      "upc": "5063964668681",
+      "reason": "UPC extracted, but Aeolus batch query returned no row",
+      "inbox": {
+        "matches_total": 1,
+        "matches_after_cutoff": 1,
+        "matches_before_cutoff": 0,
+        "exact_after_cutoff": 1,
+        "exact_before_cutoff": 0,
+        "sample_after_cutoff": [
+          {
+            "message_id": "WG1TSDNpV3k2OFE5dlY3djQ0czRMU1FPa3RFPQ==",
+            "thread_id": "WG1TSDNpV3k2OFE5dlY3djQ0czRMU1FPa3RFPQ==",
+            "date": "2026-06-05T03:02:12Z",
+            "date_formatted": "2026-06-05T03:02:12+00:00",
+            "subject": "Possibly Infringing - Notification Warning No 1 - FLUXOS MEDIA by FLAME RECORDS - Claim 24100292 - ref:_00D0992XChO._500QvdyTtf:ref",
+            "prefilter_reason": null,
+            "body_found": true,
+            "extracted_upc": "5063964668681",
+            "extracted_isrc": "N/A",
+            "ref_id": "ref:_00D0992XChO._500QvdyTtf:ref",
+            "claim_id_from_subject": "24100292",
+            "after_cutoff": true
+          }
+        ],
+        "sample_before_cutoff": []
+      },
+      "aeolus": null,
+      "aeolus_qualifies": false,
+      "dedup_hits": []
+    },
+    {
+      "upc": "073011892957",
+      "reason": "email found after cutoff, but UPC extraction did not produce this UPC",
+      "inbox": {
+        "matches_total": 1,
+        "matches_after_cutoff": 1,
+        "matches_before_cutoff": 0,
+        "exact_after_cutoff": 0,
+        "exact_before_cutoff": 0,
+        "sample_after_cutoff": [
+          {
+            "message_id": "aGFkNnpxV0FYTkYrMjdtK3Q5YVlVK21xb3Y0PQ==",
+            "thread_id": "aGFkNnpxV0FYTkYrMjdtK3Q5YVlVK21xb3Y0PQ==",
+            "date": "2026-06-06T08:33:43Z",
+            "date_formatted": "2026-06-06T08:33:43+00:00",
+            "subject": "Possibly Infringing - Notification Warning No 1 - Dj LD da Favelinha - Claim 24111346 - ref:_00D0992XChO._500Qve2Qdv:ref",
+            "prefilter_reason": null,
+            "body_found": true,
+            "extracted_upc": "010735103334",
+            "extracted_isrc": "N/A",
+            "ref_id": "ref:_00D0992XChO._500Qve2Qdv:ref",
+            "claim_id_from_subject": "24111346",
+            "after_cutoff": true
+          }
+        ],
+        "sample_before_cutoff": []
+      },
+      "aeolus": null,
+      "aeolus_qualifies": false,
+      "dedup_hits": []
+    },
+    {
+      "upc": "790566637399",
+      "reason": "qualified and not deduped — would need deeper run-specific investigation",
+      "inbox": {
+        "matches_total": 1,
+        "matches_after_cutoff": 1,
+        "matches_before_cutoff": 0,
+        "exact_after_cutoff": 1,
+        "exact_before_cutoff": 0,
+        "sample_after_cutoff": [
+          {
+            "message_id": "WlNYckxKSGcwdGZtd0dsdzVaYUxjWkF3ZzRNPQ==",
+            "thread_id": "WlNYckxKSGcwdGZtd0dsdzVaYUxjWkF3ZzRNPQ==",
+            "date": "2026-06-06T09:03:53Z",
+            "date_formatted": "2026-06-06T09:03:53+00:00",
+            "subject": "Possibly Infringing - Notification Warning No 1 - DJ JR Oficial - Claim 24108679 - ref:_00D0992XChO._500Qve1dI3:ref",
+            "prefilter_reason": null,
+            "body_found": true,
+            "extracted_upc": "790566637399",
+            "extracted_isrc": "N/A",
+            "ref_id": "ref:_00D0992XChO._500Qve1dI3:ref",
+            "claim_id_from_subject": "24108679",
+            "after_cutoff": true
+          }
+        ],
+        "sample_before_cutoff": []
+      },
+      "aeolus": {
+        "upc": "790566637399",
+        "isrc": "BCNWM2100068",
+        "album_title": "Trem Mais Caro",
+        "user_region": "BR",
+        "source_type_name": "AP",
+        "User Tier": "High Quality",
+        "display_artist": "[\"DJ JR Oficial\",\"Gordão do PC\",\"Dj Lg do Sf\",\"MC Teteu\"]",
+        "bd_manager_list": "[\"thiagohiroshi\"]",
+        "operation_manager_list": "[\"felipe.pierro\"]",
+        "p_date": "2026-06-16",
+        "multiIf(equals(source_type[dim_user], 6), 'A&R', equals(source_type[dim_user], 5), 'AP', equals(source_type[dim_user], 7), 'UG-Paid ads', equals(source_type[dim_user], 8), 'UG-Referral', equals(source_type[dim_user], 0), 'Organic', equals(source_type[dim_user], 9), 'UG-SEO', NULL)": "AP",
+        "multiIf(equals(user_tier_tag, 100), 'Low Quality', equals(user_tier_tag, 200), 'Basic', equals(user_tier_tag, 300), 'Normal', equals(user_tier_tag, 400), 'High Quality', 'Other')": "High Quality"
+      },
+      "aeolus_qualifies": true,
+      "dedup_hits": []
+    },
+    {
+      "upc": "010735103334",
+      "reason": "UPC extracted, but Aeolus batch query returned no row",
+      "inbox": {
+        "matches_total": 1,
+        "matches_after_cutoff": 1,
+        "matches_before_cutoff": 0,
+        "exact_after_cutoff": 1,
+        "exact_before_cutoff": 0,
+        "sample_after_cutoff": [
+          {
+            "message_id": "aGFkNnpxV0FYTkYrMjdtK3Q5YVlVK21xb3Y0PQ==",
+            "thread_id": "aGFkNnpxV0FYTkYrMjdtK3Q5YVlVK21xb3Y0PQ==",
+            "date": "2026-06-06T08:33:43Z",
+            "date_formatted": "2026-06-06T08:33:43+00:00",
+            "subject": "Possibly Infringing - Notification Warning No 1 - Dj LD da Favelinha - Claim 24111346 - ref:_00D0992XChO._500Qve2Qdv:ref",
+            "prefilter_reason": null,
+            "body_found": true,
+            "extracted_upc": "010735103334",
+            "extracted_isrc": "N/A",
+            "ref_id": "ref:_00D0992XChO._500Qve2Qdv:ref",
+            "claim_id_from_subject": "24111346",
+            "after_cutoff": true
+          }
+        ],
+        "sample_before_cutoff": []
+      },
+      "aeolus": null,
+      "aeolus_qualifies": false,
+      "dedup_hits": []
+    },
+    {
+      "upc": "672079828238",
+      "reason": "UPC extracted, but Aeolus batch query returned no row",
+      "inbox": {
+        "matches_total": 2,
+        "matches_after_cutoff": 2,
+        "matches_before_cutoff": 0,
+        "exact_after_cutoff": 1,
+        "exact_before_cutoff": 0,
+        "sample_after_cutoff": [
+          {
+            "message_id": "YzM4ODYyZGYtMTUwNy00YzkzLWIyYTAtMjQ0MzdiOWIzMTRk",
+            "thread_id": "YzM4ODYyZGYtMTUwNy00YzkzLWIyYTAtMjQ0MzdiOWIzMTRk",
+            "date": "2026-06-11T16:56:41Z",
+            "date_formatted": "2026-06-11T16:56:41+00:00",
+            "subject": "URGENT - Re: Possibly Infringing - Notification Warning No 1 - Prime Funk - Claim 24120471 - ref:_00D0992XChO._500Qve4EtN:ref",
+            "prefilter_reason": null,
+            "body_found": true,
+            "extracted_upc": "5063964654974",
+            "extracted_isrc": "N/A",
+            "ref_id": "ref:_00D0992XChO._500Qve4EtN:ref",
+            "claim_id_from_subject": "24120471",
+            "after_cutoff": true
+          },
+          {
+            "message_id": "OHdMKzJBMW5aeE42VkNuaVFVbXMzMGVFS0JvPQ==",
+            "thread_id": "OHdMKzJBMW5aeE42VkNuaVFVbXMzMGVFS0JvPQ==",
+            "date": "2026-06-07T10:07:45Z",
+            "date_formatted": "2026-06-07T10:07:45+00:00",
+            "subject": "Possibly Infringing - Notification Warning No 1 - Prime Funk - Claim 24120471 - ref:_00D0992XChO._500Qve4EtN:ref",
+            "prefilter_reason": null,
+            "body_found": true,
+            "extracted_upc": "672079828238",
+            "extracted_isrc": "N/A",
+            "ref_id": "ref:_00D0992XChO._500Qve4EtN:ref",
+            "claim_id_from_subject": "24120471",
+            "after_cutoff": true
+          }
+        ],
+        "sample_before_cutoff": []
+      },
+      "aeolus": null,
+      "aeolus_qualifies": false,
+      "dedup_hits": []
+    },
+    {
+      "upc": "047752485006",
+      "reason": "UPC extracted, but Aeolus batch query returned no row",
+      "inbox": {
+        "matches_total": 1,
+        "matches_after_cutoff": 1,
+        "matches_before_cutoff": 0,
+        "exact_after_cutoff": 1,
+        "exact_before_cutoff": 0,
+        "sample_after_cutoff": [
+          {
+            "message_id": "cUJZdW9jOUJvTnFhQ21USFh1UDF2Y3pib3gwPQ==",
+            "thread_id": "cUJZdW9jOUJvTnFhQ21USFh1UDF2Y3pib3gwPQ==",
+            "date": "2026-06-09T03:32:33Z",
+            "date_formatted": "2026-06-09T03:32:33+00:00",
+            "subject": "Possibly Infringing - Notification Warning No 1 - HENRIQUE E JULIANA - Claim 24135366 - ref:_00D0992XChO._500Qve9rhJ:ref",
+            "prefilter_reason": null,
+            "body_found": true,
+            "extracted_upc": "047752485006",
+            "extracted_isrc": "N/A",
+            "ref_id": "ref:_00D0992XChO._500Qve9rhJ:ref",
+            "claim_id_from_subject": "24135366",
+            "after_cutoff": true
+          }
+        ],
+        "sample_before_cutoff": []
+      },
+      "aeolus": null,
+      "aeolus_qualifies": false,
+      "dedup_hits": []
+    },
+    {
+      "upc": "038557586685",
+      "reason": "UPC extracted, but Aeolus batch query returned no row",
+      "inbox": {
+        "matches_total": 1,
+        "matches_after_cutoff": 1,
+        "matches_before_cutoff": 0,
+        "exact_after_cutoff": 1,
+        "exact_before_cutoff": 0,
+        "sample_after_cutoff": [
+          {
+            "message_id": "MDlVb0EzSWtSdjZFNS93cko0Z3YwZVNibkxJPQ==",
+            "thread_id": "MDlVb0EzSWtSdjZFNS93cko0Z3YwZVNibkxJPQ==",
+            "date": "2026-06-09T07:45:45Z",
+            "date_formatted": "2026-06-09T07:45:45+00:00",
+            "subject": "Possibly Infringing - Notification Warning No 1 - Game Records - Claim 24136404 - ref:_00D0992XChO._500QveA8tM:ref",
+            "prefilter_reason": null,
+            "body_found": true,
+            "extracted_upc": "038557586685",
+            "extracted_isrc": "N/A",
+            "ref_id": "ref:_00D0992XChO._500QveA8tM:ref",
+            "claim_id_from_subject": "24136404",
+            "after_cutoff": true
+          }
+        ],
+        "sample_before_cutoff": []
+      },
+      "aeolus": null,
+      "aeolus_qualifies": false,
+      "dedup_hits": []
+    },
+    {
+      "upc": "638022968109",
+      "reason": "UPC extracted, but Aeolus batch query returned no row",
+      "inbox": {
+        "matches_total": 1,
+        "matches_after_cutoff": 1,
+        "matches_before_cutoff": 0,
+        "exact_after_cutoff": 1,
+        "exact_before_cutoff": 0,
+        "sample_after_cutoff": [
+          {
+            "message_id": "TFhYSkxQSjlja3E4cUpVQWZ3blVvSHVpeEhvPQ==",
+            "thread_id": "TFhYSkxQSjlja3E4cUpVQWZ3blVvSHVpeEhvPQ==",
+            "date": "2026-06-09T00:34:21Z",
+            "date_formatted": "2026-06-09T00:34:21+00:00",
+            "subject": "Possibly Infringing - Notification Warning No 1 - 300 PRODUTORA GRAVADORA E EDITORA MUSICAL - Claim 24134605 - ref:_00D0992XChO._500Qve9GjJ:ref",
+            "prefilter_reason": null,
+            "body_found": true,
+            "extracted_upc": "638022968109",
+            "extracted_isrc": "N/A",
+            "ref_id": "ref:_00D0992XChO._500Qve9GjJ:ref",
+            "claim_id_from_subject": "24134605",
+            "after_cutoff": true
+          }
+        ],
+        "sample_before_cutoff": []
+      },
+      "aeolus": null,
+      "aeolus_qualifies": false,
+      "dedup_hits": []
+    },
+    {
+      "upc": "5063964187809",
+      "reason": "qualified and not deduped — would need deeper run-specific investigation",
+      "inbox": {
+        "matches_total": 1,
+        "matches_after_cutoff": 1,
+        "matches_before_cutoff": 0,
+        "exact_after_cutoff": 1,
+        "exact_before_cutoff": 0,
+        "sample_after_cutoff": [
+          {
+            "message_id": "Ym1HTkMvZFNUNWVYMk9jQmluMHVwSlZsOHBrPQ==",
+            "thread_id": "Ym1HTkMvZFNUNWVYMk9jQmluMHVwSlZsOHBrPQ==",
+            "date": "2026-06-10T21:27:40Z",
+            "date_formatted": "2026-06-10T21:27:40+00:00",
+            "subject": "Possibly Infringing - Notification Warning No 1 - Produtora VL Music - Claim 24149981 - ref:_00D0992XChO._500QveFvgj:ref",
+            "prefilter_reason": null,
+            "body_found": true,
+            "extracted_upc": "5063964187809",
+            "extracted_isrc": "N/A",
+            "ref_id": "ref:_00D0992XChO._500QveFvgj:ref",
+            "claim_id_from_subject": "24149981",
+            "after_cutoff": true
+          }
+        ],
+        "sample_before_cutoff": []
+      },
+      "aeolus": {
+        "upc": "5063964187809",
+        "isrc": "QT8BV2663738",
+        "album_title": "Gigante no Jogo",
+        "user_region": "BR",
+        "source_type_name": "AP",
+        "User Tier": "High Quality",
+        "display_artist": "[\"Mc Gigante\",\"Mc LTS777\"]",
+        "bd_manager_list": "[\"thiagohiroshi\"]",
+        "operation_manager_list": "[\"leonardo.migdaleski\"]",
+        "p_date": "2026-06-16",
+        "multiIf(equals(source_type[dim_user], 6), 'A&R', equals(source_type[dim_user], 5), 'AP', equals(source_type[dim_user], 7), 'UG-Paid ads', equals(source_type[dim_user], 8), 'UG-Referral', equals(source_type[dim_user], 0), 'Organic', equals(source_type[dim_user], 9), 'UG-SEO', NULL)": "AP",
+        "multiIf(equals(user_tier_tag, 100), 'Low Quality', equals(user_tier_tag, 200), 'Basic', equals(user_tier_tag, 300), 'Normal', equals(user_tier_tag, 400), 'High Quality', 'Other')": "High Quality"
+      },
+      "aeolus_qualifies": true,
+      "dedup_hits": []
+    },
+    {
+      "upc": "5063964638790",
+      "reason": "UPC extracted, but Aeolus batch query returned no row",
+      "inbox": {
+        "matches_total": 7,
+        "matches_after_cutoff": 7,
+        "matches_before_cutoff": 0,
+        "exact_after_cutoff": 7,
+        "exact_before_cutoff": 0,
+        "sample_after_cutoff": [
+          {
+            "message_id": "dmdSY1lQbEhrdFk3S0JwdzhKcDUrTU1oSng0PQ==",
+            "thread_id": "ZnE0enQ3K0d1dHV3VXpsVXRwUndUQXo1UVM4PQ==",
+            "date": "2026-06-15T15:02:59Z",
+            "date_formatted": "2026-06-15T15:02:59+00:00",
+            "subject": "Re: [External] Infringement Claim: Spotify, all - 5063964638790 - soundon",
+            "prefilter_reason": "reply/forward subject",
+            "body_found": true,
+            "extracted_upc": "5063964638790",
+            "extracted_isrc": "N/A",
+            "ref_id": "N/A",
+            "claim_id_from_subject": "N/A",
+            "after_cutoff": true
+          },
+          {
+            "message_id": "eHljY2xVZ2dKSkhHcEJLODVnaUtMOFl0a1B3PQ==",
+            "thread_id": "MWFOa3pEY2gwZ0dRaDQ2eFE0WVEwcTh4WFFRPQ==",
+            "date": "2026-06-11T19:13:20Z",
+            "date_formatted": "2026-06-11T19:13:20+00:00",
+            "subject": "Re: [External] Re: Content Removal - Mc Maneirinho",
+            "prefilter_reason": "reply/forward subject",
+            "body_found": true,
+            "extracted_upc": "5063964638790",
+            "extracted_isrc": "N/A",
+            "ref_id": "N/A",
+            "claim_id_from_subject": "N/A",
+            "after_cutoff": true
+          },
+          {
+            "message_id": "RlJOZy9FZXNNTkVnSDZPbDNTWWRNRU9HY3RZPQ==",
+            "thread_id": "MWFOa3pEY2gwZ0dRaDQ2eFE0WVEwcTh4WFFRPQ==",
+            "date": "2026-06-11T19:07:59Z",
+            "date_formatted": "2026-06-11T19:07:59+00:00",
+            "subject": "Re: [External] Re: Content Removal - Mc Maneirinho",
+            "prefilter_reason": "reply/forward subject",
+            "body_found": true,
+            "extracted_upc": "5063964638790",
+            "extracted_isrc": "N/A",
+            "ref_id": "N/A",
+            "claim_id_from_subject": "N/A",
+            "after_cutoff": true
+          }
+        ],
+        "sample_before_cutoff": []
+      },
+      "aeolus": null,
+      "aeolus_qualifies": false,
+      "dedup_hits": []
+    },
+    {
+      "upc": "5063964795035",
+      "reason": "UPC extracted, but Aeolus batch query returned no row",
+      "inbox": {
+        "matches_total": 1,
+        "matches_after_cutoff": 1,
+        "matches_before_cutoff": 0,
+        "exact_after_cutoff": 1,
+        "exact_before_cutoff": 0,
+        "sample_after_cutoff": [
+          {
+            "message_id": "V3dhTG4rcG1LUzh3TDNQWHU5TWk2ZXhHK1lVPQ==",
+            "thread_id": "V3dhTG4rcG1LUzh3TDNQWHU5TWk2ZXhHK1lVPQ==",
+            "date": "2026-06-12T15:12:06Z",
+            "date_formatted": "2026-06-12T15:12:06+00:00",
+            "subject": "Possibly Infringing - Notification Warning No 1 - MC BEATRIZ - Claim 24164858 - ref:_00D0992XChO._500QveM7f8:ref",
+            "prefilter_reason": null,
+            "body_found": true,
+            "extracted_upc": "5063964795035",
+            "extracted_isrc": "N/A",
+            "ref_id": "ref:_00D0992XChO._500QveM7f8:ref",
+            "claim_id_from_subject": "24164858",
+            "after_cutoff": true
+          }
+        ],
+        "sample_before_cutoff": []
+      },
+      "aeolus": null,
+      "aeolus_qualifies": false,
+      "dedup_hits": []
+    },
+    {
+      "upc": "049362112921",
+      "reason": "UPC extracted, but Aeolus batch query returned no row",
+      "inbox": {
+        "matches_total": 1,
+        "matches_after_cutoff": 1,
+        "matches_before_cutoff": 0,
+        "exact_after_cutoff": 1,
+        "exact_before_cutoff": 0,
+        "sample_after_cutoff": [
+          {
+            "message_id": "VkhmNzVWcmRMd2xMVWdmcXJKeXYzMFRmSWtNPQ==",
+            "thread_id": "VkhmNzVWcmRMd2xMVWdmcXJKeXYzMFRmSWtNPQ==",
+            "date": "2026-06-12T20:47:50Z",
+            "date_formatted": "2026-06-12T20:47:50+00:00",
+            "subject": "Possibly Infringing - Notification Warning No 1 - Japinha Doce - Claim 24167291 - ref:_00D0992XChO._500QveMckc:ref",
+            "prefilter_reason": null,
+            "body_found": true,
+            "extracted_upc": "049362112921",
+            "extracted_isrc": "N/A",
+            "ref_id": "ref:_00D0992XChO._500QveMckc:ref",
+            "claim_id_from_subject": "24167291",
+            "after_cutoff": true
+          }
+        ],
+        "sample_before_cutoff": []
+      },
+      "aeolus": null,
+      "aeolus_qualifies": false,
+      "dedup_hits": []
+    },
+    {
+      "upc": "052599254098",
+      "reason": "qualified and not deduped — would need deeper run-specific investigation",
+      "inbox": {
+        "matches_total": 2,
+        "matches_after_cutoff": 2,
+        "matches_before_cutoff": 0,
+        "exact_after_cutoff": 1,
+        "exact_before_cutoff": 0,
+        "sample_after_cutoff": [
+          {
+            "message_id": "cnJhVFVzQy92ek92bjFMQ3ZqTlBZSGFIRkFnPQ==",
+            "thread_id": "cnJhVFVzQy92ek92bjFMQ3ZqTlBZSGFIRkFnPQ==",
+            "date": "2026-06-16T15:50:02Z",
+            "date_formatted": "2026-06-16T15:50:02+00:00",
+            "subject": "Infringement Claim: Spotify - UPC 052599254098 - SoundOn",
+            "prefilter_reason": null,
+            "body_found": true,
+            "extracted_upc": "052599254098",
+            "extracted_isrc": "N/A",
+            "ref_id": "N/A",
+            "claim_id_from_subject": "N/A",
+            "after_cutoff": true
+          },
+          {
+            "message_id": "REdZVUdpTFZlaDVQUVAzaXArM29qdUFDMXk0PQ==",
+            "thread_id": "REdZVUdpTFZlaDVQUVAzaXArM29qdUFDMXk0PQ==",
+            "date": "2026-06-13T08:25:33Z",
+            "date_formatted": "2026-06-13T08:25:33+00:00",
+            "subject": "Possibly Infringing - Notification Warning No 1 - Whake - Claim 24170645 - ref:_00D0992XChO._500QveODup:ref",
+            "prefilter_reason": null,
+            "body_found": true,
+            "extracted_upc": "601294340430",
+            "extracted_isrc": "N/A",
+            "ref_id": "ref:_00D0992XChO._500QveODup:ref",
+            "claim_id_from_subject": "24170645",
+            "after_cutoff": true
+          }
+        ],
+        "sample_before_cutoff": []
+      },
+      "aeolus": {
+        "upc": "052599254098",
+        "isrc": "QT5M32579330",
+        "album_title": "Endurance",
+        "user_region": "BR",
+        "source_type_name": "Organic",
+        "User Tier": "High Quality",
+        "display_artist": "[\"Whake\",\"Sacred Spirit\"]",
+        "bd_manager_list": null,
+        "operation_manager_list": null,
+        "p_date": "2026-06-16",
+        "multiIf(equals(source_type[dim_user], 6), 'A&R', equals(source_type[dim_user], 5), 'AP', equals(source_type[dim_user], 7), 'UG-Paid ads', equals(source_type[dim_user], 8), 'UG-Referral', equals(source_type[dim_user], 0), 'Organic', equals(source_type[dim_user], 9), 'UG-SEO', NULL)": "Organic",
+        "multiIf(equals(user_tier_tag, 100), 'Low Quality', equals(user_tier_tag, 200), 'Basic', equals(user_tier_tag, 300), 'Normal', equals(user_tier_tag, 400), 'High Quality', 'Other')": "High Quality"
+      },
+      "aeolus_qualifies": true,
+      "dedup_hits": []
+    },
+    {
+      "upc": "601294340430",
+      "reason": "qualified but skipped by deduplication / already in posted_claims",
+      "inbox": {
+        "matches_total": 1,
+        "matches_after_cutoff": 1,
+        "matches_before_cutoff": 0,
+        "exact_after_cutoff": 1,
+        "exact_before_cutoff": 0,
+        "sample_after_cutoff": [
+          {
+            "message_id": "REdZVUdpTFZlaDVQUVAzaXArM29qdUFDMXk0PQ==",
+            "thread_id": "REdZVUdpTFZlaDVQUVAzaXArM29qdUFDMXk0PQ==",
+            "date": "2026-06-13T08:25:33Z",
+            "date_formatted": "2026-06-13T08:25:33+00:00",
+            "subject": "Possibly Infringing - Notification Warning No 1 - Whake - Claim 24170645 - ref:_00D0992XChO._500QveODup:ref",
+            "prefilter_reason": null,
+            "body_found": true,
+            "extracted_upc": "601294340430",
+            "extracted_isrc": "N/A",
+            "ref_id": "ref:_00D0992XChO._500QveODup:ref",
+            "claim_id_from_subject": "24170645",
+            "after_cutoff": true
+          }
+        ],
+        "sample_before_cutoff": []
+      },
+      "aeolus": {
+        "upc": "601294340430",
+        "isrc": "AEA3A2656644",
+        "album_title": "Bueno esto",
+        "user_region": "BR",
+        "source_type_name": "Organic",
+        "User Tier": "High Quality",
+        "display_artist": "[\"Whake\",\"Sacred Spirit\"]",
+        "bd_manager_list": null,
+        "operation_manager_list": null,
+        "p_date": "2026-06-16",
+        "multiIf(equals(source_type[dim_user], 6), 'A&R', equals(source_type[dim_user], 5), 'AP', equals(source_type[dim_user], 7), 'UG-Paid ads', equals(source_type[dim_user], 8), 'UG-Referral', equals(source_type[dim_user], 0), 'Organic', equals(source_type[dim_user], 9), 'UG-SEO', NULL)": "Organic",
+        "multiIf(equals(user_tier_tag, 100), 'Low Quality', equals(user_tier_tag, 200), 'Basic', equals(user_tier_tag, 300), 'Normal', equals(user_tier_tag, 400), 'High Quality', 'Other')": "High Quality"
+      },
+      "aeolus_qualifies": true,
+      "dedup_hits": [
+        {
+          "file": "posted_claims.json",
+          "claim_key": "ref:ref:_00D0992XChO._500QveODup:ref",
+          "message_id": null,
+          "subject": "Possibly Infringing - Notification Warning No 1 - Whake - Claim 24170645 - ref:_00D0992XChO._500QveODup:ref",
+          "date": "2026-06-13T08:25:33Z",
+          "chat_id": null
+        }
+      ]
+    },
+    {
+      "upc": "074417691533",
+      "reason": "email found after cutoff, but UPC extraction did not produce this UPC",
+      "inbox": {
+        "matches_total": 1,
+        "matches_after_cutoff": 1,
+        "matches_before_cutoff": 0,
+        "exact_after_cutoff": 0,
+        "exact_before_cutoff": 0,
+        "sample_after_cutoff": [
+          {
+            "message_id": "REdZVUdpTFZlaDVQUVAzaXArM29qdUFDMXk0PQ==",
+            "thread_id": "REdZVUdpTFZlaDVQUVAzaXArM29qdUFDMXk0PQ==",
+            "date": "2026-06-13T08:25:33Z",
+            "date_formatted": "2026-06-13T08:25:33+00:00",
+            "subject": "Possibly Infringing - Notification Warning No 1 - Whake - Claim 24170645 - ref:_00D0992XChO._500QveODup:ref",
+            "prefilter_reason": null,
+            "body_found": true,
+            "extracted_upc": "601294340430",
+            "extracted_isrc": "N/A",
+            "ref_id": "ref:_00D0992XChO._500QveODup:ref",
+            "claim_id_from_subject": "24170645",
+            "after_cutoff": true
+          }
+        ],
+        "sample_before_cutoff": []
+      },
+      "aeolus": null,
+      "aeolus_qualifies": false,
+      "dedup_hits": []
+    },
+    {
+      "upc": "682106738423",
+      "reason": "email found after cutoff, but UPC extraction did not produce this UPC",
+      "inbox": {
+        "matches_total": 1,
+        "matches_after_cutoff": 1,
+        "matches_before_cutoff": 0,
+        "exact_after_cutoff": 0,
+        "exact_before_cutoff": 0,
+        "sample_after_cutoff": [
+          {
+            "message_id": "REdZVUdpTFZlaDVQUVAzaXArM29qdUFDMXk0PQ==",
+            "thread_id": "REdZVUdpTFZlaDVQUVAzaXArM29qdUFDMXk0PQ==",
+            "date": "2026-06-13T08:25:33Z",
+            "date_formatted": "2026-06-13T08:25:33+00:00",
+            "subject": "Possibly Infringing - Notification Warning No 1 - Whake - Claim 24170645 - ref:_00D0992XChO._500QveODup:ref",
+            "prefilter_reason": null,
+            "body_found": true,
+            "extracted_upc": "601294340430",
+            "extracted_isrc": "N/A",
+            "ref_id": "ref:_00D0992XChO._500QveODup:ref",
+            "claim_id_from_subject": "24170645",
+            "after_cutoff": true
+          }
+        ],
+        "sample_before_cutoff": []
+      },
+      "aeolus": null,
+      "aeolus_qualifies": false,
+      "dedup_hits": []
+    },
+    {
+      "upc": "796728442269",
+      "reason": "UPC extracted, but Aeolus batch query returned no row",
+      "inbox": {
+        "matches_total": 1,
+        "matches_after_cutoff": 1,
+        "matches_before_cutoff": 0,
+        "exact_after_cutoff": 1,
+        "exact_before_cutoff": 0,
+        "sample_after_cutoff": [
+          {
+            "message_id": "SHRFSXdOcG9QUWtiOVMvdUtTQ1VjZWhkeUtzPQ==",
+            "thread_id": "SHRFSXdOcG9QUWtiOVMvdUtTQ1VjZWhkeUtzPQ==",
+            "date": "2026-06-15T15:50:12Z",
+            "date_formatted": "2026-06-15T15:50:12+00:00",
+            "subject": "Possibly Infringing - Notification Warning No 1 - DJ TOPO - Claim 24188171 - ref:_00D0992XChO._500QveTW5c:ref",
+            "prefilter_reason": null,
+            "body_found": true,
+            "extracted_upc": "796728442269",
+            "extracted_isrc": "N/A",
+            "ref_id": "ref:_00D0992XChO._500QveTW5c:ref",
+            "claim_id_from_subject": "24188171",
+            "after_cutoff": true
+          }
+        ],
+        "sample_before_cutoff": []
+      },
+      "aeolus": null,
+      "aeolus_qualifies": false,
+      "dedup_hits": []
+    },
+    {
+      "upc": "5063964471855",
+      "reason": "not found in inbox by UPC search",
+      "inbox": {
+        "matches_total": 0,
+        "matches_after_cutoff": 0,
+        "matches_before_cutoff": 0,
+        "exact_after_cutoff": 0,
+        "exact_before_cutoff": 0,
+        "sample_after_cutoff": [],
+        "sample_before_cutoff": []
+      },
+      "aeolus": null,
+      "aeolus_qualifies": false,
+      "dedup_hits": []
+    },
+    {
+      "upc": "5063936513445",
+      "reason": "email found after cutoff, but UPC extraction did not produce this UPC",
+      "inbox": {
+        "matches_total": 5,
+        "matches_after_cutoff": 1,
+        "matches_before_cutoff": 4,
+        "exact_after_cutoff": 0,
+        "exact_before_cutoff": 1,
+        "sample_after_cutoff": [
+          {
+            "message_id": "aWlhck93eDJGeDRWUXlIZkYreGhxaUhHSGJRPQ==",
+            "thread_id": "eUxEQjN1akJEOXhkeXBXd3dDMUVjUVZPb1djPQ==",
+            "date": "2026-06-16T14:30:14Z",
+            "date_formatted": "2026-06-16T14:30:14+00:00",
+            "subject": "SoundOn - Preferred Provider Program - Excessive Infringement Policy - Requirement at Risk",
+            "prefilter_reason": null,
+            "body_found": true,
+            "extracted_upc": "N/A",
+            "extracted_isrc": "N/A",
+            "ref_id": "ref:_00D0992XChO._500QvXSziM:ref",
+            "claim_id_from_subject": "N/A",
+            "after_cutoff": true
+          }
+        ],
+        "sample_before_cutoff": [
+          {
+            "message_id": "WTZKQkdWNWJUWno2Ny9IaG9pU1h3ckNXc2dZPQ==",
+            "thread_id": "RDVmMkVVZDlqMlRFU2hIOXdDZ2Jkc1hmK0JBPQ==",
+            "date": "2026-05-13T10:13:31Z",
+            "date_formatted": "2026-05-13T10:13:31+00:00",
+            "subject": "Re: [External] PPP Excessive Infringement",
+            "prefilter_reason": "reply/forward subject",
+            "body_found": true,
+            "extracted_upc": "N/A",
+            "extracted_isrc": "N/A",
+            "ref_id": "ref:_00D0992XChO._500QvXSziM:ref",
+            "claim_id_from_subject": "N/A",
+            "after_cutoff": false
+          },
+          {
+            "message_id": "OVJWN3pPelpZQWtLS0FhUksyZWl0UlFQajFFPQ==",
+            "thread_id": "RDVmMkVVZDlqMlRFU2hIOXdDZ2Jkc1hmK0JBPQ==",
+            "date": "2026-05-12T09:42:10Z",
+            "date_formatted": "2026-05-12T09:42:10+00:00",
+            "subject": "Re: [External] PPP Excessive Infringement",
+            "prefilter_reason": "reply/forward subject",
+            "body_found": true,
+            "extracted_upc": "N/A",
+            "extracted_isrc": "N/A",
+            "ref_id": "ref:_00D0992XChO._500QvXSziM:ref",
+            "claim_id_from_subject": "N/A",
+            "after_cutoff": false
+          },
+          {
+            "message_id": "RDVmMkVVZDlqMlRFU2hIOXdDZ2Jkc1hmK0JBPQ==",
+            "thread_id": "RDVmMkVVZDlqMlRFU2hIOXdDZ2Jkc1hmK0JBPQ==",
+            "date": "2026-05-12T09:31:18Z",
+            "date_formatted": "2026-05-12T09:31:18+00:00",
+            "subject": "PPP Excessive Infringement",
+            "prefilter_reason": null,
+            "body_found": true,
+            "extracted_upc": "N/A",
+            "extracted_isrc": "N/A",
+            "ref_id": "ref:_00D0992XChO._500QvXSziM:ref",
+            "claim_id_from_subject": "N/A",
+            "after_cutoff": false
+          }
+        ]
+      },
+      "aeolus": null,
+      "aeolus_qualifies": false,
+      "dedup_hits": []
+    }
+  ]
+}

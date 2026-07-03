@@ -1,0 +1,112 @@
+{
+ "config": {
+  "wide_screen_mode": true,
+  "update_multi": true
+ },
+ "header": {
+  "template": "orange",
+  "title": {
+   "tag": "plain_text",
+   "content": "📋 Spotify Reply Needed – PAVUNA, Bebeto, Renanzin, Erribê – 5063963471855"
+  }
+ },
+ "elements": [
+  {
+   "tag": "div",
+   "text": {
+    "tag": "lark_md",
+    "content": "**UPC:** 5063963471855\n**ISRC:** `QT8BU2643641`\n**Title:** Berço do Crime\n**Artist:** PAVUNA, Bebeto, Renanzin, Erribê\n**Claimant:** M M Fusaro\n**Claimant Email:** nmfusaro@onerpm.com\n**Date Detected:** 2026-06-16\n**Days Remaining:** 🟠 Due today"
+   }
+  },
+  {
+   "tag": "hr"
+  },
+  {
+   "tag": "div",
+   "text": {
+    "tag": "lark_md",
+    "content": "⚠️ **If no reply is sent before the deadline, the claim will be accepted as legitimate and content may be taken down.**"
+   }
+  },
+  {
+   "tag": "hr"
+  },
+  {
+   "tag": "action",
+   "actions": [
+    {
+     "tag": "button",
+     "text": {
+      "tag": "plain_text",
+      "content": "✅ Agree with claim"
+     },
+     "type": "primary",
+     "value": {
+      "action": "spotify_reply",
+      "upc": "5063963471855",
+      "isrc": "QT8BU2643641",
+      "source_email_message_id": "NEM1ZGI2ZjE4Zit2MFF2S0dmM3Q4Vy9NeGRZPQ==",
+      "claimant_email": "nmfusaro@onerpm.com",
+      "title": "Berço do Crime",
+      "artist": "PAVUNA, Bebeto, Renanzin, Erribê",
+      "lark_card_message_id": "",
+      "tracker_row": null,
+      "ref_id": "",
+      "reply_type": "agree"
+     }
+    },
+    {
+     "tag": "button",
+     "text": {
+      "tag": "plain_text",
+      "content": "🔍 Investigating – will follow up"
+     },
+     "type": "default",
+     "value": {
+      "action": "spotify_reply",
+      "upc": "5063963471855",
+      "isrc": "QT8BU2643641",
+      "source_email_message_id": "NEM1ZGI2ZjE4Zit2MFF2S0dmM3Q4Vy9NeGRZPQ==",
+      "claimant_email": "nmfusaro@onerpm.com",
+      "title": "Berço do Crime",
+      "artist": "PAVUNA, Bebeto, Renanzin, Erribê",
+      "lark_card_message_id": "",
+      "tracker_row": null,
+      "ref_id": "",
+      "reply_type": "investigating"
+     }
+    },
+    {
+     "tag": "button",
+     "text": {
+      "tag": "plain_text",
+      "content": "⚖️ Dispute claim"
+     },
+     "type": "danger",
+     "value": {
+      "action": "spotify_reply",
+      "upc": "5063963471855",
+      "isrc": "QT8BU2643641",
+      "source_email_message_id": "NEM1ZGI2ZjE4Zit2MFF2S0dmM3Q4Vy9NeGRZPQ==",
+      "claimant_email": "nmfusaro@onerpm.com",
+      "title": "Berço do Crime",
+      "artist": "PAVUNA, Bebeto, Renanzin, Erribê",
+      "lark_card_message_id": "",
+      "tracker_row": null,
+      "ref_id": "",
+      "reply_type": "dispute"
+     }
+    }
+   ]
+  },
+  {
+   "tag": "note",
+   "elements": [
+    {
+     "tag": "plain_text",
+     "content": "Pick one action. All three options send a pre-made reply back to the original claim email thread (preserving the Spotify ref code for Salesforce threading). TEST_MODE is ON — the draft is sent only to filipe.cairo@bytedance.com."
+    }
+   ]
+  }
+ ]
+}

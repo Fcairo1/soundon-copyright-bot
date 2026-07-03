@@ -1,0 +1,684 @@
+{
+  "fetched": 400,
+  "after_prefilter": 257,
+  "parsed_with_upc": 75,
+  "unique_upcs": 74,
+  "selected": null,
+  "rows_by_stage": [
+    {
+      "upc": "5063964809404",
+      "region": "US",
+      "source": "Organic",
+      "tier": "Basic",
+      "subject": "Possibly Infringing - Notification Warning No 1 - Grant Taylor Weaver - Claim 24",
+      "date": "2026-06-22T19:23:03Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "072991431514",
+      "region": "US",
+      "source": "UG-SEO",
+      "tier": "Low Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - Frank Moss - Claim 24287535 - ",
+      "date": "2026-06-22T18:33:42Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "047752562868",
+      "region": "BR",
+      "source": "Organic",
+      "tier": "Normal",
+      "subject": "Possibly Infringing - Notification Warning No 1 - Jeremias Castro De Oliveira - ",
+      "date": "2026-06-22T18:32:34Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "5063964676068",
+      "region": "US",
+      "source": "AP",
+      "tier": "High Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - Six Dior - Claim 24284310 - re",
+      "date": "2026-06-22T10:30:53Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "5063964740462",
+      "region": "ID",
+      "source": "UG-SEO",
+      "tier": "Basic",
+      "subject": "Possibly Infringing - Notification Warning No 1 - SERLIKA - Claim 24284029 - ref",
+      "date": "2026-06-22T09:30:35Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "672079107227",
+      "region": "PH",
+      "source": "Organic",
+      "tier": "Low Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - Eloisa piedad - Claim 24280429",
+      "date": "2026-06-22T07:21:38Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "5063964747492",
+      "region": "US",
+      "source": "UG-SEO",
+      "tier": "Basic",
+      "subject": "Possibly Infringing - Notification Warning No 1 - Ariel Shane - Claim 24280224 -",
+      "date": "2026-06-22T06:34:33Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "5063964899382",
+      "region": "BR",
+      "source": "AP",
+      "tier": "High Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - Só Hits Records - Claim 242793",
+      "date": "2026-06-22T03:07:17Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "601294823261",
+      "region": "BR",
+      "source": "UG-SEO",
+      "tier": "Normal",
+      "subject": "Possibly Infringing - Notification Warning No 1 - Amais - Claim 24278918 - ref:_",
+      "date": "2026-06-22T01:42:03Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "086793591048",
+      "region": "JP",
+      "source": "Organic",
+      "tier": "Low Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - Kitaoka Masaya - Claim 2427892",
+      "date": "2026-06-22T01:41:38Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "010735710273",
+      "region": "BR",
+      "source": "Organic",
+      "tier": "High Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - DJ HIGO - Claim 24270997 - ref",
+      "date": "2026-06-21T00:14:26Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "672079072396",
+      "region": "BR",
+      "source": "AP",
+      "tier": "High Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - Prime Digital - Claim 24270995",
+      "date": "2026-06-21T00:14:05Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "5063964674637",
+      "region": "BR",
+      "source": "Organic",
+      "tier": "High Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - Betinho Dj - Claim 24270991 - ",
+      "date": "2026-06-21T00:11:31Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "010735812755",
+      "region": "BR",
+      "source": "UG-Paid ads",
+      "tier": "High Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - DJ HB SMITH - Claim 24270993 -",
+      "date": "2026-06-21T00:11:11Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "609516519954",
+      "region": "BR",
+      "source": "UG-Referral",
+      "tier": "Normal",
+      "subject": "Takedown Notification - DJ Pertubado - Claim 24270964 - ref:_00D0992XChO._500Qve",
+      "date": "2026-06-21T00:04:05Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "717124523253",
+      "region": "BR",
+      "source": "UG-Referral",
+      "tier": "Normal",
+      "subject": "Possibly Infringing - Notification Warning No 1 - TL De Guadalupe - Claim 242655",
+      "date": "2026-06-20T09:17:28Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "052599047379",
+      "region": "SG",
+      "source": "UG-SEO",
+      "tier": "Low Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - Stage Kids - Claim 24264906 - ",
+      "date": "2026-06-20T07:22:27Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "682106977488",
+      "region": "SG",
+      "source": "UG-SEO",
+      "tier": "Low Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - Stage Kids - Claim 24264844 - ",
+      "date": "2026-06-20T07:03:32Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "5063963961615",
+      "region": "BR",
+      "source": "Organic",
+      "tier": "Normal",
+      "subject": "Possibly Infringing - Notification Warning No 1 - UILIAN SOUZA DA SILVA - Claim ",
+      "date": "2026-06-20T06:54:28Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "010735499413",
+      "region": "PH",
+      "source": "Organic",
+      "tier": "Low Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - Weldy arimbyy - Claim 24264783",
+      "date": "2026-06-20T06:47:18Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "5063963471855",
+      "region": "BR",
+      "source": "AP",
+      "tier": "High Quality",
+      "subject": "[TEST] Spotify infringement reply – agree",
+      "date": "2026-06-19T15:06:05Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "859738975483",
+      "region": "GB",
+      "source": "AP",
+      "tier": "High Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - 2020 PACMANTV - Claim 24259285",
+      "date": "2026-06-19T15:04:58Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "859782180864",
+      "region": "GB",
+      "source": "AP",
+      "tier": "High Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - 2023 PACMANTV - Claim 24259275",
+      "date": "2026-06-19T15:03:17Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "859761477695",
+      "region": "GB",
+      "source": "AP",
+      "tier": "High Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - 2022 PACMANTV - Claim 24259280",
+      "date": "2026-06-19T15:03:02Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "7333466445096",
+      "region": "GB",
+      "source": "AP",
+      "tier": "High Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - PACMANTV - Claim 24259265 - re",
+      "date": "2026-06-19T14:59:22Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "859738450737",
+      "region": "GB",
+      "source": "AP",
+      "tier": "High Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - 2020 PACMAN TV - Claim 2425836",
+      "date": "2026-06-19T13:23:45Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "672079190670",
+      "region": "SG",
+      "source": "Organic",
+      "tier": "Low Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - Benk hock - Claim 24258347 - r",
+      "date": "2026-06-19T13:21:02Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "072991993678",
+      "region": "US",
+      "source": "Organic",
+      "tier": "Low Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - Bố Lâm Vĩ Đại - Claim 24258330",
+      "date": "2026-06-19T13:20:07Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "859774281135",
+      "region": "GB",
+      "source": "AP",
+      "tier": "High Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - 2023 PACMANTV - Claim 24258272",
+      "date": "2026-06-19T13:15:19Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "859761317700",
+      "region": "GB",
+      "source": "AP",
+      "tier": "High Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - 2022 PACMANTV - Claim 24258205",
+      "date": "2026-06-19T13:13:15Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "859760017656",
+      "region": "GB",
+      "source": "AP",
+      "tier": "High Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - 2022 PACMANTV - Claim 24257430",
+      "date": "2026-06-19T12:19:55Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "7300340754957",
+      "region": "GB",
+      "source": "AP",
+      "tier": "High Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - PACMANTV - Claim 24257402 - re",
+      "date": "2026-06-19T12:14:14Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "199748092856",
+      "region": "JP",
+      "source": "Organic",
+      "tier": "Low Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - Kairo Zen - Claim 24257220 - r",
+      "date": "2026-06-19T11:43:30Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "046081877971",
+      "region": "ID",
+      "source": "Organic",
+      "tier": "Low Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - BOBY SANJAYA - Claim 24256864 ",
+      "date": "2026-06-19T10:35:57Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "859760906356",
+      "region": "GB",
+      "source": "AP",
+      "tier": "High Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - 2022 PACMANTV - Claim 24256857",
+      "date": "2026-06-19T10:26:30Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "047752352704",
+      "region": "BR",
+      "source": "AP",
+      "tier": "High Quality",
+      "subject": "Infringement Claim: Apple - 047752352704 - soundon",
+      "date": "2026-06-18T22:21:40Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "5063964640625",
+      "region": "US",
+      "source": "UG-SEO",
+      "tier": "Low Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - JAKIA JESTEN - Claim 24251499 ",
+      "date": "2026-06-18T17:44:52Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "072991588171",
+      "region": "US",
+      "source": "UG-SEO",
+      "tier": "Low Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - MARGARET ELLEN FUNVK - Claim 2",
+      "date": "2026-06-18T17:44:23Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "859762571743",
+      "region": "GB",
+      "source": "AP",
+      "tier": "High Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - 2022 PACMANTV - Claim 24251212",
+      "date": "2026-06-18T16:51:47Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "859779935828",
+      "region": "GB",
+      "source": "AP",
+      "tier": "High Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - PACMANTV - Claim 24251207 - re",
+      "date": "2026-06-18T16:50:41Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "859747547442",
+      "region": "GB",
+      "source": "AP",
+      "tier": "High Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - 2021 PacmanTV - Claim 24251181",
+      "date": "2026-06-18T16:40:08Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "859769045377",
+      "region": "GB",
+      "source": "AP",
+      "tier": "High Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - 2022 PACMANTV - Claim 24251180",
+      "date": "2026-06-18T16:40:06Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "859764225927",
+      "region": "GB",
+      "source": "AP",
+      "tier": "High Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - 2022 PACMANTV - Claim 24251173",
+      "date": "2026-06-18T16:38:26Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "074843205182",
+      "region": "BR",
+      "source": "AP",
+      "tier": "High Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - Só Hits Records - Claim 242511",
+      "date": "2026-06-18T16:35:13Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "859747260136",
+      "region": "GB",
+      "source": "AP",
+      "tier": "High Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - 2021 PacmanTV - Claim 24251129",
+      "date": "2026-06-18T16:29:55Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "859746600544",
+      "region": "GB",
+      "source": "AP",
+      "tier": "High Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - 2021 PacmanTV - Claim 24250212",
+      "date": "2026-06-18T16:01:46Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "717124462941",
+      "region": "BR",
+      "source": "AP",
+      "tier": "High Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - MK - Claim 24249253 - ref:_00D",
+      "date": "2026-06-18T15:50:52Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "5063936943044",
+      "region": "ID",
+      "source": "Organic",
+      "tier": "Low Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - Sapu Terbang - Claim 24247868 ",
+      "date": "2026-06-18T15:18:40Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "5063963583879",
+      "region": "VN",
+      "source": "Organic",
+      "tier": "Low Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - TRUONG CON - Claim 24247426 - ",
+      "date": "2026-06-18T14:53:21Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "047752289963",
+      "region": "BR",
+      "source": "UG-SEO",
+      "tier": "Normal",
+      "subject": "Possibly Infringing - Notification Warning No 1 - TH7n - Claim 24246988 - ref:_0",
+      "date": "2026-06-18T14:27:05Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "859743433398",
+      "region": "GB",
+      "source": "AP",
+      "tier": "High Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - 2020 PACMANTV - Claim 24245764",
+      "date": "2026-06-18T11:45:45Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "882000302205",
+      "region": "CA",
+      "source": "AP",
+      "tier": "High Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - Iron Block Records - Claim 242",
+      "date": "2026-06-18T10:27:45Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "672079500097",
+      "region": "ID",
+      "source": "Organic",
+      "tier": "Low Quality",
+      "subject": "Takedown Notification - My identity musically - Claim 24244917 - ref:_00D0992XCh",
+      "date": "2026-06-18T10:07:29Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "795005197250",
+      "region": "BR",
+      "source": "AP",
+      "tier": "High Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - A Voz dos Bailes - Claim 24241",
+      "date": "2026-06-18T06:04:54Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "859752004336",
+      "region": "GB",
+      "source": "AP",
+      "tier": "High Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - 2021 PACMANTV - Claim 24238984",
+      "date": "2026-06-18T01:24:16Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "640948476644",
+      "region": "BR",
+      "source": "AP",
+      "tier": "High Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - Só Hits Records - Claim 242388",
+      "date": "2026-06-18T01:19:26Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "5063964796575",
+      "region": "BR",
+      "source": "AP",
+      "tier": "High Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - DJ Nandinho Original - Claim 2",
+      "date": "2026-06-18T00:37:23Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "859729420619",
+      "region": "GB",
+      "source": "AP",
+      "tier": "High Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - 2018 Y.ACG - Claim 24230109 - ",
+      "date": "2026-06-17T22:05:52Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "859747720029",
+      "region": "GB",
+      "source": "AP",
+      "tier": "High Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - 2021 PacmanTV - Claim 24227938",
+      "date": "2026-06-17T20:57:18Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "859750821669",
+      "region": "GB",
+      "source": "AP",
+      "tier": "High Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - 2021 PacmanTV - Claim 24219821",
+      "date": "2026-06-17T13:30:14Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "859748803769",
+      "region": "GB",
+      "source": "AP",
+      "tier": "High Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - 2021 PacmanTV - Claim 24219373",
+      "date": "2026-06-17T13:19:46Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "859770091738",
+      "region": "GB",
+      "source": "AP",
+      "tier": "High Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - 2023 PACMANTV - Claim 24218816",
+      "date": "2026-06-17T13:02:59Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "859762727812",
+      "region": "GB",
+      "source": "AP",
+      "tier": "High Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - 2022 PACMANTV - Claim 24218383",
+      "date": "2026-06-17T12:51:15Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "7333475802255",
+      "region": "GB",
+      "source": "AP",
+      "tier": "High Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - PACMANTV - Claim 24218219 - re",
+      "date": "2026-06-17T12:40:15Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "021865083496",
+      "region": "GB",
+      "source": "AP",
+      "tier": "High Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - PACMANTV - Claim 24216800 - re",
+      "date": "2026-06-17T10:13:29Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "859749104933",
+      "region": "GB",
+      "source": "AP",
+      "tier": "High Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - 2021 PacmanTV - Claim 24216645",
+      "date": "2026-06-17T09:55:18Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "7300340234237",
+      "region": "GB",
+      "source": "AP",
+      "tier": "High Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - PACMANTV - Claim 24216619 - re",
+      "date": "2026-06-17T09:52:59Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "859745431453",
+      "region": "GB",
+      "source": "AP",
+      "tier": "High Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - 2021 PacmanTV - Claim 24216586",
+      "date": "2026-06-17T09:48:42Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "859778491608",
+      "region": "GB",
+      "source": "AP",
+      "tier": "High Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - PACMANTV - Claim 24216564 - re",
+      "date": "2026-06-17T09:45:01Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "5063964744965",
+      "region": "BR",
+      "source": "AP",
+      "tier": "High Quality",
+      "subject": "Infringement Claim: YouTube, all - 5063964744965 - soundon",
+      "date": "2026-06-16T23:54:06Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "072991486651",
+      "region": "US",
+      "source": "Organic",
+      "tier": "Low Quality",
+      "subject": "Infringement Claim: Apple - 072991486651 - soundon",
+      "date": "2026-06-16T23:17:41Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "009392001053",
+      "region": "ID",
+      "source": "UG-SEO",
+      "tier": "Normal",
+      "subject": "Infringement Claim: Spotify - 009392001053 - soundon",
+      "date": "2026-06-16T23:04:34Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "5063964886504",
+      "region": "JP",
+      "source": "Organic",
+      "tier": "Low Quality",
+      "subject": "Possibly Infringing - Notification Warning No 1 - FS Ragnvald - Claim 24204687 -",
+      "date": "2026-06-16T22:57:45Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "5063963471855",
+      "region": "BR",
+      "source": "AP",
+      "tier": "High Quality",
+      "subject": "Infringement Claim: YouTube, all - 5063963471855 - soundon",
+      "date": "2026-06-16T18:56:08Z",
+      "stage": "outside_SPLA"
+    },
+    {
+      "upc": "640948069563",
+      "region": "BR",
+      "source": "Organic",
+      "tier": "Normal",
+      "subject": "Possibly Infringing - Notification Warning No 1 - Bryan Mc - Claim 24195417 - re",
+      "date": "2026-06-16T11:49:42Z",
+      "stage": "outside_SPLA"
+    }
+  ]
+}

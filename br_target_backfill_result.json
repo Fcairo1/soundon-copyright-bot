@@ -1,0 +1,146 @@
+{
+  "started_at": "2026-06-17T17:32:05.387042+00:00",
+  "finished_at": "2026-06-17T17:33:45.257979+00:00",
+  "chat_id": "oc_fd2e43d6451f8d87adb4cd4ceefa7816",
+  "chat_name": "AP Direitos BR",
+  "targets": [
+    "5063964388275",
+    "5063964668681",
+    "790566637399",
+    "010735103334",
+    "672079828238",
+    "047752485006",
+    "038557586685",
+    "638022968109",
+    "5063964187809",
+    "5063964638790",
+    "5063964795035",
+    "049362112921",
+    "052599254098",
+    "796728442269"
+  ],
+  "summary": {
+    "targets": 14,
+    "qualified": 14,
+    "posted": 12,
+    "tracker_logged": 12,
+    "skipped_duplicate_claim_key": 1,
+    "skipped_prior_posted_upc": 0,
+    "skipped_tracker_already_logged": 1,
+    "skipped_missing_candidate": 0,
+    "skipped_no_aeolus": 0,
+    "skipped_not_qualifying": 0,
+    "post_failures": 0,
+    "tracker_failures": 0
+  },
+  "results": [
+    {
+      "upc": "5063964388275",
+      "status": "posted",
+      "message_id": "om_x100b6c19ed0804a0e2fac8a3f92dc97",
+      "dup_key": "ref:ref:_00D0992XChO._500QvdyjiB:ref",
+      "tracker_logged": true,
+      "patched": true
+    },
+    {
+      "upc": "5063964668681",
+      "status": "posted",
+      "message_id": "om_x100b6c19eaeb88a0e12ce4576a20412",
+      "dup_key": "ref:ref:_00D0992XChO._500QvdyTtf:ref",
+      "tracker_logged": true,
+      "patched": true
+    },
+    {
+      "upc": "790566637399",
+      "status": "posted",
+      "message_id": "om_x100b6c19eab0d4a4e1698ef5360e8a6",
+      "dup_key": "ref:ref:_00D0992XChO._500Qve1dI3:ref",
+      "tracker_logged": true,
+      "patched": true
+    },
+    {
+      "upc": "010735103334",
+      "status": "posted",
+      "message_id": "om_x100b6c19ea1caca0e12ce7d2a6b846a",
+      "dup_key": "ref:ref:_00D0992XChO._500Qve2Qdv:ref",
+      "tracker_logged": true,
+      "patched": true
+    },
+    {
+      "upc": "672079828238",
+      "status": "skipped",
+      "reason": "duplicate_claim_key",
+      "dup_key": "ref:ref:_00D0992XChO._500Qve4EtN:ref"
+    },
+    {
+      "upc": "047752485006",
+      "status": "posted",
+      "message_id": "om_x100b6c19ebfca8a4e19736a89bdc1db",
+      "dup_key": "ref:ref:_00D0992XChO._500Qve9rhJ:ref",
+      "tracker_logged": true,
+      "patched": true
+    },
+    {
+      "upc": "038557586685",
+      "status": "posted",
+      "message_id": "om_x100b6c19ebb474a0e15034d514861c8",
+      "dup_key": "ref:ref:_00D0992XChO._500QveA8tM:ref",
+      "tracker_logged": true,
+      "patched": true
+    },
+    {
+      "upc": "638022968109",
+      "status": "posted",
+      "message_id": "om_x100b6c19eb01dca4e2ecd498fac967f",
+      "dup_key": "ref:ref:_00D0992XChO._500Qve9GjJ:ref",
+      "tracker_logged": true,
+      "patched": true
+    },
+    {
+      "upc": "5063964187809",
+      "status": "posted",
+      "message_id": "om_x100b6c19e8ec5ca0e10735fb4c15f06",
+      "dup_key": "ref:ref:_00D0992XChO._500QveFvgj:ref",
+      "tracker_logged": true,
+      "patched": true
+    },
+    {
+      "upc": "5063964638790",
+      "status": "posted",
+      "message_id": "om_x100b6c19e8b820a0e1647c1972115ed",
+      "dup_key": "ref:ref:_00D0992XChO._500QveCvOT:ref",
+      "tracker_logged": true,
+      "patched": true
+    },
+    {
+      "upc": "5063964795035",
+      "status": "posted",
+      "message_id": "om_x100b6c19e80e34a4e1072ad77d3dbcc",
+      "dup_key": "ref:ref:_00D0992XChO._500QveM7f8:ref",
+      "tracker_logged": true,
+      "patched": true
+    },
+    {
+      "upc": "049362112921",
+      "status": "posted",
+      "message_id": "om_x100b6c19e9c1bca0e2d962e197b4ba4",
+      "dup_key": "ref:ref:_00D0992XChO._500QveMckc:ref",
+      "tracker_logged": true,
+      "patched": true
+    },
+    {
+      "upc": "052599254098",
+      "status": "posted",
+      "message_id": "om_x100b6c19e9ad50a0e2fffc8e72e34e0",
+      "dup_key": "release_claim|052599254098|QT5M32579330|whakec@gmail.com|i request the removal of these releases; this distributor is withholding my roya…",
+      "tracker_logged": true,
+      "patched": true
+    },
+    {
+      "upc": "796728442269",
+      "status": "skipped",
+      "reason": "tracker_already_logged",
+      "dup_key": "ref:ref:_00D0992XChO._500QveTW5c:ref"
+    }
+  ]
+}

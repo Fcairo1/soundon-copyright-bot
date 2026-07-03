@@ -1,0 +1,7 @@
+lark_mail_oauth.json
+aime_env_refresh.json
+secrets.json
+*.log
+__pycache__/
+*.pyc
+.env
