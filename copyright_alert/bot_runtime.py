@@ -181,7 +181,23 @@ def _post_api(path: str, body: dict, method: str = "POST") -> dict:
             },
         )
 
-    return request_json_with_auth_retry(make_request, timeout=60, context=f"bot_runtime._post_api:{path}")
+    try:
+        return request_json_with_auth_retry(make_request, timeout=60, context=f"bot_runtime._post_api:{path}")
+    except Exception:
+        receive_id = body.get("receive_id")
+        msg_type = body.get("msg_type")
+        content = body.get("content")
+        if method != "POST" or not path.startswith("/im/v1/messages?receive_id_type="):
+            raise
+        receive_id_type = path.split("receive_id_type=", 1)[1]
+        if msg_type != "interactive" or not receive_id or not content:
+            raise
+        return ra._send_interactive_via_lark_cli(
+            receive_id_type=receive_id_type,
+            receive_id=receive_id,
+            content=content,
+            timeout=60,
+        )
 
 
 def _post_content_payload(title: str, lines: List) -> dict:

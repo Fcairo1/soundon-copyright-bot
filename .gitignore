@@ -34,7 +34,7 @@ logs/*
 *.out
 
 # ── Runtime / generated state (kept locally, never committed) ────────────────
-runtime/*
+runtime/
 !runtime/.gitkeep
 *_result.json
 *_output.json
@@ -42,9 +42,7 @@ scan_checkpoint*.json
 posted_cards.json
 posted_claims*.json
 spotify_dm_sent.json
-last_card*.json
-last_patch_card.json
-last_dm_card*.json
+last_*.json
 command_state.json
 bot_p2p_chats.json
 
