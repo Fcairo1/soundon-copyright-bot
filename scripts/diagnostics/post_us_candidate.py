@@ -9,8 +9,8 @@ US_CHAT_ID = "oc_e85373716ee746e3dc1bf999929cf1c4"
 US_TRACKER_URL = "https://bytedance.sg.larkoffice.com/sheets/FKqxsTu0bhl3ATt3n7YlIGvfgne"
 US_TRACKER_SHEET_ID = "66eefc"
 US_IGNORED_USERS = {"huang.zeyuan"}
-SOURCE_FILE = Path("runtime/us_next_after_anchor.json")
-OUTPUT_FILE = Path("runtime/us_post_result.json")
+SOURCE_FILE = Path("copyright_alert/us_next_after_anchor.json")
+OUTPUT_FILE = Path("copyright_alert/us_post_result.json")
 
 
 def configure_us_workflow():

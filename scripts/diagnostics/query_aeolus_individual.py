@@ -2,7 +2,7 @@
 import json
 from pathlib import Path
 import os
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[1]
 os.chdir(ROOT)
 from copyright_alert import run_alert as ra
 

@@ -13,8 +13,8 @@ from pathlib import Path
 from typing import Callable, Optional
 
 ROOT = Path(__file__).resolve().parents[1]
-_ENV_REFRESH_FILE = ROOT / "runtime" / "aime_env_refresh.json"
-_FEISHU_IM_DIR = Path(os.environ.get("INNER_SKILLS_DIR", str(ROOT / "inner_skills"))) / "feishu-im-send"
+_ENV_REFRESH_FILE = ROOT / "copyright_alert" / "aime_env_refresh.json"
+_FEISHU_IM_DIR = ROOT / "inner_skills" / "feishu-im-send"
 _ALERT_EMAIL = "filipe.cairo@bytedance.com"
 _ALERT_CHAT_ID = "oc_6e157309d8d7145ba5ce7f0ba67354cb"
 _AUTH_ERROR_CODES = {99991663, 99991664}

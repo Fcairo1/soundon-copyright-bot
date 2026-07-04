@@ -32,7 +32,7 @@ def _load_local_lark_secret():
         if value:
             return value
 
-    here = Path(__file__).resolve().parents[1]
+    here = Path(__file__).resolve().parent
     for candidate in (here / ".env", here / "secrets.json"):
         if not candidate.exists():
             continue
@@ -72,15 +72,12 @@ CURRENT_REGION = "BR"
 QUALIFY_COUNTRIES = {"BR"}
 AEOLUS_DATASET = "374690"
 AEOLUS_BASE    = "https://aeolus-va.tiktok-row.net"
-AEOLUS_SCRIPT  = os.environ.get("AEOLUS_SCRIPT") or os.path.join(
-    os.environ.get("INNER_SKILLS_DIR", "inner_skills"),
-    "aeolus-platform-analysis", "scripts", "dataset_sql_query.py",
-)
+AEOLUS_SCRIPT  = "inner_skills/aeolus-platform-analysis/scripts/dataset_sql_query.py"
 # Engagement dataset: [AOP] dm_distribution_song_country_df (sid=1576005)
 # Source: https://aeolus-va.tiktok-row.net/pages/dataQuery?appId=1301&id=2414694441&isDefault=1&rid=5377337&sid=1576005
 ENGAGEMENT_DATASET = "1576005"
 ENGAGEMENT_PARTITION = "2026-06-14"
-POSTED_CLAIMS_FILE = "runtime/posted_claims.json"
+POSTED_CLAIMS_FILE = "copyright_alert/posted_claims.json"
 TRIAGE_QUERY = "Infringement Claim"
 TRIAGE_MAX = 50
 EXCLUDED_MENTIONS = {
@@ -1350,7 +1347,7 @@ def _get_bot_access_token():
 # fed back into PATCH (doing so → HTTP 400 Bad Request). To refresh an existing
 # card we therefore keep a copy of the exact card JSON we sent, keyed by the
 # message_id, and patch THAT (with the countdown badge merged in) instead.
-POSTED_CARDS_FILE = "runtime/posted_cards.json"
+POSTED_CARDS_FILE = "copyright_alert/posted_cards.json"
 
 
 def _load_posted_cards():
@@ -1482,9 +1479,9 @@ def main():
         card = build_card(ef, ar)
 
         # Save card for inspection
-        with open("runtime/last_card.json", "w") as f:
+        with open("copyright_alert/last_card.json", "w") as f:
             json.dump(card, f, indent=2)
-        print("  Card saved to runtime/last_card.json")
+        print("  Card saved to copyright_alert/last_card.json")
 
         success, posted_message_id = post_card(card, ar, upc=ef.get("upc"), context=f"{CURRENT_REGION} run_alert group post")
         if success and posted_message_id:
@@ -1495,7 +1492,7 @@ def main():
                 source_email_message_id=msg_id,
                 region=CURRENT_REGION,
             )
-            with open("runtime/last_card.json", "w") as f:
+            with open("copyright_alert/last_card.json", "w") as f:
                 json.dump(card, f, indent=2)
             patch_card_message(posted_message_id, card)
             tracker_row = append_tracker_row(ef, ar, posted_message_id, status="")
@@ -1529,5 +1526,4 @@ def main():
     sys.exit(1)
 
 if __name__ == "__main__":
-    os.chdir(os.path.dirname(os.path.abspath(__file__)) + "/..")
     main()

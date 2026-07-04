@@ -4,7 +4,7 @@ DM action card to filipe.cairo. Sends NO email (TEST_MODE handles that on click)
 """
 import json, subprocess, sys
 from pathlib import Path
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from copyright_alert.run_alert import (
     fetch_recent_candidates, fetch_email, extract_fields, batch_query_aeolus_by_upc,

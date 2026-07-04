@@ -9,7 +9,7 @@ from copyright_alert import run_alert as ra
 US_REGION_CODES = {"US", "CA", "AU", "NZ"}
 TARGET_AFTER_UPC = "072991770156"
 MAX_MESSAGES = 420
-OUTPUT = Path("runtime/us_next_after_anchor.json")
+OUTPUT = Path("copyright_alert/us_next_after_anchor.json")
 ANCHOR_DATE = "2026-06-12T17:25:29Z"
 
 

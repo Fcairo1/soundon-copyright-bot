@@ -3,12 +3,12 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[1]
 import os
 os.chdir(ROOT)
 
 from copyright_alert import run_alert as ra
-from scripts.backfill import backfill_ap_direitos_br as br
+from copyright_alert import backfill_ap_direitos_br as br
 
 CUTOFF = br.CUTOFF
 TARGET_UPCS = [
@@ -46,8 +46,8 @@ def load_json(path):
         return {}
 
 
-posted_default = load_json("runtime/posted_claims.json")
-posted_br = load_json("runtime/posted_claims_ap_direitos_br.json")
+posted_default = load_json("copyright_alert/posted_claims.json")
+posted_br = load_json("copyright_alert/posted_claims_ap_direitos_br.json")
 posted_records = {"posted_claims.json": posted_default, "posted_claims_ap_direitos_br.json": posted_br}
 
 

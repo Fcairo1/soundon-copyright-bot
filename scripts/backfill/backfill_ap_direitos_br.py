@@ -9,7 +9,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[1]
 os.chdir(ROOT)
 
 from copyright_alert import run_alert as ra  # noqa: E402
@@ -17,7 +17,7 @@ from copyright_alert import run_alert as ra  # noqa: E402
 CUTOFF = datetime(2026, 6, 3, 0, 0, 0, tzinfo=timezone.utc)
 TARGET_CHAT_NAME = "AP Direitos BR"
 TARGET_CHAT_ID = "oc_fd2e43d6451f8d87adb4cd4ceefa7816"
-TARGET_POSTED_CLAIMS_FILE = "runtime/posted_claims_ap_direitos_br.json"
+TARGET_POSTED_CLAIMS_FILE = "copyright_alert/posted_claims_ap_direitos_br.json"
 TRACKER_URL = ra.TRACKER_SHEET_URL
 TRACKER_SHEET_ID = ra.TRACKER_SHEET_ID
 PAGE_SIZE = 100
@@ -263,8 +263,8 @@ def main():
     tracker_keys = {tracker_record_key_from_row(row) for row in tracker_data_rows}
     log(f"Loaded tracker rows: {len(tracker_data_rows)}")
 
-    prior_claim_keys = existing_claim_keys("runtime/posted_claims.json", TARGET_POSTED_CLAIMS_FILE)
-    prior_posted_upcs = posted_upcs_for_target_chat(TARGET_CHAT_ID, "runtime/posted_claims.json", TARGET_POSTED_CLAIMS_FILE)
+    prior_claim_keys = existing_claim_keys("copyright_alert/posted_claims.json", TARGET_POSTED_CLAIMS_FILE)
+    prior_posted_upcs = posted_upcs_for_target_chat(TARGET_CHAT_ID, "copyright_alert/posted_claims.json", TARGET_POSTED_CLAIMS_FILE)
     log(f"Loaded existing posted-claim keys: {len(prior_claim_keys)}")
     log(f"Loaded UPCs already posted for target chat (including explicit skips): {len(prior_posted_upcs)}")
 

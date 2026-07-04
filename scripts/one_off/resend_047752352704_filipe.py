@@ -11,7 +11,7 @@ import json
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from copyright_alert import dm_action_card  # noqa: E402
@@ -32,7 +32,7 @@ case = {
     "ops_dm_email": "filipe.cairo@bytedance.com",
 }
 
-out_path = ROOT / "runtime" / "last_dm_card_047752352704.json"
+out_path = ROOT / "copyright_alert" / "last_dm_card_047752352704.json"
 out_path.write_text(
     json.dumps(dm_action_card.build_dm_action_card(case), ensure_ascii=False, indent=2),
     encoding="utf-8",

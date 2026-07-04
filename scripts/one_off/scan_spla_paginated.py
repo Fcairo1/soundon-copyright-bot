@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from copyright_alert import bot_runtime, run_alert as ra, daily_workflow as dw
 from copyright_alert.dm_action_card import send_dm_action_card
@@ -22,7 +22,7 @@ REGION = "SPLA"
 PAGE_SIZE = 400
 MAX_PAGES = 6           # up to ~2400 emails total
 PARALLEL_FETCH = 10
-OUTPUT = Path(f"runtime/spla_paginated_result_{int(datetime.utcnow().timestamp())}.json")
+OUTPUT = Path(f"copyright_alert/spla_paginated_result_{int(datetime.utcnow().timestamp())}.json")
 
 
 def fetch_page(query, mailbox, page_size, page_token=None):
@@ -132,7 +132,7 @@ def process_batch(messages, cfg, posted, scanned_summary, total_scanned):
         assert_region_allowed(ra.TARGET_CHAT_ID, ar, upc=upc, context="SPLA group post")
 
         card = ra.build_card(ef, ar)
-        with open("runtime/last_card.json", "w") as f:
+        with open("copyright_alert/last_card.json", "w") as f:
             json.dump(card, f, indent=2)
         ok, posted_msg_id = ra.post_card(card)
         print(f"    post_card ok={ok} msg_id={posted_msg_id}")

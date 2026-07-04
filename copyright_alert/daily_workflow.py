@@ -24,7 +24,7 @@ single-shot scanner.
 It does NOT stop after the first qualifying post (unlike run_alert.main); it
 processes every new qualifying email within the checkpoint window.
 
-All output is written to both stdout and logs/daily_<ts>.log.
+All output is written to both stdout and copyright_alert/logs/daily_<ts>.log.
 """
 
 import json
@@ -41,7 +41,7 @@ from copyright_alert.lark_auth import request_json_with_auth_retry
 # ── Make the copyright_alert package importable & anchor relative paths ───────
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-os.chdir(ROOT)  # helpers use repo-root-relative paths like "runtime/..."
+os.chdir(ROOT)  # run_alert helpers use relative paths like "copyright_alert/..."
 
 from copyright_alert.run_alert import (  # noqa: E402
     MAILBOX,
@@ -71,15 +71,15 @@ from copyright_alert.dm_action_card import (  # noqa: E402
 )
 
 # ── Config ───────────────────────────────────────────────────────────────────
-CHECKPOINT_FILE = "runtime/scan_checkpoint.json"
-LAST_CARD_FILE = "runtime/last_card.json"
-LOG_DIR = "logs"
+CHECKPOINT_FILE = "copyright_alert/scan_checkpoint.json"
+LAST_CARD_FILE = "copyright_alert/last_card.json"
+LOG_DIR = "copyright_alert/logs"
 TRIAGE_MAX = 50
 ACTIVE_REGION = "BR"  # region this workflow run is configured for
 RECIPIENT_EMAIL = "filipe.cairo@bytedance.com"  # filipe.cairo — personal alert DM target (BR default)
 RECIPIENT_OPEN_ID = ""  # when set, ops DMs go to this open_id via the copyright bot
 RECIPIENT_CHAT_ID = ""  # optional confirmed DM chat_id for the ops owner
-FEISHU_IM_DIR = Path(os.environ.get("INNER_SKILLS_DIR", str(ROOT / "inner_skills"))) / "feishu-im-send"
+FEISHU_IM_DIR = ROOT / "inner_skills" / "feishu-im-send"
 ADMIN_ACTION_HEADER = "Admin Action Taken"
 STATUS_TAKEDOWN = "🔴 Confirm Takedown"
 STATUS_RESOLVED = "✅ Resolved"
@@ -96,10 +96,10 @@ ARTIST_HEADER = "Artist(s)"
 CLAIMANT_HEADER = "Claimant"
 STATUS_HEADER = "Status"
 POSTED_CLAIMS_FILES = [
-    "runtime/posted_claims.json",
-    "runtime/posted_claims_ap_direitos_br.json",
+    "copyright_alert/posted_claims.json",
+    "copyright_alert/posted_claims_ap_direitos_br.json",
 ]
-SPOTIFY_DM_STATE_FILE = "runtime/spotify_dm_sent.json"
+SPOTIFY_DM_STATE_FILE = "copyright_alert/spotify_dm_sent.json"
 REPLY_DEADLINE_CALENDAR_DAYS = 5
 
 
@@ -129,9 +129,9 @@ def configure_region(region):
     RECIPIENT_CHAT_ID = cfg.get("ops_dm_chat_id") or ""
     # BR keeps the original checkpoint path for backward compatibility.
     CHECKPOINT_FILE = (
-        "runtime/scan_checkpoint.json"
+        "copyright_alert/scan_checkpoint.json"
         if region == "BR"
-        else f"runtime/scan_checkpoint_{region}.json"
+        else f"copyright_alert/scan_checkpoint_{region}.json"
     )
     return cfg
 

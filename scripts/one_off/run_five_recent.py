@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 # Ensure repo root import path
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import copyright_alert.run_alert as ra
 from copyright_alert.region_guard import assert_region_allowed
 
@@ -106,7 +106,7 @@ def process_one(date, msg_id, subject):
     if not ok or not posted_message_id:
         return None, "card post failed"
     card = ra.build_card(ef, ar, lark_message_id=posted_message_id)
-    Path("runtime/last_card.json").write_text(json.dumps(card, ensure_ascii=False, indent=2), encoding="utf-8")
+    Path("copyright_alert/last_card.json").write_text(json.dumps(card, ensure_ascii=False, indent=2), encoding="utf-8")
     ra.patch_card_message(posted_message_id, card)
     ra.append_tracker_row(ef, ar, posted_message_id, status="")
     result = {
@@ -143,7 +143,7 @@ def main():
             skipped.append({"date": cand[0], "message_id": cand[1], "subject": cand[2], "reason": reason})
             print(f"SKIPPED: {reason}", flush=True)
     output = {"posted": posted, "skipped": skipped, "candidate_count": len(candidates)}
-    Path("runtime/five_recent_results.json").write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
+    Path("copyright_alert/five_recent_results.json").write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
     print("\nRESULT_JSON_START")
     print(json.dumps(output, ensure_ascii=False, indent=2))
     print("RESULT_JSON_END")

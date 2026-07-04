@@ -33,10 +33,10 @@ from copyright_alert.manager_exclusions import (
 )
 
 BOT_SCRIPT = ROOT / "copyright_alert" / "persistent_callback.py"
-PID_FILE = ROOT / "runtime" / "persistent_callback.pid"
-DAEMON_LOG = ROOT / "logs" / "callback_daemon.log"
-LAST_CARD_FILE = ROOT / "runtime" / "last_card.json"
-COMMAND_STATE_FILE = ROOT / "runtime" / "command_state.json"
+PID_FILE = ROOT / "copyright_alert" / "persistent_callback.pid"
+DAEMON_LOG = ROOT / "copyright_alert" / "logs" / "callback_daemon.log"
+LAST_CARD_FILE = ROOT / "copyright_alert" / "last_card.json"
+COMMAND_STATE_FILE = ROOT / "copyright_alert" / "command_state.json"
 
 US_REGION_CODES = {"US", "CA", "AU", "NZ"}
 DEFAULT_WATCHDOG_REGION = "BR"
@@ -452,7 +452,7 @@ def region_last_scan(region: str) -> str:
     if region_state.get("last_scan_at"):
         return region_state["last_scan_at"]
     if region == "BR":
-        checkpoint = load_json_file(ROOT / "runtime" / "scan_checkpoint.json", {})
+        checkpoint = load_json_file(ROOT / "copyright_alert" / "scan_checkpoint.json", {})
         return checkpoint.get("updated_at") or "N/A"
     return "N/A"
 
@@ -766,7 +766,7 @@ def command_help_lines() -> List:
 
 # ── Health check & self-heal ─────────────────────────────────────────────────
 
-AIME_ENV_REFRESH_FILE = ROOT / "runtime" / "aime_env_refresh.json"
+AIME_ENV_REFRESH_FILE = ROOT / "copyright_alert" / "aime_env_refresh.json"
 
 
 def _decode_jwt_exp(token: str) -> Optional[int]:
@@ -892,7 +892,7 @@ def _check_scheduled_jobs() -> Dict:
                 most_recent = age
         except Exception:
             continue
-    log_dir = ROOT / "logs"
+    log_dir = ROOT / "copyright_alert" / "logs"
     if log_dir.exists():
         for p in log_dir.glob("daily_*.log"):
             try:

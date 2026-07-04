@@ -6,7 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import copyright_alert.run_alert as ra
 from copyright_alert.region_guard import assert_region_allowed
 
@@ -161,7 +161,7 @@ def main():
             skipped.append({"date": date, "subject": subject, "reason": "card post failed"})
             continue
         card = ra.build_card(ef_quick, ar, lark_message_id=posted_message_id)
-        Path("runtime/last_card.json").write_text(json.dumps(card, ensure_ascii=False, indent=2), encoding="utf-8")
+        Path("copyright_alert/last_card.json").write_text(json.dumps(card, ensure_ascii=False, indent=2), encoding="utf-8")
         ra.patch_card_message(posted_message_id, card)
         ra.append_tracker_row(ef_quick, ar, posted_message_id, status="")
         result = {
@@ -181,11 +181,11 @@ def main():
         }
         ra._save_posted_claim(duplicate_key, result)
         out = {"posted": result, "skipped": skipped}
-        Path("runtime/next_after_upc_result.json").write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+        Path("copyright_alert/next_after_upc_result.json").write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
         print(json.dumps(out, ensure_ascii=False, indent=2))
         return
     out = {"posted": None, "skipped": skipped, "error": f"No applicable unposted case found after UPC {AFTER_UPC}"}
-    Path("runtime/next_after_upc_result.json").write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+    Path("copyright_alert/next_after_upc_result.json").write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(out, ensure_ascii=False, indent=2))
     raise SystemExit(2)
 
