@@ -139,7 +139,8 @@ def _record_bot_p2p_chat(chat_id, operator_open_id, payload=None):
             current.setdefault("by_open_id", {})[operator_open_id] = record
         current.setdefault("by_chat_id", {})[chat_id] = record
         P2P_CHAT_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        P2P_CHAT_CACHE_FILE.write_text(json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8")
+        from copyright_alert.run_alert import _atomic_write_json  # lazy: avoid import cycle
+        _atomic_write_json(P2P_CHAT_CACHE_FILE, current, ensure_ascii=False, indent=2)
     print("bot_p2p_chat_entered recorded:", json.dumps(record, ensure_ascii=False), flush=True)
 
 
