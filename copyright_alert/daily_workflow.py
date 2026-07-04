@@ -940,6 +940,67 @@ def _reconstruct_card_from_row(row, idx, message_id=""):
     return build_card(ef, ar, current_status=status, lark_message_id=message_id)
 
 
+def _sync_replacement_message_id(old_message_id, new_message_id, card, *, row_num=None, idx=None):
+    """Persist a replacement group-card message ID after lark-cli resend fallback."""
+    if not old_message_id or not new_message_id:
+        return
+    save_posted_card(new_message_id, card)
+
+    try:
+        state = _load_dm_state()
+        if old_message_id in state and new_message_id not in state:
+            state[new_message_id] = state[old_message_id]
+            _save_dm_state(state)
+    except Exception as exc:
+        log(f"  ⚠ Could not sync DM state for replacement {old_message_id} → {new_message_id}: {exc!r}")
+
+    try:
+        posted = _load_json(POSTED_CLAIMS_FILE)
+        changed = False
+        for payload in posted.values():
+            if isinstance(payload, dict) and payload.get("message_id") == old_message_id:
+                payload["message_id"] = new_message_id
+                changed = True
+        if changed:
+            _save_json(POSTED_CLAIMS_FILE, posted)
+    except Exception as exc:
+        log(f"  ⚠ Could not sync posted_claims for replacement {old_message_id} → {new_message_id}: {exc!r}")
+
+    if row_num and idx:
+        try:
+            from copyright_alert.handle_callback import _col_letter, _write_sheet_cell_cli
+            for key in ("card_msg", "lark_msg"):
+                col_idx = idx.get(key)
+                if col_idx is None:
+                    continue
+                cell = f"{_col_letter(col_idx)}{row_num}"
+                _write_sheet_cell_cli(TRACKER_SHEET_URL, TRACKER_SHEET_ID, cell, new_message_id)
+        except Exception as exc:
+            log(f"  ⚠ Could not sync tracker row {row_num} with replacement ID {new_message_id}: {exc!r}")
+
+
+def _replace_card_message_via_lark_cli(old_message_id, card, *, row_num=None, idx=None):
+    """Fallback for countdown refresh when PATCH is unavailable in cron contexts.
+
+    We resend the refreshed card to the alert group using bot identity via
+    lark-cli, then repoint tracker/persistence to the new message ID so future
+    callbacks and refreshes follow the replacement message.
+    """
+    from copyright_alert import run_alert as ra
+
+    payload = ra._send_interactive_via_lark_cli(
+        receive_id_type="chat_id",
+        receive_id=TARGET_CHAT_ID,
+        content=json.dumps(card, ensure_ascii=False),
+        timeout=60,
+    )
+    new_message_id = ((payload.get("data") or {}).get("message_id")) or ""
+    if payload.get("code") != 0 or not new_message_id:
+        raise RuntimeError(f"Replacement send failed: {json.dumps(payload, ensure_ascii=False)[:1000]}")
+    _sync_replacement_message_id(old_message_id, new_message_id, card, row_num=row_num, idx=idx)
+    return new_message_id
+
+
 def countdown_refresh(values):
     """PART 1F — Refresh the daily countdown badge on each open group card."""
     section("PART 1F — COUNTDOWN CARD REFRESH")
@@ -994,6 +1055,10 @@ def countdown_refresh(values):
             ok = patch_card_message(card_msg_id, patched)
             if ok:
                 refreshed += 1
+                continue
+            replacement_id = _replace_card_message_via_lark_cli(card_msg_id, patched, row_num=row_num, idx=idx)
+            log(f"  ✓ Countdown replacement posted for row {row_num}: {card_msg_id} → {replacement_id}")
+            refreshed += 1
         except Exception as exc:
             log(f"  ✗ Countdown patch error for {card_msg_id}: {exc!r}")
     log(f"  Countdown refresh: {refreshed} updated / {attempted} open cards.")

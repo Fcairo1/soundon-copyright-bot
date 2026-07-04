@@ -18,15 +18,51 @@ import os
 import ast
 import urllib.request
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from copyright_alert.lark_auth import request_json_with_auth_retry
 from copyright_alert.manager_exclusions import is_manager_excluded
 from copyright_alert.region_guard import assert_region_allowed
 
 # ── Config ──────────────────────────────────────────────────────────────────
+
+def _load_local_lark_secret():
+    for key in ("BOT_SECRET", "LARK_APP_SECRET", "APP_SECRET", "app_secret"):
+        value = os.getenv(key, "").strip()
+        if value:
+            return value
+
+    here = Path(__file__).resolve().parents[1]
+    for candidate in (here / ".env", here / "secrets.json"):
+        if not candidate.exists():
+            continue
+        try:
+            if candidate.suffix == ".json":
+                payload = json.loads(candidate.read_text(encoding="utf-8"))
+                if isinstance(payload, dict):
+                    for key in ("BOT_SECRET", "LARK_APP_SECRET", "APP_SECRET", "app_secret"):
+                        value = str(payload.get(key, "")).strip()
+                        if value:
+                            os.environ.setdefault("BOT_SECRET", value)
+                            return value
+            else:
+                for raw_line in candidate.read_text(encoding="utf-8").splitlines():
+                    line = raw_line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, value = line.split("=", 1)
+                    key = key.strip()
+                    value = value.strip().strip('"').strip("'")
+                    if key in {"BOT_SECRET", "LARK_APP_SECRET", "APP_SECRET", "app_secret"} and value:
+                        os.environ.setdefault("BOT_SECRET", value)
+                        return value
+        except Exception:
+            continue
+    return ""
+
 MAILBOX        = "soundon-copyright@bytedance.com"
 BOT_APP_ID     = "cli_aa94690b12b81cde"
-BOT_SECRET     = os.getenv("BOT_SECRET", os.getenv("LARK_APP_SECRET", ""))
+BOT_SECRET     = _load_local_lark_secret()
 TARGET_CHAT_ID = "oc_6e157309d8d7145ba5ce7f0ba67354cb"
 TRACKER_SHEET_URL = "https://bytedance.sg.larkoffice.com/sheets/HMQLsGgymhdIQ3tSbNNlk3m1gKd"
 TRACKER_SHEET_ID = "c02dad"
@@ -78,6 +114,34 @@ def parse_lark_json(raw):
                 except Exception:
                     continue
     return None
+
+
+def _send_interactive_via_lark_cli(*, receive_id_type: str, receive_id: str, content: str, timeout: int = 60):
+    """Send an interactive message with AIME's injected bot identity via lark-cli.
+
+    This is the fallback path when the repo-local BOT_SECRET is unavailable in the
+    current runtime (common in cron / isolated contexts).
+    """
+    cmd = [
+        "lark-cli", "im", "+messages-send",
+        "--as", "bot",
+        "--format", "json",
+        "--msg-type", "interactive",
+        "--content", content,
+    ]
+    if receive_id_type == "chat_id":
+        cmd.extend(["--chat-id", receive_id])
+    elif receive_id_type == "open_id":
+        cmd.extend(["--user-id", receive_id])
+    else:
+        raise ValueError(f"Unsupported receive_id_type for lark-cli send: {receive_id_type}")
+
+    res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    combined = (res.stdout or "") + (res.stderr or "")
+    parsed = parse_lark_json(combined) or {}
+    if res.returncode != 0:
+        raise RuntimeError((combined or f"lark-cli send failed rc={res.returncode}").strip()[:1000])
+    return parsed
 
 
 def fetch_recent_candidates():
@@ -1251,8 +1315,19 @@ def post_card(card, aeolus_row=None, *, upc=None, context="group post"):
         print(f"Post result: code={parsed.get('code')} msg={parsed.get('msg')}")
         return parsed.get("code") == 0, ((parsed.get("data") or {}).get("message_id") or "")
     except Exception as exc:
-        print(f"Post failed: {exc}")
-        return False, ""
+        print(f"Post failed via REST: {exc}")
+        try:
+            parsed = _send_interactive_via_lark_cli(
+                receive_id_type="chat_id",
+                receive_id=TARGET_CHAT_ID,
+                content=json.dumps(card, ensure_ascii=False),
+                timeout=60,
+            )
+            print(f"Post fallback result: code={parsed.get('code')} msg={parsed.get('msg')}")
+            return parsed.get("code") == 0, ((parsed.get("data") or {}).get("message_id") or "")
+        except Exception as fallback_exc:
+            print(f"Post fallback failed: {fallback_exc}")
+            return False, ""
 
 def _get_bot_access_token():
     """Obtain a tenant_access_token for the bot via Lark REST API."""
@@ -1454,7 +1529,5 @@ def main():
     sys.exit(1)
 
 if __name__ == "__main__":
-    # Anchor relative runtime/ paths to the repo root when run standalone
-    # (python -m copyright_alert.run_alert). Imported callers set their own cwd.
     os.chdir(os.path.dirname(os.path.abspath(__file__)) + "/..")
     main()
