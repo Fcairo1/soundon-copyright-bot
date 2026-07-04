@@ -57,6 +57,7 @@ from copyright_alert.run_alert import (  # noqa: E402
     claim_key,
     is_claim_already_posted,
     _save_posted_claim,
+    _atomic_write_json,
     build_card,
     post_card,
     patch_card_message,
@@ -192,8 +193,7 @@ def save_checkpoint(message_id):
         "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
     os.makedirs(os.path.dirname(CHECKPOINT_FILE), exist_ok=True)
-    with open(CHECKPOINT_FILE, "w", encoding="utf-8") as fh:
-        json.dump(payload, fh, ensure_ascii=False, indent=2)
+    _atomic_write_json(CHECKPOINT_FILE, payload, ensure_ascii=False, indent=2)
     log(f"  ✓ Checkpoint saved: {message_id}")
 
 
@@ -375,6 +375,12 @@ def run_scan():
             log(f"     ✅ Posted card {posted_message_id} for UPC {upc}")
         else:
             log("     ✗ Card posting failed for this candidate")
+
+    if checkpoint and not summary["stopped_at_checkpoint"] and len(messages) >= TRIAGE_MAX:
+        log(f"  🚨 WARNING: previous checkpoint {checkpoint} was NOT reached within the "
+            f"{TRIAGE_MAX}-message fetch window. More than {TRIAGE_MAX} new messages may have "
+            f"arrived since the last run; messages older than this window will be permanently "
+            f"skipped once the checkpoint advances. Consider raising TRIAGE_MAX or paginating.")
 
     save_checkpoint(new_checkpoint)
     log(f"\n  Scan summary: {json.dumps(summary, ensure_ascii=False)}")
@@ -734,8 +740,7 @@ def _load_dm_state():
 
 def _save_dm_state(state):
     try:
-        (ROOT / SPOTIFY_DM_STATE_FILE).write_text(
-            json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        _atomic_write_json(ROOT / SPOTIFY_DM_STATE_FILE, state, ensure_ascii=False, indent=2)
     except Exception as exc:
         log(f"  ⚠ Could not persist DM state: {exc!r}")
 

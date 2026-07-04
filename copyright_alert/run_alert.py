@@ -16,6 +16,7 @@ import re
 import sys
 import os
 import ast
+import tempfile
 import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -111,6 +112,31 @@ def parse_lark_json(raw):
                 except Exception:
                     continue
     return None
+
+
+def _atomic_write_json(path, data, *, ensure_ascii=False, indent=2):
+    """Write JSON to `path` atomically (temp file in same dir + os.replace).
+
+    Prevents truncated/corrupted state files if the process crashes mid-write
+    or if two writers race — readers always see either the old or the new file,
+    never a partial one. os.replace is atomic on the same filesystem.
+    """
+    path = os.fspath(path)
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(prefix=".tmp-", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=ensure_ascii, indent=indent)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def _send_interactive_via_lark_cli(*, receive_id_type: str, receive_id: str, content: str, timeout: int = 60):
@@ -241,7 +267,15 @@ def labeled_value(text, *labels, default="N/A"):
     return value if value else default
 
 def fetch_email(msg_id):
-    out = run(f"lark-cli mail +message --mailbox '{MAILBOX}' --message-id '{msg_id}' --html=false --format json")
+    cmd = [
+        "lark-cli", "mail", "+message",
+        "--mailbox", MAILBOX,
+        "--message-id", str(msg_id),
+        "--html=false",
+        "--format", "json",
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    out = (proc.stdout or "").strip()
     parsed = parse_lark_json(out)
     if not parsed:
         print(f"  ✗ Failed to parse lark-cli output. Raw (first 300): {out[:300]}")
@@ -650,7 +684,13 @@ def _friendly_aeolus_rows(parsed):
         old_keys = list(row.keys())
         friendly_row = {}
         for i, friendly in enumerate(AEOLUS_FRIENDLY_FIELDS):
-            if i < len(old_keys):
+            # Prefer matching by column name (the SQL SELECT already aliases
+            # columns to these friendly names). Positional mapping is only a
+            # fallback so a change in column order can't silently map values to
+            # the wrong fields (e.g. region ending up in album_title).
+            if friendly in row:
+                friendly_row[friendly] = row[friendly]
+            elif i < len(old_keys):
                 friendly_row[friendly] = row[old_keys[i]]
         for k, v in row.items():
             if k not in friendly_row and k not in AEOLUS_FRIENDLY_FIELDS:
@@ -873,9 +913,7 @@ def _save_posted_claim(claim_key, record):
         if "tracker_row" not in record:
             record = {**record, "tracker_row": None}
     data[claim_key] = record
-    os.makedirs(os.path.dirname(POSTED_CLAIMS_FILE), exist_ok=True)
-    with open(POSTED_CLAIMS_FILE, "w", encoding="utf-8") as fh:
-        json.dump(data, fh, ensure_ascii=False, indent=2)
+    _atomic_write_json(POSTED_CLAIMS_FILE, data, ensure_ascii=False, indent=2)
 
 
 def claim_key(ef, ar=None, subject=""):
@@ -1365,8 +1403,7 @@ def save_posted_card(message_id, card):
     try:
         store = _load_posted_cards()
         store[message_id] = card
-        with open(POSTED_CARDS_FILE, "w", encoding="utf-8") as f:
-            json.dump(store, f, ensure_ascii=False)
+        _atomic_write_json(POSTED_CARDS_FILE, store, ensure_ascii=False, indent=None)
     except Exception as e:
         print(f"  ⚠ Could not persist posted card {message_id}: {e}")
 
