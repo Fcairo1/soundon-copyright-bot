@@ -22,6 +22,7 @@ from pathlib import Path
 
 from copyright_alert.lark_auth import request_json_with_auth_retry
 from copyright_alert.run_alert import BOT_APP_ID, BOT_SECRET, build_card, _get_bot_access_token, load_posted_card
+from copyright_alert import run_alert as ra
 
 SHEET_URL = "https://bytedance.sg.larkoffice.com/sheets/HMQLsGgymhdIQ3tSbNNlk3m1gKd"
 SHEET_ID = "c02dad"
@@ -111,7 +112,7 @@ def _sheet_api(method, sheet_url, sheet_id, cell_range, values=None, timeout=60)
 def _read_sheet_values_cli(sheet_url, sheet_id):
     cmd = [
         "lark-cli", "sheets", "+csv-get", "--url", sheet_url,
-        "--sheet-id", sheet_id, "--range", "A1:Z500", "--rows-json",
+        "--sheet-id", sheet_id, "--range", "A1:Z500",
     ]
     last_error = ""
     for attempt in range(1, 4):
@@ -124,12 +125,9 @@ def _read_sheet_values_cli(sheet_url, sheet_id):
             print(f"Sheet read user-credential refresh skipped before lark-cli attempt {attempt}: {refresh_exc!r}", flush=True)
         res = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
         combined = (res.stdout or "") + (res.stderr or "")
-        json_start = (res.stdout or "").find("{")
-        if res.returncode == 0 and json_start >= 0:
-            data = json.loads(res.stdout[json_start:])
-            rows = (data.get("data") or {}).get("rows") or []
-            cols = [chr(ord("A") + i) for i in range(26)]
-            return [[(row.get("values") or {}).get(col, "") for col in cols] for row in rows]
+        parsed, rows, _ = ra.parse_lark_annotated_csv(res.stdout)
+        if res.returncode == 0 and parsed:
+            return rows
         last_error = combined[:2000]
         print(f"Sheet read via lark-cli attempt {attempt}/3 failed: {last_error[:800]}", flush=True)
         if attempt < 3:

@@ -16,6 +16,8 @@ import re
 import sys
 import os
 import ast
+import csv
+import io
 import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -114,6 +116,21 @@ def parse_lark_json(raw):
                 except Exception:
                     continue
     return None
+
+
+def parse_lark_annotated_csv(raw):
+    """Parse lark-cli +csv-get output into JSON payload, row matrix and row numbers."""
+    parsed = parse_lark_json(raw)
+    if not parsed:
+        return None, [], []
+    data = parsed.get("data") or {}
+    annotated_csv = data.get("annotated_csv") or ""
+    cleaned_csv = re.sub(r"(?m)^\[row=\d+\]\s?", "", annotated_csv)
+    rows = list(csv.reader(io.StringIO(cleaned_csv))) if cleaned_csv else []
+    row_numbers = list(data.get("row_indices") or [])
+    if rows and not row_numbers:
+        row_numbers = list(range(1, len(rows) + 1))
+    return parsed, rows, row_numbers
 
 
 def _send_interactive_via_lark_cli(*, receive_id_type: str, receive_id: str, content: str, timeout: int = 60):
@@ -1186,21 +1203,21 @@ def _tracker_next_row():
     """
     cmd = [
         "lark-cli", "sheets", "+csv-get", "--url", TRACKER_SHEET_URL,
-        "--sheet-id", TRACKER_SHEET_ID, "--range", "A:T", "--rows-json",
+        "--sheet-id", TRACKER_SHEET_ID, "--range", "A1:T500",
         "--max-chars", "200000",
     ]
     res = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-    parsed = parse_lark_json(res.stdout)
-    if res.returncode != 0 or not parsed:
+    parsed, rows, row_numbers = parse_lark_annotated_csv(res.stdout)
+    if res.returncode != 0 or not parsed or not rows:
         print("  ⚠ Could not inspect tracker before append:", (res.stdout + res.stderr)[:500])
         return None
-    data = parsed.get("data") or {}
-    rows = data.get("rows") or []
-    case_rows = [
-        int(r.get("row_number") or 0)
-        for r in rows
-        if _tracker_row_has_case_identity(r.get("values") or {})
-    ]
+
+    case_rows = []
+    for idx, values in enumerate(rows):
+        row_map = {chr(ord("A") + col_idx): value for col_idx, value in enumerate(values)}
+        if _tracker_row_has_case_identity(row_map):
+            row_number = row_numbers[idx] if idx < len(row_numbers) else idx + 1
+            case_rows.append(int(row_number or 0))
     return (max(case_rows) + 1) if case_rows else 1
 
 
