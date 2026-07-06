@@ -49,8 +49,8 @@ ACTION_FIELD_CANDIDATES = (
     "admin_action_taken",
 )
 ACTION_SEARCH_FILES = (
-    ROOT / "runtime/posted_cards.json",
-    ROOT / "runtime/posted_claims.json",
+    ROOT / "copyright_alert/posted_cards.json",
+    ROOT / "copyright_alert/posted_claims.json",
 )
 
 

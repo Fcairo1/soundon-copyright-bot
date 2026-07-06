@@ -24,7 +24,7 @@ single-shot scanner.
 It does NOT stop after the first qualifying post (unlike run_alert.main); it
 processes every new qualifying email within the checkpoint window.
 
-All output is written to both stdout and logs/daily_<ts>.log.
+All output is written to both stdout and copyright_alert/logs/daily_<ts>.log.
 """
 
 import json
@@ -41,7 +41,7 @@ from copyright_alert.lark_auth import request_json_with_auth_retry
 # ── Make the copyright_alert package importable & anchor relative paths ───────
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-os.chdir(ROOT)  # helpers use repo-root-relative paths like "runtime/..."
+os.chdir(ROOT)  # run_alert helpers use relative paths like "copyright_alert/..."
 
 from copyright_alert.run_alert import (  # noqa: E402
     MAILBOX,
@@ -57,6 +57,7 @@ from copyright_alert.run_alert import (  # noqa: E402
     claim_key,
     is_claim_already_posted,
     _save_posted_claim,
+    _atomic_write_json,
     build_card,
     post_card,
     patch_card_message,
@@ -71,15 +72,15 @@ from copyright_alert.dm_action_card import (  # noqa: E402
 )
 
 # ── Config ───────────────────────────────────────────────────────────────────
-CHECKPOINT_FILE = "runtime/scan_checkpoint.json"
-LAST_CARD_FILE = "runtime/last_card.json"
-LOG_DIR = "logs"
+CHECKPOINT_FILE = "copyright_alert/scan_checkpoint.json"
+LAST_CARD_FILE = "copyright_alert/last_card.json"
+LOG_DIR = "copyright_alert/logs"
 TRIAGE_MAX = 50
 ACTIVE_REGION = "BR"  # region this workflow run is configured for
 RECIPIENT_EMAIL = "filipe.cairo@bytedance.com"  # filipe.cairo — personal alert DM target (BR default)
 RECIPIENT_OPEN_ID = ""  # when set, ops DMs go to this open_id via the copyright bot
 RECIPIENT_CHAT_ID = ""  # optional confirmed DM chat_id for the ops owner
-FEISHU_IM_DIR = Path(os.environ.get("INNER_SKILLS_DIR", str(ROOT / "inner_skills"))) / "feishu-im-send"
+FEISHU_IM_DIR = ROOT / "inner_skills" / "feishu-im-send"
 ADMIN_ACTION_HEADER = "Admin Action Taken"
 STATUS_TAKEDOWN = "🔴 Confirm Takedown"
 STATUS_RESOLVED = "✅ Resolved"
@@ -96,10 +97,10 @@ ARTIST_HEADER = "Artist(s)"
 CLAIMANT_HEADER = "Claimant"
 STATUS_HEADER = "Status"
 POSTED_CLAIMS_FILES = [
-    "runtime/posted_claims.json",
-    "runtime/posted_claims_ap_direitos_br.json",
+    "copyright_alert/posted_claims.json",
+    "copyright_alert/posted_claims_ap_direitos_br.json",
 ]
-SPOTIFY_DM_STATE_FILE = "runtime/spotify_dm_sent.json"
+SPOTIFY_DM_STATE_FILE = "copyright_alert/spotify_dm_sent.json"
 REPLY_DEADLINE_CALENDAR_DAYS = 5
 
 
@@ -129,9 +130,9 @@ def configure_region(region):
     RECIPIENT_CHAT_ID = cfg.get("ops_dm_chat_id") or ""
     # BR keeps the original checkpoint path for backward compatibility.
     CHECKPOINT_FILE = (
-        "runtime/scan_checkpoint.json"
+        "copyright_alert/scan_checkpoint.json"
         if region == "BR"
-        else f"runtime/scan_checkpoint_{region}.json"
+        else f"copyright_alert/scan_checkpoint_{region}.json"
     )
     return cfg
 
@@ -192,8 +193,7 @@ def save_checkpoint(message_id):
         "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
     os.makedirs(os.path.dirname(CHECKPOINT_FILE), exist_ok=True)
-    with open(CHECKPOINT_FILE, "w", encoding="utf-8") as fh:
-        json.dump(payload, fh, ensure_ascii=False, indent=2)
+    _atomic_write_json(CHECKPOINT_FILE, payload, ensure_ascii=False, indent=2)
     log(f"  ✓ Checkpoint saved: {message_id}")
 
 
@@ -375,6 +375,12 @@ def run_scan():
             log(f"     ✅ Posted card {posted_message_id} for UPC {upc}")
         else:
             log("     ✗ Card posting failed for this candidate")
+
+    if checkpoint and not summary["stopped_at_checkpoint"] and len(messages) >= TRIAGE_MAX:
+        log(f"  🚨 WARNING: previous checkpoint {checkpoint} was NOT reached within the "
+            f"{TRIAGE_MAX}-message fetch window. More than {TRIAGE_MAX} new messages may have "
+            f"arrived since the last run; messages older than this window will be permanently "
+            f"skipped once the checkpoint advances. Consider raising TRIAGE_MAX or paginating.")
 
     save_checkpoint(new_checkpoint)
     log(f"\n  Scan summary: {json.dumps(summary, ensure_ascii=False)}")
@@ -734,8 +740,7 @@ def _load_dm_state():
 
 def _save_dm_state(state):
     try:
-        (ROOT / SPOTIFY_DM_STATE_FILE).write_text(
-            json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        _atomic_write_json(ROOT / SPOTIFY_DM_STATE_FILE, state, ensure_ascii=False, indent=2)
     except Exception as exc:
         log(f"  ⚠ Could not persist DM state: {exc!r}")
 

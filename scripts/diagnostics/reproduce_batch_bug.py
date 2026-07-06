@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 import json, os
 from pathlib import Path
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[1]
 os.chdir(ROOT)
 from copyright_alert import run_alert as ra
 
-candidates = json.loads(Path('runtime/reconstruct_generic_scan_output.json').read_text(encoding='utf-8'))
+candidates = json.loads(Path('copyright_alert/reconstruct_generic_scan_output.json').read_text(encoding='utf-8'))
 unique_upcs = []
 seen = set()
 for row in candidates:

@@ -8,7 +8,7 @@ import json, os, re, subprocess, sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[1]
 os.chdir(ROOT)
 sys.path.insert(0, str(ROOT))
 
@@ -210,7 +210,7 @@ def main():
         "posted": posted,
         "skipped": skipped,
     }
-    Path("runtime/backfill_after_anchor_result.json").write_text(
+    Path("copyright_alert/backfill_after_anchor_result.json").write_text(
         json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
     print("__RESULT__")
     print(json.dumps(out, ensure_ascii=False, indent=2))

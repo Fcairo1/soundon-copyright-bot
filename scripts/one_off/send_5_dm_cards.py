@@ -7,7 +7,7 @@ from __future__ import annotations
 import json, sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from copyright_alert import run_alert as ra
@@ -26,7 +26,7 @@ TARGETS = [
 def load_posted_claims():
     merged = {}
     for fname in ("posted_claims.json", "posted_claims_ap_direitos_br.json"):
-        p = ROOT / "runtime" / fname
+        p = ROOT / "copyright_alert" / fname
         if not p.exists():
             continue
         try:

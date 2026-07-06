@@ -3,9 +3,9 @@ import json
 from pathlib import Path
 import os
 from datetime import datetime
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[1]
 os.chdir(ROOT)
-from scripts.backfill import backfill_ap_direitos_br as br
+from copyright_alert import backfill_ap_direitos_br as br
 from copyright_alert import run_alert as ra
 
 parsed_candidates = []

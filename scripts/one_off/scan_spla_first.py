@@ -13,7 +13,7 @@ from datetime import datetime, date
 from pathlib import Path
 
 # Make sure the package is importable when run as a script.
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from copyright_alert import bot_runtime, run_alert as ra, daily_workflow as dw
 from copyright_alert.dm_action_card import send_dm_action_card
@@ -21,7 +21,7 @@ from copyright_alert.region_guard import assert_region_allowed
 
 REGION = "SPLA"
 TRIAGE_MAX = 400                # << go much further back than the prior 50
-OUTPUT = Path(f"runtime/spla_scan_result_{int(datetime.utcnow().timestamp())}.json")
+OUTPUT = Path(f"copyright_alert/spla_scan_result_{int(datetime.utcnow().timestamp())}.json")
 
 
 def main():
@@ -95,7 +95,7 @@ def main():
         assert_region_allowed(ra.TARGET_CHAT_ID, ar, upc=upc, context="SPLA group post")
         # Post the group card
         card = ra.build_card(ef, ar)
-        with open("runtime/last_card.json", "w") as f:
+        with open("copyright_alert/last_card.json", "w") as f:
             json.dump(card, f, indent=2)
         ok, posted_msg_id = ra.post_card(card)
         print(f"  post_card -> ok={ok} msg_id={posted_msg_id}")

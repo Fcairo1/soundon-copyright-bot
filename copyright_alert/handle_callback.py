@@ -165,7 +165,7 @@ def load_payload():
 
 
 def load_last_card():
-    return json.loads(Path("runtime/last_card.json").read_text())
+    return json.loads(Path("copyright_alert/last_card.json").read_text())
 
 
 def load_card_for_message(message_id):
@@ -214,7 +214,7 @@ def update_card_state(card, status, message_id, operator_name=None, operator_id=
 
 def patch_message(message_id, card):
     content_json = json.dumps(card, ensure_ascii=False)
-    Path("runtime/last_patch_card.json").write_text(content_json, encoding="utf-8")
+    Path("copyright_alert/last_patch_card.json").write_text(content_json, encoding="utf-8")
     print("PATCH card JSON:", content_json, flush=True)
 
     def make_request():
@@ -405,7 +405,7 @@ def main():
         raise SystemExit("Missing status or message_id in payload")
 
     card = update_card_state(load_card_for_message(message_id), status, message_id)
-    Path("runtime/last_card_callback.json").write_text(json.dumps(card, ensure_ascii=False, indent=2))
+    Path("copyright_alert/last_card_callback.json").write_text(json.dumps(card, ensure_ascii=False, indent=2))
 
     patched = patch_message(message_id, card)
     sheet_ok = update_sheet_status(message_id, status, upc=payload.get("upc"), isrc=payload.get("isrc"), region=payload.get("region"), tracker_row=payload.get("tracker_row"))

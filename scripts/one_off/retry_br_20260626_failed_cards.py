@@ -6,14 +6,14 @@ import json
 import os
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[1]
 os.chdir(ROOT)
 
 from copyright_alert import run_alert as ra  # noqa: E402
 
 # Diagnosis showed the current BR production group named "AP Direitos BR" is this chat.
 TARGET_CHAT_ID = "oc_fd2e43d6451f8d87adb4cd4ceefa7816"
-POSTED_FILE = "runtime/posted_claims_ap_direitos_br.json"
+POSTED_FILE = "copyright_alert/posted_claims_ap_direitos_br.json"
 TARGETS = [
     {"upc": "5063963044431", "message_id": "YXJ4VDZMNUlhSS9tamNSR0xxUGsxZVZvcFowPQ==", "date": "2026-06-25T20:58:21Z"},
     {"upc": "5063965032139", "message_id": "Nzlnd09OZEh3SXV0NXNoU1QzYTBIRlVIaXFjPQ==", "date": "2026-06-26T07:23:41Z"},

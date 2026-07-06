@@ -54,7 +54,7 @@ from copyright_alert.lark_mail_draft import (  # noqa: E402
     create_reply_draft,
 )
 
-LOG_DIR = ROOT / "logs"
+LOG_DIR = ROOT / "copyright_alert" / "logs"
 LOG_FILE = LOG_DIR / "spotify_reply.log"
 
 # ── Pre-made templates (professional English tone) ───────────────────────────

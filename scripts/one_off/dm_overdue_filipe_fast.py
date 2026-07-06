@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import json, os, sys, urllib.request
 from pathlib import Path
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT)); os.chdir(ROOT)
 from copyright_alert.tag_managers import read_sheet_values, today_brt, _parse_date_received, _add_workdays, _net_workdays, _format_sla_suffix, SLA_WORKDAYS, ADMIN_UPC_URL_TEMPLATE
 from copyright_alert.run_alert import _get_bot_access_token, TRACKER_SHEET_URL

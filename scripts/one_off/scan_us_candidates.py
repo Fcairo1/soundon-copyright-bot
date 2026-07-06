@@ -8,7 +8,7 @@ from copyright_alert import run_alert as ra
 US_REGION_CODES = {"US", "CA", "AU", "NZ"}
 TARGET_AFTER_UPC = "072991770156"
 MAX_MESSAGES = 220
-OUTPUT = Path("runtime/us_candidate_scan.json")
+OUTPUT = Path("copyright_alert/us_candidate_scan.json")
 
 
 def qualifies_us_quality(row):

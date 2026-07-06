@@ -18,6 +18,7 @@ import os
 import ast
 import csv
 import io
+import tempfile
 import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -34,7 +35,7 @@ def _load_local_lark_secret():
         if value:
             return value
 
-    here = Path(__file__).resolve().parents[1]
+    here = Path(__file__).resolve().parent
     for candidate in (here / ".env", here / "secrets.json"):
         if not candidate.exists():
             continue
@@ -74,15 +75,12 @@ CURRENT_REGION = "BR"
 QUALIFY_COUNTRIES = {"BR"}
 AEOLUS_DATASET = "374690"
 AEOLUS_BASE    = "https://aeolus-va.tiktok-row.net"
-AEOLUS_SCRIPT  = os.environ.get("AEOLUS_SCRIPT") or os.path.join(
-    os.environ.get("INNER_SKILLS_DIR", "inner_skills"),
-    "aeolus-platform-analysis", "scripts", "dataset_sql_query.py",
-)
+AEOLUS_SCRIPT  = "inner_skills/aeolus-platform-analysis/scripts/dataset_sql_query.py"
 # Engagement dataset: [AOP] dm_distribution_song_country_df (sid=1576005)
 # Source: https://aeolus-va.tiktok-row.net/pages/dataQuery?appId=1301&id=2414694441&isDefault=1&rid=5377337&sid=1576005
 ENGAGEMENT_DATASET = "1576005"
 ENGAGEMENT_PARTITION = "2026-06-14"
-POSTED_CLAIMS_FILE = "runtime/posted_claims.json"
+POSTED_CLAIMS_FILE = "copyright_alert/posted_claims.json"
 TRIAGE_QUERY = "Infringement Claim"
 TRIAGE_MAX = 50
 EXCLUDED_MENTIONS = {
@@ -131,6 +129,31 @@ def parse_lark_annotated_csv(raw):
     if rows and not row_numbers:
         row_numbers = list(range(1, len(rows) + 1))
     return parsed, rows, row_numbers
+
+
+def _atomic_write_json(path, data, *, ensure_ascii=False, indent=2):
+    """Write JSON to `path` atomically (temp file in same dir + os.replace).
+
+    Prevents truncated/corrupted state files if the process crashes mid-write
+    or if two writers race — readers always see either the old or the new file,
+    never a partial one. os.replace is atomic on the same filesystem.
+    """
+    path = os.fspath(path)
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(prefix=".tmp-", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=ensure_ascii, indent=indent)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def _send_interactive_via_lark_cli(*, receive_id_type: str, receive_id: str, content: str, timeout: int = 60):
@@ -261,7 +284,15 @@ def labeled_value(text, *labels, default="N/A"):
     return value if value else default
 
 def fetch_email(msg_id):
-    out = run(f"lark-cli mail +message --mailbox '{MAILBOX}' --message-id '{msg_id}' --html=false --format json")
+    cmd = [
+        "lark-cli", "mail", "+message",
+        "--mailbox", MAILBOX,
+        "--message-id", str(msg_id),
+        "--html=false",
+        "--format", "json",
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    out = (proc.stdout or "").strip()
     parsed = parse_lark_json(out)
     if not parsed:
         print(f"  ✗ Failed to parse lark-cli output. Raw (first 300): {out[:300]}")
@@ -670,7 +701,13 @@ def _friendly_aeolus_rows(parsed):
         old_keys = list(row.keys())
         friendly_row = {}
         for i, friendly in enumerate(AEOLUS_FRIENDLY_FIELDS):
-            if i < len(old_keys):
+            # Prefer matching by column name (the SQL SELECT already aliases
+            # columns to these friendly names). Positional mapping is only a
+            # fallback so a change in column order can't silently map values to
+            # the wrong fields (e.g. region ending up in album_title).
+            if friendly in row:
+                friendly_row[friendly] = row[friendly]
+            elif i < len(old_keys):
                 friendly_row[friendly] = row[old_keys[i]]
         for k, v in row.items():
             if k not in friendly_row and k not in AEOLUS_FRIENDLY_FIELDS:
@@ -893,9 +930,7 @@ def _save_posted_claim(claim_key, record):
         if "tracker_row" not in record:
             record = {**record, "tracker_row": None}
     data[claim_key] = record
-    os.makedirs(os.path.dirname(POSTED_CLAIMS_FILE), exist_ok=True)
-    with open(POSTED_CLAIMS_FILE, "w", encoding="utf-8") as fh:
-        json.dump(data, fh, ensure_ascii=False, indent=2)
+    _atomic_write_json(POSTED_CLAIMS_FILE, data, ensure_ascii=False, indent=2)
 
 
 def claim_key(ef, ar=None, subject=""):
@@ -1367,7 +1402,7 @@ def _get_bot_access_token():
 # fed back into PATCH (doing so → HTTP 400 Bad Request). To refresh an existing
 # card we therefore keep a copy of the exact card JSON we sent, keyed by the
 # message_id, and patch THAT (with the countdown badge merged in) instead.
-POSTED_CARDS_FILE = "runtime/posted_cards.json"
+POSTED_CARDS_FILE = "copyright_alert/posted_cards.json"
 
 
 def _load_posted_cards():
@@ -1385,8 +1420,7 @@ def save_posted_card(message_id, card):
     try:
         store = _load_posted_cards()
         store[message_id] = card
-        with open(POSTED_CARDS_FILE, "w", encoding="utf-8") as f:
-            json.dump(store, f, ensure_ascii=False)
+        _atomic_write_json(POSTED_CARDS_FILE, store, ensure_ascii=False, indent=None)
     except Exception as e:
         print(f"  ⚠ Could not persist posted card {message_id}: {e}")
 
@@ -1499,9 +1533,9 @@ def main():
         card = build_card(ef, ar)
 
         # Save card for inspection
-        with open("runtime/last_card.json", "w") as f:
+        with open("copyright_alert/last_card.json", "w") as f:
             json.dump(card, f, indent=2)
-        print("  Card saved to runtime/last_card.json")
+        print("  Card saved to copyright_alert/last_card.json")
 
         success, posted_message_id = post_card(card, ar, upc=ef.get("upc"), context=f"{CURRENT_REGION} run_alert group post")
         if success and posted_message_id:
@@ -1512,7 +1546,7 @@ def main():
                 source_email_message_id=msg_id,
                 region=CURRENT_REGION,
             )
-            with open("runtime/last_card.json", "w") as f:
+            with open("copyright_alert/last_card.json", "w") as f:
                 json.dump(card, f, indent=2)
             patch_card_message(posted_message_id, card)
             tracker_row = append_tracker_row(ef, ar, posted_message_id, status="")
@@ -1546,5 +1580,4 @@ def main():
     sys.exit(1)
 
 if __name__ == "__main__":
-    os.chdir(os.path.dirname(os.path.abspath(__file__)) + "/..")
     main()

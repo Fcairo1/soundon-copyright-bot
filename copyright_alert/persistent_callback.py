@@ -59,7 +59,7 @@ from copyright_alert.run_alert import BOT_APP_ID, BOT_SECRET, load_posted_card
 
 
 COMMAND_PREFIXES = ("/status", "/scan", "/pending", "/claims", "/restart", "/help", "/exclude", "/include", "/exceptions", "/unassigned", "/health", "/healthcheck", "/fix", "/refresh", "/card")
-P2P_CHAT_CACHE_FILE = ROOT / "runtime" / "bot_p2p_chats.json"
+P2P_CHAT_CACHE_FILE = ROOT / "copyright_alert" / "bot_p2p_chats.json"
 P2P_CHAT_CACHE_LOCK = threading.Lock()
 
 # ── Conversational dispute state ─────────────────────────────────────────────
@@ -140,7 +140,8 @@ def _record_bot_p2p_chat(chat_id, operator_open_id, payload=None):
             current.setdefault("by_open_id", {})[operator_open_id] = record
         current.setdefault("by_chat_id", {})[chat_id] = record
         P2P_CHAT_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        P2P_CHAT_CACHE_FILE.write_text(json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8")
+        from copyright_alert.run_alert import _atomic_write_json  # lazy: avoid import cycle
+        _atomic_write_json(P2P_CHAT_CACHE_FILE, current, ensure_ascii=False, indent=2)
     print("bot_p2p_chat_entered recorded:", json.dumps(record, ensure_ascii=False), flush=True)
 
 
@@ -183,9 +184,9 @@ def _process_status_update(status, message_id, operator_name=None, operator_id=N
         _refresh_callback_credentials("callback tracker status write-back")
         card = load_posted_card(message_id)
         if not card:
-            card = json.loads((ROOT / "runtime/last_card.json").read_text())
+            card = json.loads((ROOT / "copyright_alert/last_card.json").read_text())
         card = update_card_state(card, status, message_id, operator_name=operator_name, operator_id=operator_id, timestamp=timestamp)
-        (ROOT / "runtime/last_card_callback.json").write_text(json.dumps(card, ensure_ascii=False, indent=2))
+        (ROOT / "copyright_alert/last_card_callback.json").write_text(json.dumps(card, ensure_ascii=False, indent=2))
         patched = patch_message(message_id, card)
         sheet_ok = update_sheet_status(message_id, status, upc=upc, isrc=isrc, region=region, tracker_row=tracker_row)
         print(json.dumps({"patched": patched, "sheet_updated": sheet_ok, "status": status, "message_id": message_id, "operator": operator_name or operator_id, "timestamp": timestamp, "region": region, "tracker_row": tracker_row}, ensure_ascii=False), flush=True)
