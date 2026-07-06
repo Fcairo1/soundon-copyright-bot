@@ -987,21 +987,18 @@ def _sync_replacement_message_id(old_message_id, new_message_id, card, *, row_nu
 def _replace_card_message_via_lark_cli(old_message_id, card, *, row_num=None, idx=None):
     """Fallback for countdown refresh when PATCH is unavailable in cron contexts.
 
-    We resend the refreshed card to the alert group using bot identity via
-    lark-cli, then repoint tracker/persistence to the new message ID so future
-    callbacks and refreshes follow the replacement message.
+    Despite the historical function name, use the repo-local bot credentials
+    first. The AIME lark-cli bot identity may resolve to a different app than
+    the copyright bot, which can produce false ``230002`` (bot not in chat)
+    errors for regional groups such as SPLA even when the production bot is in
+    the group. ``run_alert.post_card`` already uses the production bot first and
+    only falls back to lark-cli if local credentials are unavailable.
     """
     from copyright_alert import run_alert as ra
 
-    payload = ra._send_interactive_via_lark_cli(
-        receive_id_type="chat_id",
-        receive_id=TARGET_CHAT_ID,
-        content=json.dumps(card, ensure_ascii=False),
-        timeout=60,
-    )
-    new_message_id = ((payload.get("data") or {}).get("message_id")) or ""
-    if payload.get("code") != 0 or not new_message_id:
-        raise RuntimeError(f"Replacement send failed: {json.dumps(payload, ensure_ascii=False)[:1000]}")
+    ok, new_message_id = ra.post_card(card)
+    if not ok or not new_message_id:
+        raise RuntimeError(f"Replacement send failed for chat_id={TARGET_CHAT_ID}")
     _sync_replacement_message_id(old_message_id, new_message_id, card, row_num=row_num, idx=idx)
     return new_message_id
 
