@@ -276,10 +276,10 @@ def _process_spotify_reply(value, custom_message="", notify_chat_id=None, event_
                 result = {"ok": ok, "mode": mode}
             if mode == "draft":
                 # The bot only creates drafts; the operator clicks Send manually
-                # in Lark Mail. The tracker reflects "Draft" the moment the draft
-                # is created — guaranteeing the column always shows that an email
-                # action was taken.
-                mark = "Draft 📝"
+                # in Lark Mail. Since we cannot detect the later manual send event,
+                # the tracker reflects "Sent" as soon as the draft is created —
+                # our best proxy that the email action was triggered.
+                mark = "Sent ✅"
             else:
                 mark = "Failed ❌"
             status_value = f"{mark} – {reply_type} – {timestamp}"
