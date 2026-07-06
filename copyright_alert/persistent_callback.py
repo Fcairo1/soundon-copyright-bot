@@ -52,6 +52,7 @@ from copyright_alert.handle_callback import (
     update_card_state,
     update_sheet_status,
     update_sheet_email_status,
+    _parse_lark_annotated_csv,
 )
 from copyright_alert import lark_auth, spotify_reply
 from copyright_alert.run_alert import BOT_APP_ID, BOT_SECRET, load_posted_card
@@ -768,8 +769,7 @@ def _read_tracker_fresh(region: str):
         "lark-cli", "sheets", "+csv-get",
         "--url", tracker_url,
         "--sheet-id", sheet_id,
-        "--range", "A:T",
-        "--rows-json",
+        "--range", "A1:T500",
         "--max-chars", "200000",
     ]
     # Refresh AIME-injected credentials in-place before spawning lark-cli. The
@@ -780,13 +780,10 @@ def _read_tracker_fresh(region: str):
     env = os.environ.copy()
     res = subprocess.run(cmd, capture_output=True, text=True, timeout=90, env=env)
     combined = (res.stdout or "") + (res.stderr or "")
-    json_start = (res.stdout or "").find("{")
-    if res.returncode != 0 or json_start < 0:
+    parsed, rows = _parse_lark_annotated_csv(res.stdout)
+    if res.returncode != 0 or not parsed:
         raise RuntimeError(f"lark-cli sheet read failed: {combined[:500]}")
-    data = json.loads(res.stdout[json_start:])
-    rows = (data.get("data") or {}).get("rows") or []
-    cols = [chr(ord("A") + i) for i in range(20)]
-    return [[(row.get("values") or {}).get(col, "") for col in cols] for row in rows]
+    return rows
 
 
 def _handle_card_command(command_text, message_id, target_chat_id="", target_open_id="", region_hint=None):
