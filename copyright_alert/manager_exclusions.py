@@ -18,7 +18,7 @@ GLOBAL_UID = "__global__"
 
 # Hardcoded global blocklist (always applied, even if manager_exclusions.json
 # is reset). Keep entries lowercase, in `first.last` username form.
-HARDCODED_GLOBAL_EXCLUSIONS = ("diego.meleiro", "carla.figlia")
+HARDCODED_GLOBAL_EXCLUSIONS = ("diego.meleiro", "carla.figlia", "eduardo.praca")
 
 
 def _norm_uid(label_uid: str) -> str:

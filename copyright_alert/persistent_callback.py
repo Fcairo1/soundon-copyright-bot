@@ -44,6 +44,7 @@ from copyright_alert.bot_runtime import (
     unassigned_lines,
     write_pid_file,
 )
+from copyright_alert import run_alert as ra
 from copyright_alert.dm_upc_lookup import is_upc, lookup_upc
 from copyright_alert.dm_action_card import send_dm_action_card
 from copyright_alert.handle_callback import (
@@ -140,7 +141,8 @@ def _record_bot_p2p_chat(chat_id, operator_open_id, payload=None):
             current.setdefault("by_open_id", {})[operator_open_id] = record
         current.setdefault("by_chat_id", {})[chat_id] = record
         P2P_CHAT_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        P2P_CHAT_CACHE_FILE.write_text(json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8")
+        from copyright_alert.run_alert import _atomic_write_json  # lazy: avoid import cycle
+        _atomic_write_json(P2P_CHAT_CACHE_FILE, current, ensure_ascii=False, indent=2)
     print("bot_p2p_chat_entered recorded:", json.dumps(record, ensure_ascii=False), flush=True)
 
 
@@ -780,7 +782,7 @@ def _read_tracker_fresh(region: str):
     env = os.environ.copy()
     res = subprocess.run(cmd, capture_output=True, text=True, timeout=90, env=env)
     combined = (res.stdout or "") + (res.stderr or "")
-    parsed, rows = _parse_lark_annotated_csv(res.stdout)
+    parsed, rows, _ = ra.parse_lark_annotated_csv(res.stdout)
     if res.returncode != 0 or not parsed:
         raise RuntimeError(f"lark-cli sheet read failed: {combined[:500]}")
     return rows

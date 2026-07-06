@@ -283,27 +283,26 @@ def read_tracker_rows(region: str) -> Tuple[List[str], List[Dict[str, str]]]:
         cfg["sheet_id"],
         "--range",
         "A1:Q200",
-        "--rows-json",
     ]
     res = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True, timeout=90)
     if res.returncode != 0:
         raise RuntimeError((res.stdout + res.stderr)[:800])
-    parsed = ra.parse_lark_json(res.stdout)
+    parsed, rows, row_numbers = ra.parse_lark_annotated_csv(res.stdout)
     if not parsed:
         raise RuntimeError("Failed to parse tracker sheet output")
-    data = parsed.get("data") or {}
-    rows = data.get("rows") or []
     if not rows:
         return [], []
-    header_values = rows[0].get("values") or {}
-    ordered_cols = sorted(header_values.keys())
-    headers = [str(header_values.get(col) or "").strip() for col in ordered_cols]
+    headers = [str(value or "").strip() for value in rows[0]]
     records = []
-    for row in rows[1:]:
-        values = row.get("values") or {}
-        record = {headers[idx]: str(values.get(col) or "").strip() for idx, col in enumerate(ordered_cols) if idx < len(headers) and headers[idx]}
+    for idx, row in enumerate(rows[1:], start=1):
+        padded = list(row) + [""] * max(0, len(headers) - len(row))
+        record = {
+            headers[col_idx]: str(padded[col_idx] or "").strip()
+            for col_idx in range(len(headers))
+            if headers[col_idx]
+        }
         if any(v for v in record.values()) and qualifies_region(record, region):
-            record["_row_number"] = row.get("row_number")
+            record["_row_number"] = row_numbers[idx] if idx < len(row_numbers) else idx + 1
             records.append(record)
     return headers, records
 

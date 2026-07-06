@@ -25,6 +25,7 @@ from pathlib import Path
 
 from copyright_alert.lark_auth import request_json_with_auth_retry
 from copyright_alert.run_alert import BOT_APP_ID, BOT_SECRET, build_card, _get_bot_access_token, load_posted_card
+from copyright_alert import run_alert as ra
 
 SHEET_URL = "https://bytedance.sg.larkoffice.com/sheets/HMQLsGgymhdIQ3tSbNNlk3m1gKd"
 SHEET_ID = "c02dad"
@@ -148,7 +149,7 @@ def _read_sheet_values_cli(sheet_url, sheet_id):
             print(f"Sheet read user-credential refresh skipped before lark-cli attempt {attempt}: {refresh_exc!r}", flush=True)
         res = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
         combined = (res.stdout or "") + (res.stderr or "")
-        parsed, rows = _parse_lark_annotated_csv(res.stdout)
+        parsed, rows, _ = ra.parse_lark_annotated_csv(res.stdout)
         if res.returncode == 0 and parsed:
             return rows
         last_error = combined[:2000]
