@@ -29,13 +29,15 @@ from copyright_alert import run_alert as ra
 
 SHEET_URL = "https://bytedance.sg.larkoffice.com/sheets/HMQLsGgymhdIQ3tSbNNlk3m1gKd"
 SHEET_ID = "c02dad"
-STATUS_COL = "M"
+# Tracker schema: Status = column N, Email Status = column T. These are only
+# used as a last-resort fallback when the header lookup fails (see B1).
+STATUS_COL = "N"
 MESSAGE_ID_COL = "Lark Message ID"
 STATUS_COL_NAME = "Status"
 UPC_COL_NAME = "UPC"
 ISRC_COL_NAME = "ISRC"
 EMAIL_STATUS_COL_NAME = "Email Status"
-EMAIL_STATUS_COL = "S"
+EMAIL_STATUS_COL = "T"
 ADMIN_ACTION_COL_NAME = "Bot Action"
 ADMIN_ACTION_COL = "N"
 
@@ -194,8 +196,76 @@ def load_last_card():
     return json.loads(Path("copyright_alert/last_card.json").read_text())
 
 
-def load_card_for_message(message_id):
-    return load_posted_card(message_id) or load_last_card()
+# Maps the short keys expected by daily_workflow._reconstruct_card_from_row to
+# the tracker header names, so we can rebuild a patchable card from the row.
+_TRACKER_RECONSTRUCT_HEADER_KEYS = {
+    "status": "Status",
+    "date": "Date Received",
+    "upc": "UPC",
+    "isrc": "ISRC",
+    "title": "Title",
+    "artist": "Artist(s)",
+    "claimant": "Claimant",
+    "email_source": "Email Source",
+    "dsp": "DSP",
+    "uid": "UID",
+}
+
+
+def reconstruct_card_from_tracker(message_id, region=None, upc=None, isrc=None, tracker_row=None):
+    """Rebuild a patchable card from the tracker row for a given claim.
+
+    Used as a fallback when posted_cards.json has no persisted copy of the
+    clicked card. This is strongly preferred over patching last_card.json —
+    that file is the most-recently-posted card for some *other* claim and would
+    silently replace the clicked card's content with the wrong data (B8).
+
+    Returns the reconstructed card dict, or None if the row cannot be located
+    or reconstruction fails.
+    """
+    try:
+        values = read_sheet_values(region=region)
+    except Exception as exc:
+        print(f"reconstruct_card_from_tracker: could not read sheet: {exc!r}", flush=True)
+        return None
+    if not values:
+        return None
+    row_num, _match_reason, header_index = _find_tracker_row(
+        values, message_id=message_id, upc=upc, isrc=isrc, tracker_row=tracker_row,
+    )
+    if not row_num:
+        print(f"reconstruct_card_from_tracker: no tracker row for message_id={message_id}", flush=True)
+        return None
+    row = values[row_num - 1]
+    idx = {short: header_index.get(header) for short, header in _TRACKER_RECONSTRUCT_HEADER_KEYS.items()}
+    try:
+        from copyright_alert.daily_workflow import _reconstruct_card_from_row
+        return _reconstruct_card_from_row(row, idx, message_id or "")
+    except Exception as exc:
+        print(f"reconstruct_card_from_tracker: rebuild failed: {exc!r}", flush=True)
+        return None
+
+
+def load_card_for_message(message_id, region=None, upc=None, isrc=None, tracker_row=None):
+    """Load the exact persisted card for a message, or rebuild it from the tracker.
+
+    Never falls back to last_card.json: that is a different claim's card and
+    patching it corrupts the clicked card (B8). If neither the persisted card
+    nor a tracker-row reconstruction is available, raise a clear error so the
+    caller can surface a toast instead of silently patching wrong data.
+    """
+    card = load_posted_card(message_id)
+    if card:
+        return card
+    card = reconstruct_card_from_tracker(
+        message_id, region=region, upc=upc, isrc=isrc, tracker_row=tracker_row
+    )
+    if card:
+        return card
+    raise RuntimeError(
+        f"No persisted card for message {message_id} and tracker reconstruction failed; "
+        f"refusing to patch an unrelated last_card.json."
+    )
 
 
 def _button_type_for_status(status):
@@ -395,7 +465,13 @@ def update_sheet_status(message_id, status, upc=None, isrc=None, region=None, tr
     message_idx = header_index.get(MESSAGE_ID_COL)
 
     if status_idx is None:
-        status_idx = ord(STATUS_COL) - ord("A")
+        # Do not silently write to a fixed fallback letter: if the tracker
+        # header layout changed, blindly writing to a hardcoded column can
+        # corrupt an unrelated column. Fail loudly instead (B1).
+        raise RuntimeError(
+            f"Tracker is missing the {STATUS_COL_NAME!r} column; cannot write status. "
+            f"Headers: {[_norm(v) for v in values[0]]}"
+        )
     if message_idx is None:
         print("Sheet is missing Lark Message ID column; headers:", [_norm(v) for v in values[0]])
 
@@ -432,37 +508,41 @@ def update_sheet_status(message_id, status, upc=None, isrc=None, region=None, tr
 def _find_col_letter(header_name, fallback_letter, region=None):
 
 
-    """Resolve a column letter by header name, falling back to a fixed letter."""
+    """Resolve a column letter by header name.
+
+    Prefer raising a clear error when the header lookup fails rather than
+    silently writing to a hardcoded fallback letter, which can corrupt an
+    unrelated column if the tracker layout changed (B1). The ``fallback_letter``
+    argument is retained only for signature compatibility and is no longer used
+    for a silent write.
+    """
 
 
-    try:
+    values = read_sheet_values(region=region)
 
 
-        values = read_sheet_values(region=region)
+    if values:
 
 
-        if values:
+        headers = [_norm(v) for v in values[0]]
 
 
-            headers = [_norm(v) for v in values[0]]
+        for idx, name in enumerate(headers):
 
 
-            for idx, name in enumerate(headers):
+            if name == header_name:
 
 
-                if name == header_name:
+                return _col_letter(idx)
 
+        raise RuntimeError(
+            f"Tracker is missing the {header_name!r} column; refusing to write. "
+            f"Headers: {headers}"
+        )
 
-                    return _col_letter(idx)
-
-
-    except Exception as exc:
-
-
-        print(f"_find_col_letter({header_name}) failed: {exc!r}")
-
-
-    return fallback_letter
+    raise RuntimeError(
+        f"Tracker is empty or unreadable; cannot resolve column {header_name!r}."
+    )
 
 
 
@@ -682,7 +762,17 @@ def main():
     if not status or not message_id:
         raise SystemExit("Missing status or message_id in payload")
 
-    card = update_card_state(load_card_for_message(message_id), status, message_id)
+    card = update_card_state(
+        load_card_for_message(
+            message_id,
+            region=payload.get("region"),
+            upc=payload.get("upc"),
+            isrc=payload.get("isrc"),
+            tracker_row=payload.get("tracker_row"),
+        ),
+        status,
+        message_id,
+    )
     Path("copyright_alert/last_card_callback.json").write_text(json.dumps(card, ensure_ascii=False, indent=2))
 
     patched = patch_message(message_id, card)

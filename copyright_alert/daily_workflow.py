@@ -58,6 +58,9 @@ from copyright_alert.run_alert import (  # noqa: E402
     is_claim_already_posted,
     _save_posted_claim,
     _atomic_write_json,
+    _load_posted_claims,
+    POSTED_CLAIMS_FILE,
+    save_posted_card,
     build_card,
     post_card,
     patch_card_message,
@@ -101,7 +104,9 @@ POSTED_CLAIMS_FILES = [
     "copyright_alert/posted_claims_ap_direitos_br.json",
 ]
 SPOTIFY_DM_STATE_FILE = "copyright_alert/spotify_dm_sent.json"
-REPLY_DEADLINE_CALENDAR_DAYS = 5
+# C1: the reply deadline is unified to 5 BUSINESS days in BRT. The single source
+# of truth lives in tag_managers; do not reintroduce a local calendar-day value.
+from copyright_alert.tag_managers import business_days_remaining_brt, REPLY_DEADLINE_WORKDAYS  # noqa: E402
 
 
 # ── Region configuration ─────────────────────────────────────────────────────
@@ -185,16 +190,55 @@ def load_checkpoint():
         return None
 
 
-def save_checkpoint(message_id):
-    if not message_id:
+def load_failed_message_ids():
+    """Return the persisted retry list of previously-failed messages.
+
+    Each entry is a dict with at least ``message_id`` plus ``subject``/``date``
+    hints so the next run can re-process it before touching new mail (B4).
+    """
+    if not os.path.exists(CHECKPOINT_FILE):
+        return []
+    try:
+        with open(CHECKPOINT_FILE, encoding="utf-8") as fh:
+            data = json.load(fh)
+        failed = (data or {}).get("failed_message_ids") or []
+        normalized = []
+        for item in failed:
+            if isinstance(item, dict) and item.get("message_id"):
+                normalized.append({
+                    "message_id": item.get("message_id"),
+                    "subject": item.get("subject", ""),
+                    "date": item.get("date", ""),
+                })
+            elif isinstance(item, str) and item:
+                normalized.append({"message_id": item, "subject": "", "date": ""})
+        return normalized
+    except Exception as e:
+        log(f"  ⚠ Could not read failed_message_ids from checkpoint: {e!r}")
+        return []
+
+
+def save_checkpoint(message_id, failed_message_ids=None):
+    """Persist the incremental high-water mark and the failed-retry list.
+
+    ``failed_message_ids`` must be the *current* full retry list (a list of
+    dicts). It is always written so that messages which succeeded on retry are
+    dropped and newly-failed messages are added. Passing ``None`` preserves the
+    previously stored list (used by callers that only advance the high-water
+    mark and do not track failures).
+    """
+    if not message_id and failed_message_ids is None:
         return
+    if failed_message_ids is None:
+        failed_message_ids = load_failed_message_ids()
     payload = {
         "last_message_id": message_id,
+        "failed_message_ids": failed_message_ids or [],
         "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
     os.makedirs(os.path.dirname(CHECKPOINT_FILE), exist_ok=True)
     _atomic_write_json(CHECKPOINT_FILE, payload, ensure_ascii=False, indent=2)
-    log(f"  ✓ Checkpoint saved: {message_id}")
+    log(f"  ✓ Checkpoint saved: {message_id} (retry list: {len(failed_message_ids or [])})")
 
 
 # ── Mail fetching ────────────────────────────────────────────────────────────
@@ -231,6 +275,50 @@ def _prefilter_skip_reason(subject, thread_id, seen_threads):
     return None
 
 
+def _parse_candidate(msg_id, subject, date, thread_id, seen_threads, summary):
+    """Parse a single inbox message into a scan candidate.
+
+    Returns a tuple ``(kind, info)`` where ``kind`` is one of:
+      - ``"candidate"``: ``info`` is the candidate dict ready for Aeolus/posting.
+      - ``"skip"``: intentionally skipped (pre-filter / no identifier). ``info``
+        is a short reason string. The checkpoint may safely advance past it.
+      - ``"failed"``: transient failure (e.g. could not fetch body). ``info`` is
+        a reason string. The caller must add it to the retry list (B4).
+    """
+    reason = _prefilter_skip_reason(subject, thread_id, seen_threads)
+    if reason:
+        log(f"  • SKIP ({reason}): {subject[:60]}")
+        summary["skipped_prefilter"] += 1
+        return ("skip", reason)
+    seen_threads.add(thread_id)
+
+    summary["examined"] += 1
+    log(f"\n  ── Parsing candidate: {date} | {subject[:70]}")
+    log(f"     message_id: {msg_id}")
+
+    body, meta = fetch_email(msg_id)
+    if not body:
+        log("     ✗ Could not fetch body — will retry next run")
+        return ("failed", "fetch body failed")
+
+    ef = extract_fields(body, subject, meta)
+    upc = str(ef.get("upc", "") or "").strip()
+    isrc = ef.get("isrc", "")
+    log(f"     UPC={upc or 'N/A'} ISRC={isrc}")
+
+    if not upc or upc == "N/A":
+        log("     ✗ No UPC, skipping")
+        summary["skipped_no_identifier"] += 1
+        return ("skip", "no identifier")
+
+    return ("candidate", {
+        "message_id": msg_id,
+        "subject": subject,
+        "date": date,
+        "ef": ef,
+    })
+
+
 # ── PART 1A — incremental scan + post ────────────────────────────────────────
 def run_scan():
     section("PART 1A — Incremental inbox scan + post cards")
@@ -246,18 +334,47 @@ def run_scan():
         "skipped_no_aeolus": 0,
         "skipped_no_identifier": 0,
         "skipped_prefilter": 0,
+        "retried_previous_failures": 0,
+        "failed_pending_retry": 0,
         "stopped_at_checkpoint": False,
     }
-    if not messages:
-        log("  ⚠ No emails fetched; nothing to scan.")
-        return summary
 
     checkpoint = load_checkpoint()
-    new_checkpoint = messages[0].get("message_id") or checkpoint
+    prev_failed = load_failed_message_ids()
+
+    if not messages and not prev_failed:
+        log("  ⚠ No emails fetched and no pending retries; nothing to scan.")
+        return summary
+
+    # new_checkpoint advances the high-water mark to the newest fetched message.
+    # Messages that fail this run are NOT lost: they are persisted to the
+    # failed_message_ids retry list and re-processed at the start of next run.
+    new_checkpoint = (messages[0].get("message_id") if messages else None) or checkpoint
     log(f"  Previous checkpoint: {checkpoint or '(none — first run, will process all fetched)'}")
 
     seen_threads = set()
     candidates = []
+    # message_id -> {message_id, subject, date} for messages that must be retried.
+    failed_entries = {}
+
+    # ── Phase 0 — retry previously-failed messages BEFORE new mail (B4) ──────
+    if prev_failed:
+        summary["retried_previous_failures"] = len(prev_failed)
+        log(f"  ↻ Retrying {len(prev_failed)} previously-failed message(s) before new mail …")
+    for item in prev_failed:
+        rid = item.get("message_id")
+        if not rid:
+            continue
+        r_subject = item.get("subject", "")
+        r_date = item.get("date", "")
+        kind, info = _parse_candidate(rid, r_subject, r_date, rid, seen_threads, summary)
+        if kind == "candidate":
+            candidates.append(info)
+        elif kind == "failed":
+            failed_entries[rid] = {"message_id": rid, "subject": r_subject, "date": r_date}
+        # "skip" ⇒ intentionally resolved; drop from the retry list.
+
+    # ── Phase 1 — scan new messages up to the checkpoint ─────────────────────
     for m in messages:
         msg_id = m.get("message_id", "")
         subject = m.get("subject", "")
@@ -272,38 +389,11 @@ def run_scan():
         if not msg_id:
             continue
 
-        reason = _prefilter_skip_reason(subject, thread_id, seen_threads)
-        if reason:
-            log(f"  • SKIP ({reason}): {subject[:60]}")
-            summary["skipped_prefilter"] += 1
-            continue
-        seen_threads.add(thread_id)
-
-        summary["examined"] += 1
-        log(f"\n  ── Parsing candidate: {date} | {subject[:70]}")
-        log(f"     message_id: {msg_id}")
-
-        body, meta = fetch_email(msg_id)
-        if not body:
-            log("     ✗ Could not fetch body, skipping")
-            continue
-
-        ef = extract_fields(body, subject, meta)
-        upc = str(ef.get("upc", "") or "").strip()
-        isrc = ef.get("isrc", "")
-        log(f"     UPC={upc or 'N/A'} ISRC={isrc}")
-
-        if not upc or upc == "N/A":
-            log("     ✗ No UPC, skipping")
-            summary["skipped_no_identifier"] += 1
-            continue
-
-        candidates.append({
-            "message_id": msg_id,
-            "subject": subject,
-            "date": date,
-            "ef": ef,
-        })
+        kind, info = _parse_candidate(msg_id, subject, date, thread_id, seen_threads, summary)
+        if kind == "candidate":
+            candidates.append(info)
+        elif kind == "failed":
+            failed_entries[msg_id] = {"message_id": msg_id, "subject": subject, "date": date}
 
     summary["parsed_candidates"] = len(candidates)
     aeolus_by_upc = batch_query_aeolus_by_upc([c["ef"].get("upc") for c in candidates])
@@ -318,8 +408,9 @@ def run_scan():
         ar = aeolus_by_upc.get(upc) or {}
 
         if not ar:
-            log(f"     ✗ No Aeolus data for UPC {upc}, skipping")
+            log(f"     ✗ No Aeolus data for UPC {upc} — will retry next run")
             summary["skipped_no_aeolus"] += 1
+            failed_entries[msg_id] = {"message_id": msg_id, "subject": subject, "date": c.get("date", "")}
             continue
 
         if (not ef.get("isrc") or ef.get("isrc") == "N/A") and ar.get("isrc"):
@@ -327,12 +418,14 @@ def run_scan():
 
         if not qualifies(ar):
             summary["skipped_not_qualifying"] += 1
+            failed_entries.pop(msg_id, None)
             continue
 
         dup_key = claim_key(ef, ar, subject)
         if is_claim_already_posted(dup_key):
             log(f"     ✗ Duplicate already posted: {dup_key}")
             summary["skipped_duplicate"] += 1
+            failed_entries.pop(msg_id, None)
             continue
 
         log(f"     ✓ Qualifies & new — posting card for UPC {upc} …")
@@ -372,9 +465,11 @@ def run_scan():
                 "chat_id": TARGET_CHAT_ID,
             })
             summary["posted"] += 1
+            failed_entries.pop(msg_id, None)
             log(f"     ✅ Posted card {posted_message_id} for UPC {upc}")
         else:
-            log("     ✗ Card posting failed for this candidate")
+            log("     ✗ Card posting failed for this candidate — will retry next run")
+            failed_entries[msg_id] = {"message_id": msg_id, "subject": subject, "date": c.get("date", "")}
 
     if checkpoint and not summary["stopped_at_checkpoint"] and len(messages) >= TRIAGE_MAX:
         log(f"  🚨 WARNING: previous checkpoint {checkpoint} was NOT reached within the "
@@ -382,7 +477,9 @@ def run_scan():
             f"arrived since the last run; messages older than this window will be permanently "
             f"skipped once the checkpoint advances. Consider raising TRIAGE_MAX or paginating.")
 
-    save_checkpoint(new_checkpoint)
+    failed_list = list(failed_entries.values())
+    summary["failed_pending_retry"] = len(failed_list)
+    save_checkpoint(new_checkpoint, failed_message_ids=failed_list)
     log(f"\n  Scan summary: {json.dumps(summary, ensure_ascii=False)}")
     return summary
 
@@ -976,14 +1073,14 @@ def _sync_replacement_message_id(old_message_id, new_message_id, card, *, row_nu
         log(f"  ⚠ Could not sync DM state for replacement {old_message_id} → {new_message_id}: {exc!r}")
 
     try:
-        posted = _load_json(POSTED_CLAIMS_FILE)
+        posted = _load_posted_claims()
         changed = False
         for payload in posted.values():
             if isinstance(payload, dict) and payload.get("message_id") == old_message_id:
                 payload["message_id"] = new_message_id
                 changed = True
         if changed:
-            _save_json(POSTED_CLAIMS_FILE, posted)
+            _atomic_write_json(POSTED_CLAIMS_FILE, posted, ensure_ascii=False, indent=2)
     except Exception as exc:
         log(f"  ⚠ Could not sync posted_claims for replacement {old_message_id} → {new_message_id}: {exc!r}")
 
@@ -1059,7 +1156,7 @@ def countdown_refresh(values):
         detected = parse_detected_date(_cell(row, idx["date"]))
         if detected is None:
             continue
-        days_remaining = REPLY_DEADLINE_CALENDAR_DAYS - (today - detected).days
+        days_remaining = business_days_remaining_brt(detected)
         attempted += 1
         # Prefer the exact persisted card (lossless). The GET messages API only
         # returns Lark's rendered post-format, which is NOT patchable and was the

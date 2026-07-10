@@ -63,7 +63,7 @@ def send_dm_post(email, title, content_lines):
 
 def main():
     values = read_sheet_values("A:Z")
-    managers, pending_rows = collect_pending(values)
+    managers, pending_rows, _ = collect_pending(values)
     
     today = today_brt()
     overdue_cases = []

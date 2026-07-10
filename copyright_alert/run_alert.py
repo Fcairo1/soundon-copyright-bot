@@ -80,7 +80,11 @@ AEOLUS_SCRIPT  = "inner_skills/aeolus-platform-analysis/scripts/dataset_sql_quer
 # Engagement dataset: [AOP] dm_distribution_song_country_df (sid=1576005)
 # Source: https://aeolus-va.tiktok-row.net/pages/dataQuery?appId=1301&id=2414694441&isDefault=1&rid=5377337&sid=1576005
 ENGAGEMENT_DATASET = "1576005"
-ENGAGEMENT_PARTITION = "2026-06-14"
+# Engagement source table (Aeolus). The partition (p_date) is resolved
+# dynamically at runtime — see _resolve_engagement_partition() (B5).
+ENGAGEMENT_TABLE = "[[AOP] dm_distribution_song_country_df]"
+# Per-process cache so a single run resolves the partition only once.
+_ENGAGEMENT_PARTITION_CACHE = None
 POSTED_CLAIMS_FILE = "copyright_alert/posted_claims.json"
 TRIAGE_QUERY = "Infringement Claim"
 TRIAGE_MAX = 50
@@ -667,6 +671,7 @@ AEOLUS_FRIENDLY_FIELDS = [
     "display_artist",
     "bd_manager_list",
     "operation_manager_list",
+    "uid",
     "p_date",
 ]
 
@@ -743,7 +748,7 @@ def batch_query_aeolus_by_upc(upcs, chunk_size=40):
         sql = (
             "SELECT `[upc]`, `[isrc]`, `[album_title]`, `[user_region]`, "
             "`[source_type_name]`, `[User Tier]`, `[display_artist]`, "
-            "`[bd_manager_list]`, `[operation_manager_list]`, `[p_date]` "
+            "`[bd_manager_list]`, `[operation_manager_list]`, `[user_id]` AS uid, `[p_date]` "
             "FROM `[[AOP] Song Dimension]` "
             f"WHERE `[upc]` IN ({in_list}) AND `[p_date]` >= '{recent_cutoff}' "
             "ORDER BY `[p_date]` DESC"
@@ -764,6 +769,46 @@ def batch_query_aeolus_by_upc(upcs, chunk_size=40):
 
     print(f"  ✓ Aeolus batch rows kept: {len(results)}/{len(unique_upcs)} unique UPC(s)")
     return results
+
+
+def _resolve_engagement_partition(force=False):
+    """Resolve the engagement dataset partition (p_date) dynamically.
+
+    Strategy (B5):
+      1. Query ``SELECT max(p_date)`` from the engagement table so we always
+         align to the latest materialized partition.
+      2. If that fails (timeout / parse error / empty), fall back to
+         ``today - 2 days`` in ``YYYY-MM-DD`` format, which matches the typical
+         data-landing lag for this table.
+
+    The resolved value is cached per-process and the chosen partition is logged.
+    """
+    global _ENGAGEMENT_PARTITION_CACHE
+    if _ENGAGEMENT_PARTITION_CACHE and not force:
+        return _ENGAGEMENT_PARTITION_CACHE
+
+    fallback = (datetime.utcnow() - timedelta(days=2)).strftime("%Y-%m-%d")
+    partition = None
+    try:
+        sql = f"SELECT max(`[p_date]`) AS max_p_date FROM `{ENGAGEMENT_TABLE}`"
+        parsed = _run_aeolus_sql(sql, timeout=120, dataset_id=ENGAGEMENT_DATASET)
+        rows = _aeolus_rows_to_dict(parsed) if parsed else []
+        if rows:
+            raw = rows[0].get("max_p_date")
+            if raw not in (None, ""):
+                # Normalize to YYYY-MM-DD (values may arrive as date or datetime).
+                partition = str(raw).strip()[:10]
+    except Exception as e:
+        print(f"  ⚠ Could not resolve engagement partition via max(p_date): {e}")
+
+    if not partition:
+        partition = fallback
+        print(f"  ℹ Engagement partition: using fallback (today-2d) = {partition}")
+    else:
+        print(f"  ℹ Engagement partition: using max(p_date) = {partition}")
+
+    _ENGAGEMENT_PARTITION_CACHE = partition
+    return partition
 
 
 def batch_query_engagement_by_upc(upcs, chunk_size=40):
@@ -787,6 +832,8 @@ def batch_query_engagement_by_upc(upcs, chunk_size=40):
         if not unique_upcs:
             return {}
 
+        partition = _resolve_engagement_partition()
+
         total_chunks = (len(unique_upcs) + chunk_size - 1) // chunk_size
         for idx in range(0, len(unique_upcs), chunk_size):
             chunk = unique_upcs[idx:idx + chunk_size]
@@ -796,9 +843,9 @@ def batch_query_engagement_by_upc(upcs, chunk_size=40):
                 "SELECT `[album_upc]` AS upc, `[user_id]`, "
                 "SUM(`[tt_nonspam_item_vv_30d]`) AS tt_30d_vv, "
                 "SUM(`[api_sptf_play_cnt_30d]`) AS sptf_30d_str "
-                "FROM `[[AOP] dm_distribution_song_country_df]` "
+                f"FROM `{ENGAGEMENT_TABLE}` "
                 f"WHERE `[album_upc]` IN ({in_list}) "
-                f"AND `[p_date]` = '{ENGAGEMENT_PARTITION}' "
+                f"AND `[p_date]` = '{partition}' "
                 "GROUP BY `[album_upc]`, `[user_id]`"
             )
             print(f"  Engagement batch chunk {chunk_no}/{total_chunks}: querying {len(chunk)} UPC(s)")
@@ -885,7 +932,7 @@ def query_aeolus(identifier, id_type="upc"):
     sql = (
         "SELECT `[upc]`, `[isrc]`, `[album_title]`, `[user_region]`, "
         "`[source_type_name]`, `[User Tier]`, `[display_artist]`, "
-        "`[bd_manager_list]`, `[operation_manager_list]`, `[p_date]` "
+        "`[bd_manager_list]`, `[operation_manager_list]`, `[user_id]` AS uid, `[p_date]` "
         "FROM `[[AOP] Song Dimension]` "
         f"WHERE `[isrc]` = '{_aeolus_sql_quote(identifier)}' "
         f"AND `[p_date]` >= '{recent_cutoff}' "
@@ -943,8 +990,13 @@ def claim_key(ef, ar=None, subject=""):
     claim_id = first(subject or "", r"Claim\s+(\d{6,})")
     if claim_id != "N/A":
         return f"claim:{claim_id}"
-    upc = ef.get("upc") or ar.get("upc") or "N/A"
-    isrc = ef.get("isrc") or ar.get("isrc") or "N/A"
+    # ef.get("upc")/ef.get("isrc") return the string "N/A" (truthy) when the
+    # value is missing, so a plain `or` never reaches the Aeolus fallback.
+    # Use an explicit check so ar's value is used when ef has no real value (B9).
+    ef_upc = ef.get("upc")
+    upc = ef_upc if ef_upc not in (None, "", "N/A") else (ar.get("upc") or "N/A")
+    ef_isrc = ef.get("isrc")
+    isrc = ef_isrc if ef_isrc not in (None, "", "N/A") else (ar.get("isrc") or "N/A")
     claimant = (ef.get("claimant_email") or ef.get("claimant_name") or "N/A").lower()
     message = _message_preview(ef.get("claimant_message", "N/A"), limit=80).lower()
     return "|".join(["release_claim", str(upc), str(isrc), claimant, message])
@@ -1166,16 +1218,14 @@ def build_posted_group_card(
     )
 
     try:
-        from datetime import date as _date
-        from copyright_alert.daily_workflow import (
-            build_card_with_countdown,
-            REPLY_DEADLINE_CALENDAR_DAYS,
-        )
+        from copyright_alert.daily_workflow import build_card_with_countdown
         from copyright_alert.dm_action_card import parse_detected_date
+        from copyright_alert.tag_managers import business_days_remaining_brt
 
         detected = parse_detected_date(ef.get("date_received", ""))
         if detected is not None:
-            days_remaining = REPLY_DEADLINE_CALENDAR_DAYS - (_date.today() - detected).days
+            # C1: unified 5-business-day BRT deadline.
+            days_remaining = business_days_remaining_brt(detected)
             card = build_card_with_countdown(card, days_remaining)
     except Exception as exc:
         print(f"  ⚠ Could not add initial countdown badge: {exc!r}")
