@@ -145,6 +145,33 @@ def _net_workdays(a: date, b: date) -> int:
     return count
 
 
+# ── Unified reply deadline (C1) ──────────────────────────────────────────────
+# The group-card countdown, the DM action card, and the manager SLA must all
+# agree: 5 BUSINESS days in BRT (UTC-3). This is the single source of truth;
+# other modules import REPLY_DEADLINE_WORKDAYS / business_days_remaining_brt
+# instead of defining their own calendar/business-day constants.
+REPLY_DEADLINE_WORKDAYS = SLA_WORKDAYS
+
+
+def business_days_remaining_brt(detected) -> int:
+    """Business days remaining until the 5-workday BRT reply deadline (C1).
+
+    ``detected`` may be a ``date``, ``datetime``, or a raw Date-Received string.
+    The deadline is ``REPLY_DEADLINE_WORKDAYS`` (=5) Mon–Fri workdays after the
+    detected date; remaining is measured from today in BRT.
+    Returns: positive = days left, 0 = due today, negative = overdue. If the
+    detected date is unknown, returns the full window.
+    """
+    if isinstance(detected, str):
+        detected = _parse_date_received(detected)
+    elif isinstance(detected, datetime):
+        detected = detected.date()
+    if not detected:
+        return REPLY_DEADLINE_WORKDAYS
+    deadline = _add_workdays(detected, REPLY_DEADLINE_WORKDAYS)
+    return _net_workdays(today_brt(), deadline)
+
+
 def _format_sla_suffix(received_raw: str, today: date) -> str:
     """Build the trailing piece of a UPC line: '⏳ X days remaining' / '🔴 overdue'."""
     received = _parse_date_received(received_raw)
@@ -237,7 +264,7 @@ def resolve_managers_for_row(row, idx):
     """
     upc = _cell(row, idx.get("UPC"))
     isrc = _cell(row, idx.get("ISRC"))
-    label_uid = _cell(row, idx.get("Label UID"))
+    label_uid = _cell(row, idx.get("UID"))
 
     usernames = []
     lookup_id = isrc if isrc and isrc != "N/A" else upc

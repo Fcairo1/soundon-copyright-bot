@@ -56,9 +56,9 @@ from copyright_alert.handle_callback import (
     patch_message,
     read_sheet_values,
     update_card_state,
-    update_sheet_admin_action,
     update_sheet_status,
     update_sheet_email_status,
+    reconstruct_card_from_tracker,
     _parse_lark_annotated_csv,
 )
 from copyright_alert import lark_auth, spotify_reply
@@ -213,20 +213,35 @@ def _process_status_update(status, message_id, operator_name=None, operator_id=N
         _refresh_callback_credentials("callback tracker status write-back")
         card = load_posted_card(message_id)
         if not card:
-            card = json.loads((ROOT / "copyright_alert/last_card.json").read_text())
+            # No persisted copy of the clicked card. Rebuild it from the tracker
+            # row rather than patching last_card.json, which is a *different*
+            # claim's card and would silently overwrite this card with wrong
+            # data (B8).
+            card = reconstruct_card_from_tracker(
+                message_id, region=region, upc=upc, isrc=isrc, tracker_row=tracker_row
+            )
+        if not card:
+            msg = (
+                "⚠️ Could not update this card: no saved copy exists and it could "
+                "not be rebuilt from the tracker. Status was NOT changed — please "
+                "retry, or update the tracker row manually."
+            )
+            print(f"_process_status_update: {msg} (message_id={message_id})", flush=True)
+            if message_id:
+                try:
+                    reply_post(message_id, "Card update failed", [msg])
+                except Exception as reply_exc:
+                    print(f"_process_status_update: could not surface error: {reply_exc!r}", flush=True)
+            return
         card = update_card_state(card, status, message_id, operator_name=operator_name, operator_id=operator_id, timestamp=timestamp)
         (ROOT / "copyright_alert/last_card_callback.json").write_text(json.dumps(card, ensure_ascii=False, indent=2))
         patched = patch_message(message_id, card)
         sheet_ok = update_sheet_status(message_id, status, upc=upc, isrc=isrc, region=region, tracker_row=tracker_row)
-        admin_action_ok = update_sheet_admin_action(
-            message_id=message_id,
-            status=status,
-            upc=upc,
-            isrc=isrc,
-            region=region,
-            tracker_row=tracker_row,
-        )
-        print(json.dumps({"patched": patched, "sheet_updated": sheet_ok, "admin_action_updated": admin_action_ok, "status": status, "message_id": message_id, "operator": operator_name or operator_id, "timestamp": timestamp, "region": region, "tracker_row": tracker_row}, ensure_ascii=False), flush=True)
+        # NOTE: The button flow must ONLY write to column N (Status) via
+        # update_sheet_status(). Column R ("Admin Action Taken") is manually
+        # edited by ops and must NEVER be written by the bot, so we do not call
+        # update_sheet_admin_action() here (F1).
+        print(json.dumps({"patched": patched, "sheet_updated": sheet_ok, "status": status, "message_id": message_id, "operator": operator_name or operator_id, "timestamp": timestamp, "region": region, "tracker_row": tracker_row}, ensure_ascii=False), flush=True)
     except Exception as exc:
         print("card.action.trigger background error:", repr(exc), flush=True)
         # Treat background processing failures as a signal that the daemon
@@ -964,12 +979,31 @@ def _handle_command(command_text: str, message_id: str, region: str) -> None:
             new_pid = restart_daemon(current_pid=os.getpid())
             reply_post(message_id, "/restart", [f"🔄 Restarting callback daemon... ✅ Done! PID: {new_pid}"])
         elif cmd == "/exclude":
+            arg_str = (arg or "").strip()
+            first_token = arg_str.split()[0] if arg_str else ""
+            # A UPC exclusion is only valid when the FIRST token is a 12–13 digit
+            # UPC. Anything else (contains "from", starts with "@", or a name) is
+            # treated as a manager exclusion attempt (F2).
+            looks_like_upc = bool(re.fullmatch(r"\d{12,13}", first_token))
             manager, label_uid = parse_exclude_command(arg)
             if manager and label_uid:
                 title, lines = exclude_manager_lines(manager, label_uid)
-            else:
+            elif looks_like_upc:
                 upc, reason = parse_upc_exclude_command(arg)
                 title, lines = upc_exclude_lines(upc, reason, added_by="chat_command")
+            else:
+                # Manager-style intent that failed to parse → show the MANAGER
+                # usage message (not the UPC one).
+                title = "/exclude — manager exclusion"
+                lines = [
+                    "⚠️ Could not parse that exclusion.",
+                    "",
+                    "**Exclude a manager from a label's alerts:**",
+                    "`/exclude @Manager Name from <UID>`",
+                    "",
+                    "**Exclude a release by UPC:**",
+                    "`/exclude <12–13 digit UPC> [reason]`",
+                ]
             reply_post(message_id, title, lines)
         elif cmd == "/unexclude":
             title, lines = upc_unexclude_lines(arg)
@@ -995,18 +1029,28 @@ def _handle_command(command_text: str, message_id: str, region: str) -> None:
             title, lines = attempt_self_heal(current_pid=os.getpid())
             reply_post(message_id, title, lines)
         elif cmd == "/refresh":
-            # 1. Force reload tokens from refresh file
-            spotify_reply._refresh_aime_credentials()
+            # 1. Force reload tokens from the AIME env refresh file. Use the
+            #    real refresh path in lark_auth (spotify_reply._refresh_aime_credentials
+            #    is a documented legacy no-op that always returns 0).
+            try:
+                refreshed_keys = lark_auth._refresh_aime_credentials()
+            except Exception as refresh_exc:
+                refreshed_keys = None
+                print(f"/refresh credential refresh failed: {refresh_exc!r}", flush=True)
+            if isinstance(refreshed_keys, int):
+                refresh_summary = f"🔄 Refreshed {refreshed_keys} credential key(s)."
+            else:
+                refresh_summary = "🔄 Tokens refreshed."
             # 2. Re-read health check to see if JWT is actually OK now
             from copyright_alert.bot_runtime import run_health_check
             report = run_health_check()
             jwt_status = (report.get("jwt") or {}).get("status", "err")
             if jwt_status == "ok":
-                msg = "🔄 Tokens refreshed and daemon restarted! ✅"
+                msg = f"{refresh_summary} JWT OK and daemon restarted! ✅"
             else:
                 detail = (report.get("jwt") or {}).get("detail", "unknown error")
-                msg = f"⚠️ Refresh attempted but JWT is still invalid: {detail}\n\nManual AIME environment refresh by Filipe may be required."
-            
+                msg = f"{refresh_summary}\n⚠️ Refresh attempted but JWT is still invalid: {detail}\n\nManual AIME environment refresh by Filipe may be required."
+
             # 3. Restart daemon
             new_pid = restart_daemon(current_pid=os.getpid())
             reply_post(message_id, "/refresh", [f"{msg}\n✅ New PID: {new_pid}"])

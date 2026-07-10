@@ -33,9 +33,13 @@ if str(ROOT) not in sys.path:
 
 from copyright_alert.lark_auth import request_json_with_auth_retry  # noqa: E402
 from copyright_alert.run_alert import _get_bot_access_token  # noqa: E402
+# C1: unified 5-business-day BRT reply deadline (single source of truth).
+from copyright_alert.tag_managers import (  # noqa: E402
+    REPLY_DEADLINE_WORKDAYS as REPLY_DEADLINE_BUSINESS_DAYS,
+    business_days_remaining_brt,
+)
 
 OPERATOR_EMAIL = "filipe.cairo@bytedance.com"
-REPLY_DEADLINE_BUSINESS_DAYS = 5
 ACTION_FALLBACK_LABEL = "⏳ None selected yet"
 ACTION_FIELD_CANDIDATES = (
     "manager_action",
@@ -93,11 +97,11 @@ def business_days_elapsed(start: date, end: date) -> int:
 
 
 def business_days_remaining(detected_at, today: date = None) -> int:
-    today = today or date.today()
-    detected = parse_detected_date(detected_at)
-    if detected is None:
-        return REPLY_DEADLINE_BUSINESS_DAYS
-    return REPLY_DEADLINE_BUSINESS_DAYS - business_days_elapsed(detected, today)
+    # C1: delegate to the unified BRT business-day deadline so the DM card, the
+    # group card, and the manager SLA always agree. The BRT "today" is used as
+    # the reference; the legacy `today` argument is accepted for backward
+    # compatibility but ignored (all callers rely on BRT).
+    return business_days_remaining_brt(detected_at)
 
 
 # ── open_id resolution ───────────────────────────────────────────────────────
