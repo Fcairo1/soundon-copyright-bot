@@ -36,6 +36,8 @@ UPC_COL_NAME = "UPC"
 ISRC_COL_NAME = "ISRC"
 EMAIL_STATUS_COL_NAME = "Email Status"
 EMAIL_STATUS_COL = "S"
+ADMIN_ACTION_COL_NAME = "Bot Action"
+ADMIN_ACTION_COL = "N"
 
 
 def _tracker_config(region=None):
@@ -298,24 +300,41 @@ def read_sheet_values(region=None):
         return []
 
 
-def update_sheet_status(message_id, status, upc=None, isrc=None, region=None, tracker_row=None):
-    sheet_url, sheet_id = _tracker_config(region)
-    values = read_sheet_values(region=region)
+def _find_tracker_row(values, *, message_id=None, upc=None, isrc=None, tracker_row=None):
+    """Locate the tracker row for a claim using row hint, message id, UPC, or ISRC."""
     if not values:
-        print("Sheet row not found: sheet is empty or unreadable")
-        return False
+        return None, None, {}
 
     headers = [_norm(v) for v in values[0]]
     header_index = {name: idx for idx, name in enumerate(headers) if name}
-    status_idx = header_index.get(STATUS_COL_NAME)
     message_idx = header_index.get(MESSAGE_ID_COL)
     upc_idx = header_index.get(UPC_COL_NAME)
     isrc_idx = header_index.get(ISRC_COL_NAME)
 
-    if status_idx is None:
-        status_idx = ord(STATUS_COL) - ord("A")
-    if message_idx is None:
-        print("Sheet is missing Lark Message ID column; headers:", headers)
+    def row_identity(row):
+        msg_cell = _norm(row[message_idx]) if message_idx is not None and len(row) > message_idx else ""
+        upc_cell = _norm(row[upc_idx]) if upc_idx is not None and len(row) > upc_idx else ""
+        isrc_cell = _norm(row[isrc_idx]) if isrc_idx is not None and len(row) > isrc_idx else ""
+        return msg_cell, upc_cell, isrc_cell
+
+    def row_matches_supplied_identity(row):
+        """Return True when the hinted row matches at least one supplied stable id.
+
+        Older cards can carry stale tracker_row values. Trusting the row hint
+        blindly can write a callback to the wrong row, especially after a row was
+        manually inserted near the top. The hint is now only authoritative when
+        it matches the message_id, UPC, or ISRC present in the callback payload.
+        """
+        msg_cell, upc_cell, isrc_cell = row_identity(row)
+        expected = [
+            ("message_id", _norm(message_id), msg_cell),
+            ("upc", _norm(upc), upc_cell),
+            ("isrc", _norm(isrc), isrc_cell),
+        ]
+        supplied = [(name, want, got) for name, want, got in expected if want]
+        if not supplied:
+            return True
+        return any(got and got == want for _name, want, got in supplied)
 
     row_num = None
     match_reason = None
@@ -323,18 +342,25 @@ def update_sheet_status(message_id, status, upc=None, isrc=None, region=None, tr
         try:
             candidate_row = int(tracker_row)
             if 2 <= candidate_row <= len(values):
-                row_num = candidate_row
-                match_reason = "tracker_row"
+                candidate = values[candidate_row - 1]
+                if row_matches_supplied_identity(candidate):
+                    row_num = candidate_row
+                    match_reason = "tracker_row"
+                else:
+                    print(
+                        "Ignoring stale tracker_row hint:",
+                        json.dumps({"tracker_row": tracker_row, "message_id": message_id, "upc": upc, "isrc": isrc}, ensure_ascii=False),
+                        flush=True,
+                    )
         except (TypeError, ValueError):
-            print(f"Invalid tracker_row for status update: {tracker_row!r}")
+            print(f"Invalid tracker_row hint: {tracker_row!r}")
+
     for idx, row in enumerate(values[1:], start=2):
         if row_num:
             break
-        msg_cell = _norm(row[message_idx]) if message_idx is not None and len(row) > message_idx else ""
-        upc_cell = _norm(row[upc_idx]) if upc_idx is not None and len(row) > upc_idx else ""
-        isrc_cell = _norm(row[isrc_idx]) if isrc_idx is not None and len(row) > isrc_idx else ""
+        msg_cell, upc_cell, isrc_cell = row_identity(row)
 
-        if msg_cell and msg_cell == _norm(message_id):
+        if message_id and msg_cell and msg_cell == _norm(message_id):
             row_num = idx
             match_reason = "message_id"
             break
@@ -346,6 +372,32 @@ def update_sheet_status(message_id, status, upc=None, isrc=None, region=None, tr
             row_num = idx
             match_reason = "isrc"
             break
+
+    return row_num, match_reason, header_index
+
+
+
+def update_sheet_status(message_id, status, upc=None, isrc=None, region=None, tracker_row=None):
+    sheet_url, sheet_id = _tracker_config(region)
+    values = read_sheet_values(region=region)
+    if not values:
+        print("Sheet row not found: sheet is empty or unreadable")
+        return False
+
+    row_num, match_reason, header_index = _find_tracker_row(
+        values,
+        message_id=message_id,
+        upc=upc,
+        isrc=isrc,
+        tracker_row=tracker_row,
+    )
+    status_idx = header_index.get(STATUS_COL_NAME)
+    message_idx = header_index.get(MESSAGE_ID_COL)
+
+    if status_idx is None:
+        status_idx = ord(STATUS_COL) - ord("A")
+    if message_idx is None:
+        print("Sheet is missing Lark Message ID column; headers:", [_norm(v) for v in values[0]])
 
     if not row_num:
         print("Sheet row not found for", json.dumps({"message_id": message_id, "upc": upc, "isrc": isrc}, ensure_ascii=False))
@@ -378,20 +430,222 @@ def update_sheet_status(message_id, status, upc=None, isrc=None, region=None, tr
 
 
 def _find_col_letter(header_name, fallback_letter, region=None):
+
+
     """Resolve a column letter by header name, falling back to a fixed letter."""
+
+
     try:
+
+
         values = read_sheet_values(region=region)
+
+
         if values:
+
+
             headers = [_norm(v) for v in values[0]]
+
+
             for idx, name in enumerate(headers):
+
+
                 if name == header_name:
+
+
                     return _col_letter(idx)
+
+
     except Exception as exc:
+
+
         print(f"_find_col_letter({header_name}) failed: {exc!r}")
+
+
     return fallback_letter
 
 
+
+
+
+
+
+
+
+
+
+def _admin_action_value_for_status(status):
+
+
+    normalized = _norm(status)
+
+
+    lowered = re.sub(r"^[^\w]+\s*", "", normalized).casefold()
+
+
+    if lowered == "confirm takedown":
+
+
+        return "Confirm Takedown"
+
+
+    if lowered == "resolved":
+
+
+        return "Resolved"
+
+
+    return ""
+
+
+
+
+
+
+
+
+
+
+
+def update_sheet_admin_action(message_id=None, status=None, upc=None, isrc=None, region=None, tracker_row=None):
+
+
+    """Write the operator's chosen admin action into the bot action column."""
+
+
+    admin_value = _admin_action_value_for_status(status)
+
+
+    if not admin_value:
+
+
+        return False
+
+
+
+
+
+    sheet_url, sheet_id = _tracker_config(region)
+
+
+    values = read_sheet_values(region=region)
+
+
+    if not values:
+
+
+        print("update_sheet_admin_action: sheet is empty or unreadable")
+
+
+        return False
+
+
+
+
+
+    row_num, match_reason, header_index = _find_tracker_row(
+
+
+        values,
+
+
+        message_id=message_id,
+
+
+        upc=upc,
+
+
+        isrc=isrc,
+
+
+        tracker_row=tracker_row,
+
+
+    )
+
+
+    if not row_num:
+
+
+        print(
+
+
+            "update_sheet_admin_action: row not found for",
+
+
+            json.dumps({"message_id": message_id, "upc": upc, "isrc": isrc, "tracker_row": tracker_row}, ensure_ascii=False),
+
+
+        )
+
+
+        return False
+
+
+
+
+
+    admin_idx = header_index.get(ADMIN_ACTION_COL_NAME)
+
+
+    admin_col = _col_letter(admin_idx) if admin_idx is not None else ADMIN_ACTION_COL
+
+
+    cell = f"{admin_col}{row_num}"
+
+
+    try:
+
+
+        _sheet_api("PUT", sheet_url, sheet_id, cell, values=[[admin_value]])
+
+
+        print(f"Admin action update {cell} via bot token: ok (matched by {match_reason})", flush=True)
+
+
+        return True
+
+
+    except Exception as exc:
+
+
+        print(f"Admin action update {cell} via bot token failed; falling back to lark-cli: {exc!r}", flush=True)
+
+
+    try:
+
+
+        _write_sheet_cell_cli(sheet_url, sheet_id, cell, admin_value)
+
+
+        print(f"Admin action update {cell} via lark-cli fallback: ok (matched by {match_reason})", flush=True)
+
+
+        return True
+
+
+    except Exception as exc:
+
+
+        print(f"Admin action update {cell} via lark-cli fallback failed: {exc!r}", flush=True)
+
+
+        return False
+
+
+
+
+
+
+
+
+
+
+
 def update_sheet_email_status(tracker_row, value, region=None):
+
+
+
     """Write `value` to the 'Email Status' column for the given tracker row number."""
     if not tracker_row:
         print("update_sheet_email_status: missing tracker_row")

@@ -2,13 +2,16 @@
 """
 copyright_alert/spotify_reply.py
 
-Spotify 5-business-day reply workflow — creates a threaded reply DRAFT in the
-original infringement-claim email thread via the OAuth-backed
-`copyright_alert.lark_mail_draft.create_reply_draft()` helper. The operator
-opens the draft and clicks Send manually in Lark Mail.
+Spotify 5-business-day reply workflow — prepares the operator-facing reply
+metadata for the callback daemon.
 
-Draft creation is the terminal step. There is no auto-send, no TEST_MODE,
-no send-scope branch.
+This module no longer sends the operator-facing DM card itself. Instead it
+returns structured result data so `persistent_callback.py` can send the
+product-approved "Draft ready" outcome card.
+
+Lark Mail draft creation is delegated to
+`copyright_alert.lark_mail_draft.create_reply_draft()`. The operator opens the
+real draft and clicks Send manually in Lark Mail.
 
 Three reply types are supported:
 
@@ -156,11 +159,15 @@ def _send_reply(source_email_message_id: str, body_html: str, action: str,
         "command": [],
         "draft_id": "",
         "send_preview_url": "",
+        "message_id": "",
+        "mail_deep_link": "",
+        "draft_text": "",
         "error": None,
     }
 
     cc = (cc or "").strip()
     note = (note or "").strip()
+    source_email_message_id = (source_email_message_id or "").strip()
     upc = str(upc or "").strip()
     ref_id = str(ref_id or "").strip()
 
@@ -220,6 +227,8 @@ def _send_reply(source_email_message_id: str, body_html: str, action: str,
         result["mode"] = "draft"
         result["draft_id"] = draft_id
         result["send_preview_url"] = draft_url
+        result["mail_deep_link"] = draft_url
+        result["draft_text"] = body_html
         _log(
             f"✓ {action}: DRAFT created "
             f"(draft_id={result['draft_id'] or 'N/A'}, "

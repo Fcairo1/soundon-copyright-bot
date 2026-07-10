@@ -227,11 +227,19 @@ def build_dm_action_card(case: dict) -> dict:
     action_requested = _v(get_action_requested_label(case))
 
     # Shared value payload carried by every button.
+    # Keep both source_email_message_id and the legacy source_message_id alias
+    # so manually-built / older helper payloads remain clickable.
+    source_email_message_id = (
+        case.get("source_email_message_id")
+        or case.get("source_message_id")
+        or ""
+    )
     base_value = {
         "action": "spotify_reply",
         "upc": case.get("upc", "N/A"),
         "isrc": case.get("isrc", "N/A"),
-        "source_email_message_id": case.get("source_email_message_id", ""),
+        "source_email_message_id": source_email_message_id,
+        "source_message_id": source_email_message_id,
         "claimant_email": case.get("claimant_email", "N/A"),
         "title": case.get("title", "N/A"),
         "artist": case.get("artist", "N/A"),

@@ -422,6 +422,20 @@ def _is_confirm_takedown_status(v):
     return _normalized_status(v) == "confirm takedown"
 
 
+def _admin_action_has_real_value(v):
+    normalized = _norm(v).casefold()
+    return bool(normalized) and normalized != "no"
+
+
+def _is_open_for_ops(status, admin_action=""):
+    normalized = _normalized_status(status)
+    if normalized == "resolved":
+        return False
+    if normalized == "confirm takedown":
+        return not _admin_action_has_real_value(admin_action)
+    return normalized in {"", "investigating", "disputing", "pending", "open"}
+
+
 def read_sheet_values(rng="A:Z"):
     """Read tracker rows as a 2D list (header row first)."""
     cmd = [
@@ -625,7 +639,7 @@ def action_alert(values, admin_col_index):
             continue
         status = _cell(row, status_i)
         admin_done = _cell(row, admin_i)
-        if admin_done:
+        if _admin_action_has_real_value(admin_done):
             continue
         entry = {"row": r, "upc": _cell(row, upc_i) or "N/A", "title": _cell(row, title_i) or "N/A"}
         if _is_confirm_takedown_status(status):
@@ -769,6 +783,7 @@ def dm_action_cards(values):
         "lark_msg": _header_index(headers, LARK_MSG_ID_HEADER),
         "card_msg": _header_index(headers, CARD_MSG_ID_HEADER),
         "email_status": _header_index(headers, EMAIL_STATUS_HEADER),
+        "admin_action": _header_index(headers, ADMIN_ACTION_HEADER),
     }
 
     posted_map = _load_posted_claims_map()
@@ -781,8 +796,9 @@ def dm_action_cards(values):
     skipped_no_src = 0
     for row_num, row in enumerate(values[1:], start=2):
         status = _cell(row, idx["status"])
-        if _is_resolved_status(status) or _is_confirm_takedown_status(status):
-            log(f"  • Skipping row {row_num} ({_cell(row, idx['upc']) or 'N/A'}): status is {status!r}")
+        admin_action = _cell(row, idx["admin_action"])
+        if not _is_open_for_ops(status, admin_action):
+            log(f"  • Skipping row {row_num} ({_cell(row, idx['upc']) or 'N/A'}): status={status!r}, admin_action={admin_action!r}")
             continue
         if _cell(row, idx["email_status"]):  # already replied
             continue
@@ -1025,13 +1041,15 @@ def countdown_refresh(values):
         "email_source": _header_index(headers, "Email Source"),
         "dsp": _header_index(headers, "DSP"),
         "uid": _header_index(headers, "UID"),
+        "admin_action": _header_index(headers, ADMIN_ACTION_HEADER),
     }
     today = date.today()
     refreshed = 0
     attempted = 0
     for row_num, row in enumerate(values[1:], start=2):
         status = _cell(row, idx["status"])
-        if _is_resolved_status(status) or _is_confirm_takedown_status(status):
+        admin_action = _cell(row, idx["admin_action"])
+        if not _is_open_for_ops(status, admin_action):
             continue
         if _cell(row, idx["email_status"]):  # already handled
             continue

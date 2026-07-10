@@ -106,16 +106,18 @@ def _save_oauth_record(record: Dict[str, Any]) -> None:
     TOKEN_FILE.write_text(json.dumps(record, indent=2, sort_keys=True), encoding="utf-8")
 
 
-def _post_json(url: str, payload: Dict[str, Any], headers: Optional[Dict[str, str]] = None, timeout: int = 30) -> Dict[str, Any]:
+def _request_json(
+    method: str,
+    url: str,
+    payload: Optional[Dict[str, Any]] = None,
+    headers: Optional[Dict[str, str]] = None,
+    timeout: int = 30,
+) -> Dict[str, Any]:
     req_headers = {"Content-Type": "application/json; charset=utf-8"}
     if headers:
         req_headers.update(headers)
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers=req_headers,
-        method="POST",
-    )
+    data_bytes = json.dumps(payload).encode("utf-8") if payload is not None else None
+    req = urllib.request.Request(url, data=data_bytes, headers=req_headers, method=method.upper())
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             text = resp.read().decode("utf-8")
@@ -134,6 +136,14 @@ def _post_json(url: str, payload: Dict[str, Any], headers: Optional[Dict[str, st
     if code not in (0, "0", None):
         raise LarkMailDraftError(f"Lark API error from {url}: {json.dumps(data, ensure_ascii=False)}")
     return data
+
+
+def _post_json(url: str, payload: Dict[str, Any], headers: Optional[Dict[str, str]] = None, timeout: int = 30) -> Dict[str, Any]:
+    return _request_json("POST", url, payload=payload, headers=headers, timeout=timeout)
+
+
+def _get_json(url: str, headers: Optional[Dict[str, str]] = None, timeout: int = 30) -> Dict[str, Any]:
+    return _request_json("GET", url, payload=None, headers=headers, timeout=timeout)
 
 
 def _int_or_none(value: Any) -> Optional[int]:
@@ -325,28 +335,127 @@ def _lark_cli_json(args: List[str], timeout: int = 90) -> Dict[str, Any]:
     return parsed
 
 
-def _fetch_original_message(mailbox: str, message_id: str) -> Dict[str, Any]:
+def _first_nested_value(obj: Any, names: tuple[str, ...]) -> Any:
+    """Return the first matching key value found in a nested dict/list payload."""
+    if isinstance(obj, dict):
+        for name in names:
+            value = obj.get(name)
+            if value not in (None, "", []):
+                return value
+        for value in obj.values():
+            found = _first_nested_value(value, names)
+            if found not in (None, "", []):
+                return found
+    elif isinstance(obj, list):
+        for item in obj:
+            found = _first_nested_value(item, names)
+            if found not in (None, "", []):
+                return found
+    return None
+
+
+def _normalize_original_message_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize CLI/OpenAPI message payloads to the fields this module needs."""
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    message = data.get("message") if isinstance(data.get("message"), dict) else data
+    if not isinstance(message, dict):
+        message = {}
+    smtp_message_id = _first_nested_value(
+        message,
+        (
+            "smtp_message_id",
+            "smtp_messageId",
+            "rfc_message_id",
+            "rfc_messageId",
+            "internet_message_id",
+            "internetMessageId",
+            "message_id_header",
+            "messageIdHeader",
+            "message-id",
+            "Message-ID",
+        ),
+    )
+    headers = _first_nested_value(message, ("headers", "internet_headers", "internetHeaders"))
+    if not smtp_message_id and isinstance(headers, dict):
+        smtp_message_id = _first_nested_value(headers, ("Message-ID", "Message-Id", "message-id", "message_id"))
+    if not smtp_message_id and isinstance(headers, list):
+        for header in headers:
+            if not isinstance(header, dict):
+                continue
+            name = str(header.get("name") or header.get("key") or "").lower()
+            if name == "message-id":
+                smtp_message_id = header.get("value")
+                break
+    normalized = dict(message)
+    if smtp_message_id:
+        normalized["smtp_message_id"] = str(smtp_message_id).strip()
+    thread_id = _first_nested_value(message, ("thread_id", "threadId"))
+    if thread_id:
+        normalized["thread_id"] = str(thread_id).strip()
+    references = _first_nested_value(message, ("references", "References"))
+    if references:
+        normalized["references"] = references
+    sender = _first_nested_value(message, ("head_from", "from", "sender"))
+    if isinstance(sender, dict):
+        normalized["head_from"] = sender
+    subject = _first_nested_value(message, ("subject", "Subject"))
+    if subject:
+        normalized["subject"] = str(subject)
+    body_plain = _first_nested_value(message, ("body_plain_text", "bodyPlainText", "plain_text", "plainText", "body_text"))
+    if body_plain:
+        normalized["body_plain_text"] = str(body_plain)
+    return normalized
+
+
+def _fetch_original_message(mailbox: str, message_id: str, headers: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """Fetch the original inbound email so we can thread the reply correctly.
 
-    Returns the message ``data`` dict (with smtp_message_id, thread_id,
-    head_from, subject, references, body_plain_text). Empty dict on failure.
+    ``message_id`` must be the Lark Mail message_id of the original email. It is
+    not an IM card/open_message_id. We first call the official Mail message get
+    endpoint, then fall back to the local lark-cli shortcut for older runtimes.
     """
     if not message_id:
         return {}
+    encoded_mailbox = urllib.parse.quote(mailbox, safe="")
+    encoded_message_id = urllib.parse.quote(message_id, safe="")
+    url = f"{MAIL_API_BASE}/user_mailboxes/{encoded_mailbox}/messages/{encoded_message_id}?format=full"
+    if headers:
+        try:
+            return _normalize_original_message_payload(_get_json(url, headers=headers))
+        except Exception as exc:
+            print(f"  ⚠ OpenAPI message lookup failed for {message_id!r}: {exc!r}", flush=True)
     parsed = _lark_cli_json(
         ["+message", "--mailbox", mailbox, "--message-id", message_id, "--html=false", "--format", "json"]
     )
     if not parsed:
         return {}
-    inner = parsed.get("data", parsed)
-    return inner if isinstance(inner, dict) else {}
+    return _normalize_original_message_payload(parsed)
+
+
+def _looks_like_im_message_id(message_id: str) -> bool:
+    """Return True when a value is clearly a Lark IM message/card ID.
+
+    Lark Mail message IDs are opaque base64-ish strings. Lark IM group/card
+    messages use prefixes such as ``om_`` / ``omt_``. Passing an IM ID into Mail
+    APIs can never resolve the original RFC Message-ID, so treat it as a signal
+    to search the mailbox by claim identifiers instead.
+    """
+    value = (message_id or "").strip()
+    return value.startswith(("om_", "omt_"))
+
+
+def _has_threading_metadata(original: Dict[str, Any]) -> bool:
+    """Whether a fetched mail payload contains the minimum reply-thread data."""
+    return bool((original or {}).get("smtp_message_id"))
 
 
 def _find_original_message_id(mailbox: str, upc: str = "", ref_id: str = "") -> str:
-    """Locate the original inbound claim email by ref code or UPC (fallback path).
+    """Locate the original inbound claim email by ref code or UPC.
 
-    Used when the callback did not carry a source_email_message_id. Prefers the
-    ``ref:...:ref`` tracking code (unique per claim); falls back to the UPC.
+    The reliable source of truth for threaded reply drafts is the mailbox itself:
+    first search the unique ``ref:...:ref`` code, then fall back to the UPC. This
+    avoids relying on tracker/checkpoint fields that may contain a Lark IM card
+    message ID instead of a Lark Mail inbox message ID.
     """
     for query in [q for q in (ref_id, upc) if q]:
         parsed = _lark_cli_json(
@@ -510,19 +619,38 @@ def create_reply_draft(
     headers = {"Authorization": f"Bearer {token}"}
 
     # ── Locate the original inbound email so the draft threads as a reply ─────
-    if not message_id:
-        message_id = _find_original_message_id(mailbox, upc=upc, ref_id=ref_id)
+    # Prefer mailbox search by the claim's unique ref code / UPC. Stored IDs in
+    # older tracker rows can be Lark IM card IDs, and callback environments can
+    # lack enough Mail read scope to fetch a stale/ambiguous ID directly.
+    lookup_message_id = _find_original_message_id(mailbox, upc=upc, ref_id=ref_id) if (upc or ref_id) else ""
+    if lookup_message_id:
+        if message_id and message_id != lookup_message_id:
+            print(
+                "  ℹ Using mailbox-search mail message_id "
+                f"{lookup_message_id!r} instead of stored id {message_id!r} ",
+                "for threaded reply lookup.",
+                flush=True,
+            )
+        message_id = lookup_message_id
+    elif _looks_like_im_message_id(message_id):
+        message_id = ""
+
     if not message_id:
         raise LarkMailDraftError(
             "Could not locate the original inbound email to reply to "
             f"(upc={upc!r}, ref_id={ref_id!r})."
         )
 
-    original = _fetch_original_message(mailbox, message_id)
+    original = _fetch_original_message(mailbox, message_id, headers=headers)
+    if not _has_threading_metadata(original):
+        fallback_message_id = _find_original_message_id(mailbox, upc=upc, ref_id=ref_id) if (upc or ref_id) else ""
+        if fallback_message_id and fallback_message_id != message_id:
+            message_id = fallback_message_id
+            original = _fetch_original_message(mailbox, message_id, headers=headers)
     if not original:
         raise LarkMailDraftError(
             "Could not read the original inbound email metadata needed to create a threaded reply draft "
-            f"(message_id={message_id!r})."
+            f"(message_id={message_id!r}, upc={upc!r}, ref_id={ref_id!r})."
         )
     smtp_message_id = str(original.get("smtp_message_id") or "").strip()
     thread_id = str(original.get("thread_id") or "").strip()

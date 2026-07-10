@@ -25,6 +25,7 @@ from pathlib import Path
 
 from copyright_alert.lark_auth import request_json_with_auth_retry
 from copyright_alert.manager_exclusions import is_manager_excluded
+from copyright_alert.upc_exclusions import is_upc_excluded
 from copyright_alert.region_guard import assert_region_allowed
 
 # ── Config ──────────────────────────────────────────────────────────────────
@@ -1228,6 +1229,24 @@ def _tracker_row_has_case_identity(values):
     return any(str(values.get(col) or "").strip() for col in identity_cols)
 
 
+def _tracker_physical_row_count(default=2000):
+    """Return the sheet's physical row count so append scans can cover the full tab."""
+    cmd = [
+        "lark-cli", "sheets", "+workbook-info", "--url", TRACKER_SHEET_URL,
+    ]
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        parsed = parse_lark_json(res.stdout)
+        sheets = ((parsed or {}).get("data") or {}).get("sheets") or []
+        for sheet in sheets:
+            if str(sheet.get("sheet_id") or "").strip() == str(TRACKER_SHEET_ID).strip():
+                return int(sheet.get("row_count") or default)
+    except Exception as exc:
+        print(f"  ⚠ Could not inspect tracker row count: {exc!r}")
+    return default
+
+
+
 def _tracker_next_row():
     """Return the next writable row after the last real tracker case row.
 
@@ -1235,25 +1254,49 @@ def _tracker_next_row():
     Email Status (column T). Those can appear if an old callback carried a stale
     tracker_row value, and counting them would create a large phantom gap before
     the next append.
-    """
-    cmd = [
-        "lark-cli", "sheets", "+csv-get", "--url", TRACKER_SHEET_URL,
-        "--sheet-id", TRACKER_SHEET_ID, "--range", "A1:T500",
-        "--max-chars", "200000",
-    ]
-    res = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-    parsed, rows, row_numbers = parse_lark_annotated_csv(res.stdout)
-    if res.returncode != 0 or not parsed or not rows:
-        print("  ⚠ Could not inspect tracker before append:", (res.stdout + res.stderr)[:500])
-        return None
 
+    The scan covers the full physical sheet in chunks instead of assuming the
+    first 500 rows are enough. That guarantees new rows are appended to the true
+    bottom of the tracker, never written back near the top because of a partial
+    pre-read.
+    """
+    physical_rows = max(_tracker_physical_row_count(), 2)
     case_rows = []
-    for idx, values in enumerate(rows):
-        row_map = {chr(ord("A") + col_idx): value for col_idx, value in enumerate(values)}
-        if _tracker_row_has_case_identity(row_map):
-            row_number = row_numbers[idx] if idx < len(row_numbers) else idx + 1
-            case_rows.append(int(row_number or 0))
-    return (max(case_rows) + 1) if case_rows else 1
+    nonempty_rows = []
+    chunk_size = 500
+
+    for start_row in range(1, physical_rows + 1, chunk_size):
+        end_row = min(start_row + chunk_size - 1, physical_rows)
+        cmd = [
+            "lark-cli", "sheets", "+csv-get", "--url", TRACKER_SHEET_URL,
+            "--sheet-id", TRACKER_SHEET_ID, "--range", f"A{start_row}:T{end_row}",
+            "--max-chars", "200000",
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        parsed, rows, row_numbers = parse_lark_annotated_csv(res.stdout)
+        if res.returncode != 0 or not parsed:
+            print("  ⚠ Could not inspect tracker before append:", (res.stdout + res.stderr)[:500])
+            return None
+
+        for idx, values in enumerate(rows):
+            row_number = row_numbers[idx] if idx < len(row_numbers) else (start_row + idx)
+            try:
+                row_number = int(row_number or 0)
+            except (TypeError, ValueError):
+                continue
+            if any(str(value or "").strip() for value in values):
+                nonempty_rows.append(row_number)
+            row_map = {chr(ord("A") + col_idx): value for col_idx, value in enumerate(values)}
+            if _tracker_row_has_case_identity(row_map):
+                case_rows.append(row_number)
+
+    # Append after the last existing/non-empty row, not just after the last row
+    # that looks like a case. This avoids writing near the top when the sheet has
+    # formulas, notes, or manual content below the last case row.
+    occupied_rows = case_rows + nonempty_rows
+    if occupied_rows:
+        return max(occupied_rows) + 1
+    return 2
 
 
 def _tracker_cell(value, *, text=False):
@@ -1323,6 +1366,7 @@ def append_tracker_row(ef, ar, message_id, status=""):
     cmd = [
         "lark-cli", "sheets", "+cells-set", "--url", TRACKER_SHEET_URL,
         "--sheet-id", TRACKER_SHEET_ID, "--range", target_range,
+        "--allow-overwrite=false",
         "--cells", json.dumps(row, ensure_ascii=False),
     ]
     res = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
@@ -1505,6 +1549,9 @@ def main():
 
         lookup_id = isrc if isrc and isrc != "N/A" else upc
         lookup_type = "isrc" if isrc and isrc != "N/A" else "upc"
+        if upc and upc != "N/A" and is_upc_excluded(upc):
+            print(f"  ✗ Skipping excluded UPC {upc}")
+            continue
         if not lookup_id or lookup_id == "N/A":
             print("  ✗ No ISRC or UPC found, skipping")
             continue

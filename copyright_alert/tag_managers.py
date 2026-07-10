@@ -51,13 +51,12 @@ from copyright_alert.manager_exclusions import (
     HARDCODED_GLOBAL_EXCLUSIONS,
     filter_manager_pairs,
 )
+from copyright_alert.upc_exclusions import is_upc_excluded
 
 ADMIN_ACTION_HEADER = "Admin Action Taken"
 PENDING_STATUSES = {
     "",
-    "🔍 Investigating",
     "Investigating",
-    "⚖️ Disputing",
     "Disputing",
 }
 MENTION_DOMAIN = "bytedance.com"
@@ -177,7 +176,22 @@ def _normalized_status(v):
         return ""
     text = text.replace("⚖️", "").replace("⚖", "")
     text = text.replace("🔍", "")
+    text = text.replace("🔴", "")
     return " ".join(text.split()).strip()
+
+
+def _admin_action_has_real_value(value: str) -> bool:
+    normalized = _norm(value).casefold()
+    return bool(normalized) and normalized != "no"
+
+
+def _is_pending_row(status: str, admin_action: str) -> bool:
+    normalized = _normalized_status(status).casefold()
+    if normalized == "resolved":
+        return False
+    if normalized == "confirm takedown":
+        return not _admin_action_has_real_value(admin_action)
+    return normalized in {s.casefold() for s in PENDING_STATUSES}
 
 
 def _cell(row, i):
@@ -285,11 +299,12 @@ def collect_pending(values):
             continue
         status = _cell(row, status_i)
         admin_done = _cell(row, admin_i)
-        if status not in PENDING_STATUSES and _normalized_status(status) not in PENDING_STATUSES:
-            continue
-        if admin_done:
+        if not _is_pending_row(status, admin_done):
             continue
         upc = _cell(row, upc_i) or "N/A"
+        if is_upc_excluded(upc):
+            log(f"  Skipping excluded UPC {upc} on row {r}.")
+            continue
         title = _cell(row, title_i) or "(untitled)"
         received = _cell(row, received_i)
         pending_rows.append({"row": r, "upc": upc, "title": title,

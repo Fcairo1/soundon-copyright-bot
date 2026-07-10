@@ -8,6 +8,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 from datetime import datetime
 from pathlib import Path
 
@@ -35,6 +36,7 @@ from copyright_alert.bot_runtime import (
     parse_exclude_command,
     parse_include_command,
     parse_text_message,
+    parse_upc_exclude_command,
     pending_lines,
     reply_post,
     reply_text,
@@ -42,6 +44,9 @@ from copyright_alert.bot_runtime import (
     start_scan_in_background,
     status_lines,
     unassigned_lines,
+    upc_exclude_lines,
+    upc_exclusion_lines,
+    upc_unexclude_lines,
     write_pid_file,
 )
 from copyright_alert import run_alert as ra
@@ -51,6 +56,7 @@ from copyright_alert.handle_callback import (
     patch_message,
     read_sheet_values,
     update_card_state,
+    update_sheet_admin_action,
     update_sheet_status,
     update_sheet_email_status,
     _parse_lark_annotated_csv,
@@ -59,7 +65,7 @@ from copyright_alert import lark_auth, spotify_reply
 from copyright_alert.run_alert import BOT_APP_ID, BOT_SECRET, load_posted_card
 
 
-COMMAND_PREFIXES = ("/status", "/scan", "/pending", "/claims", "/restart", "/help", "/exclude", "/include", "/exceptions", "/unassigned", "/health", "/healthcheck", "/fix", "/refresh", "/card")
+COMMAND_PREFIXES = ("/status", "/scan", "/pending", "/claims", "/restart", "/help", "/exclude", "/unexclude", "/exclusions", "/include", "/exceptions", "/unassigned", "/health", "/healthcheck", "/fix", "/refresh", "/card")
 P2P_CHAT_CACHE_FILE = ROOT / "copyright_alert" / "bot_p2p_chats.json"
 P2P_CHAT_CACHE_LOCK = threading.Lock()
 
@@ -100,6 +106,28 @@ def _obj_to_dict(obj):
 
 def _toast(text, typ="success"):
     return P2CardActionTriggerResponse({"toast": {"type": typ, "content": text}})
+
+
+def _normalize_card_action_value(value):
+    """Return the card action value as a dict.
+
+    Lark normally delivers button values as objects, but some manually generated
+    or older CardKit payloads can arrive as a JSON string. The callback handler
+    reads value.get(...) before routing, so normalize defensively to avoid an
+    AttributeError that causes Lark to show a generic backend-service error.
+    """
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped:
+            try:
+                parsed = json.loads(stripped)
+                if isinstance(parsed, dict):
+                    return parsed
+            except Exception:
+                pass
+    return {}
 
 
 def _refresh_callback_credentials(reason: str):
@@ -190,7 +218,15 @@ def _process_status_update(status, message_id, operator_name=None, operator_id=N
         (ROOT / "copyright_alert/last_card_callback.json").write_text(json.dumps(card, ensure_ascii=False, indent=2))
         patched = patch_message(message_id, card)
         sheet_ok = update_sheet_status(message_id, status, upc=upc, isrc=isrc, region=region, tracker_row=tracker_row)
-        print(json.dumps({"patched": patched, "sheet_updated": sheet_ok, "status": status, "message_id": message_id, "operator": operator_name or operator_id, "timestamp": timestamp, "region": region, "tracker_row": tracker_row}, ensure_ascii=False), flush=True)
+        admin_action_ok = update_sheet_admin_action(
+            message_id=message_id,
+            status=status,
+            upc=upc,
+            isrc=isrc,
+            region=region,
+            tracker_row=tracker_row,
+        )
+        print(json.dumps({"patched": patched, "sheet_updated": sheet_ok, "admin_action_updated": admin_action_ok, "status": status, "message_id": message_id, "operator": operator_name or operator_id, "timestamp": timestamp, "region": region, "tracker_row": tracker_row}, ensure_ascii=False), flush=True)
     except Exception as exc:
         print("card.action.trigger background error:", repr(exc), flush=True)
         # Treat background processing failures as a signal that the daemon
@@ -256,7 +292,11 @@ def _process_spotify_reply(value, custom_message="", notify_chat_id=None, event_
         try:
             result = spotify_reply.send_reply(
                 reply_type=reply_type,
-                source_email_message_id=value.get("source_email_message_id", ""),
+                source_email_message_id=(
+                    value.get("source_email_message_id")
+                    or value.get("source_message_id")
+                    or ""
+                ),
                 claimant_email=value.get("claimant_email", ""),
                 upc=value.get("upc", ""),
                 title=value.get("title", ""),
@@ -275,11 +315,9 @@ def _process_spotify_reply(value, custom_message="", notify_chat_id=None, event_
                 mode = "sent" if ok else "failed"
                 result = {"ok": ok, "mode": mode}
             if mode == "draft":
-                # The bot only creates drafts; the operator clicks Send manually
-                # in Lark Mail. Since we cannot detect the later manual send event,
-                # the tracker reflects "Sent" as soon as the draft is created —
-                # our best proxy that the email action was triggered.
-                mark = "Sent ✅"
+                # Success means we produced the operator-facing "Draft ready"
+                # card that links to the shared mailbox inbox for manual review.
+                mark = "Reply ready ✅"
             else:
                 mark = "Failed ❌"
             status_value = f"{mark} – {reply_type} – {timestamp}"
@@ -298,9 +336,9 @@ def _process_spotify_reply(value, custom_message="", notify_chat_id=None, event_
                 "send_preview_url": send_preview_url,
                 "error": result.get("error") if isinstance(result, dict) else None,
             }, ensure_ascii=False), flush=True)
-            # Always notify the operator with a CARD (never plain text). Success,
-            # missing-scope drafts, and outright failures all go through the same
-            # card builder; the header color / CTA varies by outcome.
+            # Always notify the operator with a CARD (never plain text).
+            # On success this is the product-approved "Draft ready" card with a
+            # single shared-mailbox review button.
             try:
                 _send_outcome_card(
                     chat_id=notify_chat_id,
@@ -314,6 +352,7 @@ def _process_spotify_reply(value, custom_message="", notify_chat_id=None, event_
                 print("spotify_reply outcome-card send error:", repr(exc), flush=True)
         except Exception as exc:
             print("spotify_reply background error:", repr(exc), flush=True)
+            print(traceback.format_exc(), flush=True)
             try:
                 update_sheet_email_status(
                     tracker_row, f"Failed ❌ – {reply_type} – {timestamp}", region=value.get("region"))
@@ -378,16 +417,16 @@ def _send_outcome_card(chat_id, reply_type, value, mode, draft_url="",
         template = "green"
         header_title = f"✉️ Draft ready – {reply_type}"
         intro = (
-            f"A **'{reply_type}'** draft was created in the "
-            "`soundon-copyright` mailbox. Click the button below to "
-            "review the draft and send it from your Lark mailbox."
+            f"A '{reply_type}' draft was created in the `soundon-copyright` "
+            "mailbox. Click the button below to review the draft and send it "
+            "from your Lark mailbox."
         )
         if draft_url:
             cta = {
                 "tag": "button",
                 "text": {"tag": "plain_text",
                          "content": "🔗 Review & Send Draft"},
-                "type": "primary",
+                "type": "default",
                 "url": draft_url,
             }
         else:
@@ -549,7 +588,9 @@ def handle_card_action(data):
         action = getattr(event, "action", None) if event else None
         context = getattr(event, "context", None) if event else None
         value = getattr(action, "value", None) if action else None
-        value = value or (((payload.get("event") or {}).get("action") or {}).get("value") or {})
+        value = _normalize_card_action_value(
+            value if value not in (None, "") else (((payload.get("event") or {}).get("action") or {}).get("value") or {})
+        )
         # Optional form inputs (CC / note) submitted alongside a card button.
         form_value = getattr(action, "form_value", None) if action else None
         form_value = form_value or (((payload.get("event") or {}).get("action") or {}).get("form_value") or {})
@@ -585,7 +626,11 @@ def handle_card_action(data):
                     "artist": value.get("artist", "N/A"),
                     "claimant_name": value.get("claimant_name", "N/A"),
                     "claimant_email": value.get("claimant_email", "N/A"),
-                    "source_email_message_id": value.get("source_email_message_id", ""),
+                    "source_email_message_id": (
+                        value.get("source_email_message_id")
+                        or value.get("source_message_id")
+                        or ""
+                    ),
                     "lark_card_message_id": value.get("lark_card_message_id", ""),
                     "tracker_row": value.get("tracker_row", ""),
                     "ref_id": value.get("ref_id", ""),
@@ -664,6 +709,7 @@ def handle_card_action(data):
         return _toast("Status reset to No action yet" if not status else f"Status update received: {status}")
     except Exception as exc:
         print("card.action.trigger error:", repr(exc), flush=True)
+        print(traceback.format_exc(), flush=True)
         # Inline event-driven recovery: a failure here is treated as the
         # daemon being unresponsive. Restart and post a recovery notice only
         # to the originating chat, then acknowledge the click so the user
@@ -919,7 +965,17 @@ def _handle_command(command_text: str, message_id: str, region: str) -> None:
             reply_post(message_id, "/restart", [f"🔄 Restarting callback daemon... ✅ Done! PID: {new_pid}"])
         elif cmd == "/exclude":
             manager, label_uid = parse_exclude_command(arg)
-            title, lines = exclude_manager_lines(manager, label_uid)
+            if manager and label_uid:
+                title, lines = exclude_manager_lines(manager, label_uid)
+            else:
+                upc, reason = parse_upc_exclude_command(arg)
+                title, lines = upc_exclude_lines(upc, reason, added_by="chat_command")
+            reply_post(message_id, title, lines)
+        elif cmd == "/unexclude":
+            title, lines = upc_unexclude_lines(arg)
+            reply_post(message_id, title, lines)
+        elif cmd == "/exclusions":
+            title, lines = upc_exclusion_lines()
             reply_post(message_id, title, lines)
         elif cmd == "/include":
             manager, label_uid = parse_include_command(arg)
@@ -1084,6 +1140,8 @@ def handle_message_receive(data: P2ImMessageReceiveV1):
                 return
             if (stripped_lower.startswith("/unassigned") or stripped_lower.startswith("/pending")
                     or stripped_lower.startswith("/help") or stripped_lower.startswith("/health")
+                    or stripped_lower.startswith("/exclude") or stripped_lower.startswith("/unexclude")
+                    or stripped_lower.startswith("/exclusions")
                     or stripped_lower.startswith("/fix") or stripped_lower.startswith("/refresh")):
                 # Slash command in DM — default to BR region; allow override
                 # like `/unassigned US` or `/pending @ManagerName`.

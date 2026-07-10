@@ -31,6 +31,13 @@ from copyright_alert.manager_exclusions import (
     remove_exclusion,
     total_exclusion_count,
 )
+from copyright_alert.upc_exclusions import (
+    add_upc_exclusion,
+    describe_upc_exclusions,
+    is_upc_excluded,
+    normalize_upc,
+    remove_upc_exclusion,
+)
 
 BOT_SCRIPT = ROOT / "copyright_alert" / "persistent_callback.py"
 PID_FILE = ROOT / "copyright_alert" / "persistent_callback.pid"
@@ -302,23 +309,48 @@ def read_tracker_rows(region: str) -> Tuple[List[str], List[Dict[str, str]]]:
             if headers[col_idx]
         }
         if any(v for v in record.values()) and qualifies_region(record, region):
+            if is_upc_excluded(record.get("UPC", "")):
+                continue
             record["_row_number"] = row_numbers[idx] if idx < len(row_numbers) else idx + 1
             records.append(record)
     return headers, records
 
 
-def _is_open_status(status: str) -> bool:
+def _normalized_tracker_status(status: str) -> str:
     normalized = (status or "").strip().lower()
-    if not normalized:
+    normalized = re.sub(r"^[^\w]+\s*", "", normalized).strip()
+    return " ".join(normalized.split())
+
+
+def _admin_action_has_real_value(value: str) -> bool:
+    normalized = (value or "").strip().lower()
+    return bool(normalized) and normalized != "no"
+
+
+def _is_open_status(row_or_status) -> bool:
+    """Return True for rows that still need ops follow-up.
+
+    Confirm Takedown is open only while Admin Action Taken is empty or "NO".
+    Passing a bare status string is still supported for non-confirm statuses, but
+    callers that need Confirm Takedown handling must pass the full row dict.
+    """
+    if isinstance(row_or_status, dict):
+        status = row_or_status.get("Status", "")
+        admin_action = row_or_status.get("Admin Action Taken", "")
+    else:
+        status = row_or_status
+        admin_action = ""
+    normalized = _normalized_tracker_status(status)
+    if normalized == "resolved":
         return False
-    if "resolved" in normalized:
-        return False
-    return any(token in normalized for token in ["pending", "investigating", "confirm takedown", "disputing", "open", "🔍", "🔴", "⚖️"])
+    if normalized == "confirm takedown":
+        return not _admin_action_has_real_value(admin_action)
+    return normalized in {"", "pending", "investigating", "disputing", "open"}
 
 
 def get_open_cases(region: str) -> List[Dict[str, str]]:
     _, rows = read_tracker_rows(region)
-    return [row for row in rows if _is_open_status(row.get("Status", ""))]
+    return [row for row in rows if _is_open_status(row)]
 
 
 # Tokens that mark a case as resolved / closed and therefore NOT eligible for
@@ -336,14 +368,9 @@ _RESOLVED_TOKENS = (
 )
 
 
-def _is_unresolved_status(status: str) -> bool:
-    """True for cases that are still open (empty / pending / investigating /
-    disputing / etc.). False only when the status clearly indicates the case
-    has been resolved or closed."""
-    normalized = (status or "").strip().lower()
-    if not normalized:
-        return True
-    return not any(tok in normalized for tok in _RESOLVED_TOKENS)
+def _is_unresolved_status(row_or_status) -> bool:
+    """True for cases that are still open under the ops follow-up rules."""
+    return _is_open_status(row_or_status)
 
 
 def _is_blank_assignment(value: str) -> bool:
@@ -359,7 +386,7 @@ def get_unassigned_cases(region: str) -> List[Dict[str, str]]:
     _, rows = read_tracker_rows(region)
     out = []
     for row in rows:
-        if not _is_unresolved_status(row.get("Status", "")):
+        if not _is_unresolved_status(row):
             continue
         if not _is_blank_assignment(row.get("Label Manager", "")):
             continue
@@ -473,6 +500,7 @@ def manual_scan_region(region: str, max_messages: int = 80) -> dict:
         "skipped_no_aeolus": 0,
         "skipped_no_identifier": 0,
         "skipped_prefilter": 0,
+        "skipped_upc_excluded": 0,
         "posted_items": [],
     }
     seen_threads = set()
@@ -497,6 +525,9 @@ def manual_scan_region(region: str, max_messages: int = 80) -> dict:
         upc = str(ef.get("upc", "") or "").strip()
         if not upc or upc == "N/A":
             summary["skipped_no_identifier"] += 1
+            continue
+        if is_upc_excluded(upc):
+            summary["skipped_upc_excluded"] = summary.get("skipped_upc_excluded", 0) + 1
             continue
         candidates.append({"message_id": msg_id, "subject": subject, "date": date, "ef": ef})
     summary["parsed_candidates"] = len(candidates)
@@ -752,9 +783,12 @@ def command_help_lines() -> List:
         "/pending @AccountManager — list open cases filtered to a specific AM (matches the tracker BD / Label Manager columns; works in DM too, defaults to BR)",
         "/claims [am_name] — list cases grouped by AM (using tracker BD column as AM proxy)",
         "/restart — manually restart the callback daemon for all groups",
+        "/exclude <UPC> [reason] — skip this UPC in weekly DSP digests and alert scans",
+        "/unexclude <UPC> — remove a UPC from the UPC exclusion list",
+        "/exclusions — show the current UPC exclusion list",
         "/exclude @ManagerName from [label_uid] — stop tagging that manager for the label UID",
         "/include @ManagerName for [label_uid] — re-enable tagging that manager for the label UID",
-        "/exceptions — show the full exclusion list",
+        "/exceptions — show the manager exclusion list",
         "/exceptions [manager_name] — show which label UIDs a manager is excluded from",
         "/unassigned [region] — list open cases with no Label Manager AND no BD (defaults to BR; works in DM too)",
         "/health or /healthcheck — run a full health check on all bot components (daemon, JWT, lark-cli, tracker, email flow, scheduled jobs)",
@@ -1049,6 +1083,47 @@ def parse_include_command(arg: str) -> Tuple[str, str]:
     return manager, label_uid
 
 
+def parse_upc_exclude_command(arg: str) -> Tuple[str, str]:
+    parts = str(arg or "").strip().split(maxsplit=1)
+    if not parts:
+        return "", ""
+    upc = normalize_upc(parts[0])
+    reason = parts[1].strip() if len(parts) > 1 else ""
+    return upc, reason
+
+
+def upc_exclude_lines(upc: str, reason: str = "", added_by: str = "unknown") -> Tuple[str, List]:
+    ok, record = add_upc_exclusion(upc, reason, added_by)
+    if not ok:
+        return "/exclude", ["Usage: /exclude <UPC> [reason]"]
+    reason_text = f" Reason: {record.get('reason')}" if record.get("reason") else ""
+    return "/exclude", [f"✅ UPC {record['upc']} has been added to the exclusion list.{reason_text}"]
+
+
+def upc_unexclude_lines(upc: str) -> Tuple[str, List]:
+    ok, removed = remove_upc_exclusion(upc)
+    if not ok:
+        return "/unexclude", ["Usage: /unexclude <UPC>"]
+    norm = normalize_upc(upc)
+    if removed:
+        return "/unexclude", [f"✅ UPC {norm} has been removed from the exclusion list."]
+    return "/unexclude", [f"ℹ️ UPC {norm} was not in the exclusion list."]
+
+
+def upc_exclusion_lines() -> Tuple[str, List]:
+    records = describe_upc_exclusions()
+    title = "/exclusions — current UPC exclusion list"
+    if not records:
+        return title, ["No UPC exclusions are currently configured."]
+    lines: List = [f"Total excluded UPCs: {len(records)}", "__HR__"]
+    for record in records:
+        reason = record.get("reason") or "No reason provided"
+        added_by = record.get("added_by") or "unknown"
+        added_at = record.get("added_at") or "unknown time"
+        lines.append(f"• {record.get('upc')} — {reason} — added by {added_by} at {added_at}")
+    return title, lines
+
+
 def exclude_manager_lines(manager: str, label_uid: str) -> Tuple[str, List]:
     ok, added = add_exclusion(label_uid, [manager])
     if not ok or not label_uid or not manager:
@@ -1156,6 +1231,7 @@ def start_scan_in_background(region: str, message_id: str) -> None:
                 f"Posted: {summary['posted']}",
                 f"Skipped duplicate: {summary['skipped_duplicate']}",
                 f"Skipped not qualifying: {summary['skipped_not_qualifying']}",
+                f"Skipped UPC excluded: {summary.get('skipped_upc_excluded', 0)}",
             ]
             if summary.get("posted_items"):
                 lines.append("__HR__")
