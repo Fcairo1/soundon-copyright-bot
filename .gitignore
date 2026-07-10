@@ -36,6 +36,9 @@ logs/*
 # ── Runtime / generated state (kept locally, never committed) ────────────────
 runtime/
 !runtime/.gitkeep
+# F5: legacy state dir — upc_exclusions.json now lives in copyright_alert/.
+# Ignore any stray JSON left in data/ so the old location is never committed.
+data/*.json
 *_result.json
 *_output.json
 scan_checkpoint*.json

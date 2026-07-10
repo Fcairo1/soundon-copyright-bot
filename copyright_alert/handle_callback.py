@@ -38,8 +38,13 @@ UPC_COL_NAME = "UPC"
 ISRC_COL_NAME = "ISRC"
 EMAIL_STATUS_COL_NAME = "Email Status"
 EMAIL_STATUS_COL = "T"
-ADMIN_ACTION_COL_NAME = "Bot Action"
-ADMIN_ACTION_COL = "N"
+# F1: The bot ONLY writes to column N ("Status") via update_sheet_status().
+# Column R ("Admin Action Taken") is filled MANUALLY by ops and must NEVER be
+# written by the bot. The old dead admin-action machinery
+# (update_sheet_admin_action / _admin_action_value_for_status /
+# ADMIN_ACTION_COL_NAME="Bot Action" / ADMIN_ACTION_COL="N") was removed because
+# it pointed at the wrong header name and the wrong column (N is Status, not
+# Admin Action) and was a landmine waiting to corrupt the tracker.
 
 
 def _tracker_config(region=None):
@@ -140,7 +145,7 @@ def _parse_lark_annotated_csv(raw):
 def _read_sheet_values_cli(sheet_url, sheet_id):
     cmd = [
         "lark-cli", "sheets", "+csv-get", "--url", sheet_url,
-        "--sheet-id", sheet_id, "--range", "A1:Z500",
+        "--sheet-id", sheet_id, "--range", "A1:Z2000",  # B11: uncapped from A1:Z500
     ]
     last_error = ""
     for attempt in range(1, 4):
@@ -290,11 +295,29 @@ def update_card_state(card, status, message_id, operator_name=None, operator_id=
     effective_status = status or ""
     audit_line = _status_audit_line(effective_status, operator_name, operator_id, timestamp)
 
-    # Header summary/audit line
-    first = card["elements"][0]["text"]["content"].split("\n")
-    first = [line for line in first if not line.startswith("**Status:")]
-    first.append(audit_line)
-    card["elements"][0]["text"]["content"] = "\n".join(first)
+    # C8: Append the "**Status: …**" audit line to the case-summary element (the
+    # one containing "Artist(s)"), NOT element 0. After build_card_with_countdown
+    # runs, element 0 is the countdown badge, so the old `elements[0]` assumption
+    # dropped the status line into the wrong element. Locate the summary element
+    # by content and fall back to the first text element if it cannot be found.
+    summary_el = None
+    for el in card.get("elements", []):
+        text = el.get("text") if isinstance(el, dict) else None
+        content = text.get("content") if isinstance(text, dict) else None
+        if isinstance(content, str) and "Artist(s)" in content:
+            summary_el = el
+            break
+    if summary_el is None:
+        for el in card.get("elements", []):
+            text = el.get("text") if isinstance(el, dict) else None
+            if isinstance(text, dict) and isinstance(text.get("content"), str):
+                summary_el = el
+                break
+    if summary_el is not None:
+        lines = summary_el["text"]["content"].split("\n")
+        lines = [line for line in lines if not line.startswith("**Status:")]
+        lines.append(audit_line)
+        summary_el["text"]["content"] = "\n".join(lines)
 
     selected_type = _button_type_for_status(effective_status)
     for el in card.get("elements", []):
@@ -355,7 +378,7 @@ def read_sheet_values(region=None):
     except Exception as exc:
         print(f"Sheet read via lark-cli user OAuth failed; falling back to bot token: {exc!r}", flush=True)
     try:
-        data = _sheet_api("GET", sheet_url, sheet_id, "A1:Z500")
+        data = _sheet_api("GET", sheet_url, sheet_id, "A1:Z2000")  # B11: uncapped from A1:Z500
         value_range = (data.get("data") or {}).get("valueRange") or {}
         raw_values = value_range.get("values") or []
         rows = []
@@ -543,174 +566,6 @@ def _find_col_letter(header_name, fallback_letter, region=None):
     raise RuntimeError(
         f"Tracker is empty or unreadable; cannot resolve column {header_name!r}."
     )
-
-
-
-
-
-
-
-
-
-
-
-def _admin_action_value_for_status(status):
-
-
-    normalized = _norm(status)
-
-
-    lowered = re.sub(r"^[^\w]+\s*", "", normalized).casefold()
-
-
-    if lowered == "confirm takedown":
-
-
-        return "Confirm Takedown"
-
-
-    if lowered == "resolved":
-
-
-        return "Resolved"
-
-
-    return ""
-
-
-
-
-
-
-
-
-
-
-
-def update_sheet_admin_action(message_id=None, status=None, upc=None, isrc=None, region=None, tracker_row=None):
-
-
-    """Write the operator's chosen admin action into the bot action column."""
-
-
-    admin_value = _admin_action_value_for_status(status)
-
-
-    if not admin_value:
-
-
-        return False
-
-
-
-
-
-    sheet_url, sheet_id = _tracker_config(region)
-
-
-    values = read_sheet_values(region=region)
-
-
-    if not values:
-
-
-        print("update_sheet_admin_action: sheet is empty or unreadable")
-
-
-        return False
-
-
-
-
-
-    row_num, match_reason, header_index = _find_tracker_row(
-
-
-        values,
-
-
-        message_id=message_id,
-
-
-        upc=upc,
-
-
-        isrc=isrc,
-
-
-        tracker_row=tracker_row,
-
-
-    )
-
-
-    if not row_num:
-
-
-        print(
-
-
-            "update_sheet_admin_action: row not found for",
-
-
-            json.dumps({"message_id": message_id, "upc": upc, "isrc": isrc, "tracker_row": tracker_row}, ensure_ascii=False),
-
-
-        )
-
-
-        return False
-
-
-
-
-
-    admin_idx = header_index.get(ADMIN_ACTION_COL_NAME)
-
-
-    admin_col = _col_letter(admin_idx) if admin_idx is not None else ADMIN_ACTION_COL
-
-
-    cell = f"{admin_col}{row_num}"
-
-
-    try:
-
-
-        _sheet_api("PUT", sheet_url, sheet_id, cell, values=[[admin_value]])
-
-
-        print(f"Admin action update {cell} via bot token: ok (matched by {match_reason})", flush=True)
-
-
-        return True
-
-
-    except Exception as exc:
-
-
-        print(f"Admin action update {cell} via bot token failed; falling back to lark-cli: {exc!r}", flush=True)
-
-
-    try:
-
-
-        _write_sheet_cell_cli(sheet_url, sheet_id, cell, admin_value)
-
-
-        print(f"Admin action update {cell} via lark-cli fallback: ok (matched by {match_reason})", flush=True)
-
-
-        return True
-
-
-    except Exception as exc:
-
-
-        print(f"Admin action update {cell} via lark-cli fallback failed: {exc!r}", flush=True)
-
-
-        return False
 
 
 

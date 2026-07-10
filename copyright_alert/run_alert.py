@@ -20,7 +20,7 @@ import csv
 import io
 import tempfile
 import urllib.request
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from pathlib import Path
 
 from copyright_alert.lark_auth import request_json_with_auth_retry
@@ -88,11 +88,16 @@ _ENGAGEMENT_PARTITION_CACHE = None
 POSTED_CLAIMS_FILE = "copyright_alert/posted_claims.json"
 TRIAGE_QUERY = "Infringement Claim"
 TRIAGE_MAX = 50
-EXCLUDED_MENTIONS = {
+# B3: BASE_EXCLUDED_MENTIONS is the permanent, region-independent baseline of
+# usernames that must never be tagged. configure_region() rebuilds
+# EXCLUDED_MENTIONS from this baseline on every call so that region-specific
+# additions (e.g. US-only exclusions) do not leak across regions.
+BASE_EXCLUDED_MENTIONS = frozenset({
     "filipe.cairo", "esteban.mora", "diego.meleiro", "gabriel.borsatto",
     "marina.braum", "fellipe.perini", "rafael.lopes", "duane.gigliotti",
     "zhaoyaqing.devon",
-}
+})
+EXCLUDED_MENTIONS = set(BASE_EXCLUDED_MENTIONS)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -782,10 +787,18 @@ def _resolve_engagement_partition(force=False):
          data-landing lag for this table.
 
     The resolved value is cached per-process and the chosen partition is logged.
+
+    G3: The cache stores ``(partition_date_str, resolved_on_date)``. In a
+    long-running daemon a permanent cache would go stale after midnight, so we
+    re-resolve whenever the cached ``resolved_on_date`` is not today. This
+    refreshes the partition at most once per calendar day.
     """
     global _ENGAGEMENT_PARTITION_CACHE
+    today = date.today()
     if _ENGAGEMENT_PARTITION_CACHE and not force:
-        return _ENGAGEMENT_PARTITION_CACHE
+        cached_partition, resolved_on = _ENGAGEMENT_PARTITION_CACHE
+        if resolved_on == today:
+            return cached_partition
 
     fallback = (datetime.utcnow() - timedelta(days=2)).strftime("%Y-%m-%d")
     partition = None
@@ -807,7 +820,7 @@ def _resolve_engagement_partition(force=False):
     else:
         print(f"  ℹ Engagement partition: using max(p_date) = {partition}")
 
-    _ENGAGEMENT_PARTITION_CACHE = partition
+    _ENGAGEMENT_PARTITION_CACHE = (partition, today)
     return partition
 
 
@@ -1416,6 +1429,10 @@ def append_tracker_row(ef, ar, message_id, status=""):
     cmd = [
         "lark-cli", "sheets", "+cells-set", "--url", TRACKER_SHEET_URL,
         "--sheet-id", TRACKER_SHEET_ID, "--range", target_range,
+        # B11: verified `--allow-overwrite` is a supported boolean flag on
+        # `lark-cli sheets +cells-set` (default true). `=false` is valid syntax
+        # and makes the write error out instead of clobbering a non-empty target
+        # row — a safety net against a stale/wrong next_row. Keep it.
         "--allow-overwrite=false",
         "--cells", json.dumps(row, ensure_ascii=False),
     ]
@@ -1635,7 +1652,11 @@ def main():
         print("  Card saved to copyright_alert/last_card.json")
 
         success, posted_message_id = post_card(card, ar, upc=ef.get("upc"), context=f"{CURRENT_REGION} run_alert group post")
-        if success and posted_message_id:
+        # C5: Record the claim whenever the post succeeded, even if the API did
+        # not return a message_id. Previously this required a non-empty
+        # posted_message_id, so a successful post with an empty id was never
+        # recorded and the next run re-posted the same card as a duplicate.
+        if success:
             card = build_posted_group_card(
                 ef,
                 ar,

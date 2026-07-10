@@ -69,29 +69,15 @@ COMMAND_PREFIXES = ("/status", "/scan", "/pending", "/claims", "/restart", "/hel
 P2P_CHAT_CACHE_FILE = ROOT / "copyright_alert" / "bot_p2p_chats.json"
 P2P_CHAT_CACHE_LOCK = threading.Lock()
 
-# ── Conversational dispute state ─────────────────────────────────────────────
-# When an operator clicks "⚖️ Dispute claim" on a DM action card we cannot
-# collect their custom message inside the card (the input element does not
-# render reliably in DM cards). Instead we remember that this operator owes us a
-# dispute message, keyed by their open_id, and treat their *next* plain-text DM
-# as that message. Access is guarded by a lock because card actions and message
-# events are handled on separate threads.
-PENDING_DISPUTES = {}
-PENDING_DISPUTES_LOCK = threading.Lock()
-
-
-def _set_pending_dispute(open_id, value):
-    if not open_id:
-        return
-    with PENDING_DISPUTES_LOCK:
-        PENDING_DISPUTES[open_id] = value
-
-
-def _pop_pending_dispute(open_id):
-    if not open_id:
-        return None
-    with PENDING_DISPUTES_LOCK:
-        return PENDING_DISPUTES.pop(open_id, None)
+# ── Dispute button behavior (intentional) ────────────────────────────────────
+# C2: The "⚖️ Dispute claim" button intentionally sends a *fixed* pre-made
+# dispute template immediately (see handle_card_action → _process_spotify_reply
+# with an empty custom_message, and spotify_reply.reply_dispute which ignores
+# custom_message). There is deliberately NO conversational "type your custom
+# dispute message" flow: input elements do not render reliably inside DM cards,
+# so the previous PENDING_DISPUTES machinery could never be armed and was dead
+# code. It has been removed to avoid confusion. If a custom-message flow is ever
+# needed, re-introduce it explicitly and make reply_dispute honor custom_message.
 
 
 def _obj_to_dict(obj):
@@ -242,6 +228,22 @@ def _process_status_update(status, message_id, operator_name=None, operator_id=N
         # edited by ops and must NEVER be written by the bot, so we do not call
         # update_sheet_admin_action() here (F1).
         print(json.dumps({"patched": patched, "sheet_updated": sheet_ok, "status": status, "message_id": message_id, "operator": operator_name or operator_id, "timestamp": timestamp, "region": region, "tracker_row": tracker_row}, ensure_ascii=False), flush=True)
+    except RuntimeError as exc:
+        # G4: A RuntimeError here means a sheet-layout problem (e.g. a column
+        # header was renamed, so update_sheet_status could not find the "Status"
+        # column). This is NOT a daemon-health problem — restarting the daemon
+        # would not fix it and would trigger an infinite restart/recovery loop.
+        # Surface a clear message to the operator and do NOT restart the daemon.
+        print("card.action.trigger sheet-layout error:", repr(exc), flush=True)
+        if message_id:
+            try:
+                reply_post(
+                    message_id,
+                    "Tracker layout error",
+                    ["⚠️ Tracker layout error — a column header may have been renamed. Please contact ops."],
+                )
+            except Exception as reply_exc:
+                print(f"_process_status_update: could not surface layout error: {reply_exc!r}", flush=True)
     except Exception as exc:
         print("card.action.trigger background error:", repr(exc), flush=True)
         # Treat background processing failures as a signal that the daemon
@@ -577,23 +579,6 @@ def _summarize_cause(error_detail) -> str:
     return "lark-cli error"
 
 
-def _prompt_for_dispute_message(chat_id, value):
-    """Ask the operator to type their custom dispute message in the chat."""
-    title = value.get("title") or "N/A"
-    upc = value.get("upc") or "N/A"
-    prompt = (
-        "⚖️ Dispute selected for "
-        f"\"{title}\" (UPC {upc}).\n\n"
-        "Please reply to this chat with the custom dispute message you'd like to "
-        "send to the claimant. Your next message will be sent as the dispute reply.\n\n"
-        "Send \"cancel\" to abort."
-    )
-    try:
-        _send_chat_text(chat_id, prompt)
-    except Exception as exc:
-        print("dispute prompt send error:", repr(exc), flush=True)
-
-
 def handle_card_action(data):
     chat_id = None
     try:
@@ -670,15 +655,6 @@ def handle_card_action(data):
             if event_id and not _acquire_event_lock(event_id):
                 print(f"Skipping duplicate card action for event_id: {event_id}", flush=True)
                 return _toast("This button click was already processed.", "warn")
-
-            # Identify the operator so we can key any pending dispute to them.
-            operator = getattr(event, "operator", None) if event else None
-            operator_payload = ((payload.get("event") or {}).get("operator") or {})
-            operator_open_id = (
-                (getattr(operator, "open_id", None) if operator else None)
-                or operator_payload.get("open_id")
-                or operator_payload.get("user_id")
-            )
 
             # Optional operator-supplied fields from the card form. Both are
             # ignored when blank, so the normal flow is unchanged.
@@ -832,7 +808,7 @@ def _read_tracker_fresh(region: str):
         "lark-cli", "sheets", "+csv-get",
         "--url", tracker_url,
         "--sheet-id", sheet_id,
-        "--range", "A1:T500",
+        "--range", "A1:T2000",
         "--max-chars", "200000",
     ]
     # Refresh AIME-injected credentials in-place before spawning lark-cli. The
@@ -843,10 +819,12 @@ def _read_tracker_fresh(region: str):
     env = os.environ.copy()
     res = subprocess.run(cmd, capture_output=True, text=True, timeout=90, env=env)
     combined = (res.stdout or "") + (res.stderr or "")
-    parsed, rows, _ = ra.parse_lark_annotated_csv(res.stdout)
+    # B7: keep row_numbers so callers can map a list index back to the real
+    # sheet row number (blank/skipped rows make `idx + 1` wrong).
+    parsed, rows, row_numbers = ra.parse_lark_annotated_csv(res.stdout)
     if res.returncode != 0 or not parsed:
         raise RuntimeError(f"lark-cli sheet read failed: {combined[:500]}")
-    return rows
+    return rows, row_numbers
 
 
 def _handle_card_command(command_text, message_id, target_chat_id="", target_open_id="", region_hint=None):
@@ -887,13 +865,18 @@ def _handle_card_command(command_text, message_id, target_chat_id="", target_ope
         found = None
         for region in regions:
             try:
-                rows = _read_tracker_fresh(region)
+                rows, row_numbers = _read_tracker_fresh(region)
             except Exception as exc:
                 print(f"/card: read tracker {region} via fresh subprocess failed: {exc!r}", flush=True)
                 continue
             for idx, row in enumerate(rows):
                 if row and str(row[0]).strip() == upc:
-                    found = (region, idx + 1, row)
+                    # B7: map the list index back to the true sheet row number
+                    # via row_numbers. `idx + 1` is wrong whenever the CSV
+                    # reader skipped blank rows; row_numbers already accounts
+                    # for the header row and any gaps.
+                    sheet_row = row_numbers[idx] if idx < len(row_numbers) else idx + 1
+                    found = (region, sheet_row, row)
                     break
             if found:
                 break
@@ -981,29 +964,32 @@ def _handle_command(command_text: str, message_id: str, region: str) -> None:
         elif cmd == "/exclude":
             arg_str = (arg or "").strip()
             first_token = arg_str.split()[0] if arg_str else ""
-            # A UPC exclusion is only valid when the FIRST token is a 12–13 digit
-            # UPC. Anything else (contains "from", starts with "@", or a name) is
-            # treated as a manager exclusion attempt (F2).
+            # F2: Route by the FIRST token. A UPC exclusion is only valid when
+            # the first token is a 12–13 digit UPC. Anything else (contains
+            # "from", starts with "@", or a plain name) is a manager exclusion
+            # attempt, and on parse failure we show the MANAGER usage message
+            # (not the confusing UPC one).
             looks_like_upc = bool(re.fullmatch(r"\d{12,13}", first_token))
-            manager, label_uid = parse_exclude_command(arg)
-            if manager and label_uid:
-                title, lines = exclude_manager_lines(manager, label_uid)
-            elif looks_like_upc:
+            if looks_like_upc:
                 upc, reason = parse_upc_exclude_command(arg)
                 title, lines = upc_exclude_lines(upc, reason, added_by="chat_command")
             else:
-                # Manager-style intent that failed to parse → show the MANAGER
-                # usage message (not the UPC one).
-                title = "/exclude — manager exclusion"
-                lines = [
-                    "⚠️ Could not parse that exclusion.",
-                    "",
-                    "**Exclude a manager from a label's alerts:**",
-                    "`/exclude @Manager Name from <UID>`",
-                    "",
-                    "**Exclude a release by UPC:**",
-                    "`/exclude <12–13 digit UPC> [reason]`",
-                ]
+                manager, label_uid = parse_exclude_command(arg)
+                if manager and label_uid:
+                    title, lines = exclude_manager_lines(manager, label_uid)
+                else:
+                    # Manager-style intent that failed to parse → show the
+                    # MANAGER usage message (not the UPC one).
+                    title = "/exclude — manager exclusion"
+                    lines = [
+                        "⚠️ Could not parse that exclusion.",
+                        "",
+                        "**Exclude a manager from a label's alerts:**",
+                        "`/exclude @Manager Name from <UID>`",
+                        "",
+                        "**Exclude a release by UPC:**",
+                        "`/exclude <12–13 digit UPC> [reason]`",
+                    ]
             reply_post(message_id, title, lines)
         elif cmd == "/unexclude":
             title, lines = upc_unexclude_lines(arg)
@@ -1130,7 +1116,7 @@ def handle_message_receive(data: P2ImMessageReceiveV1):
         message_id = getattr(message, "message_id", "")
         text = parse_text_message(getattr(message, "content", ""))
 
-        # Resolve the sender's open_id (needed to match a pending dispute).
+        # Resolve the sender's open_id (used to key DM command handling).
         sender_open_id = None
         sender_id = getattr(sender, "sender_id", None) if sender else None
         if sender_id is not None:
@@ -1140,37 +1126,9 @@ def handle_message_receive(data: P2ImMessageReceiveV1):
         if chat_type == "p2p":
             stripped = (text or "").strip()
 
-            # ── Conversational dispute capture ───────────────────────────────
-            # If this operator previously clicked "⚖️ Dispute claim", treat this
-            # message as their custom dispute text (unless they cancel).
-            pending = _pop_pending_dispute(sender_open_id)
-            if pending is not None:
-                if stripped.lower() in ("cancel", "/cancel", "abort"):
-                    try:
-                        reply_text(message_id, "❌ Dispute cancelled. No email was sent.")
-                    except Exception as exc:
-                        print("dispute cancel reply error:", repr(exc), flush=True)
-                    return
-                if not stripped:
-                    # Empty message: keep the pending state and re-prompt.
-                    _set_pending_dispute(sender_open_id, pending)
-                    try:
-                        reply_text(message_id, "Please type the dispute message text (or send \"cancel\" to abort).")
-                    except Exception as exc:
-                        print("dispute reprompt reply error:", repr(exc), flush=True)
-                    return
-                try:
-                    reply_text(message_id, "✍️ Got it — sending your dispute reply to the claim thread…")
-                except Exception as exc:
-                    print("dispute ack reply error:", repr(exc), flush=True)
-                worker = threading.Thread(
-                    target=_process_spotify_reply,
-                    args=(pending, stripped, chat_id),
-                    daemon=True,
-                )
-                worker.start()
-                return
-
+            # C2: There is intentionally no conversational dispute-capture flow
+            # here. The Dispute button sends a fixed template immediately, so a
+            # plain DM is never interpreted as a "custom dispute message".
             upcs = _extract_upcs(stripped)
             stripped_lower = stripped.lower()
             if stripped_lower.startswith("/card"):

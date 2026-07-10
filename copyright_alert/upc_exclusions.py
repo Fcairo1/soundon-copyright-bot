@@ -10,7 +10,11 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 ROOT = Path(__file__).resolve().parents[1]
-EXCLUSIONS_FILE = ROOT / "data" / "upc_exclusions.json"
+# F5: Keep the state file inside the package dir (consistent with
+# manager_exclusions.json and the other *.json state files) instead of a third
+# state location under <repo>/data/. The legacy path is migrated on first load.
+EXCLUSIONS_FILE = ROOT / "copyright_alert" / "upc_exclusions.json"
+_LEGACY_EXCLUSIONS_FILE = ROOT / "data" / "upc_exclusions.json"
 
 _UPC_RE = re.compile(r"^\d{12,13}$")
 
@@ -36,11 +40,26 @@ def _normalize_record(record: dict) -> dict:
     }
 
 
+def _migrate_legacy_exclusions_file() -> None:
+    """F5: Move the state file from the old <repo>/data/ location into the
+    package dir on first use. Runs at most once (skipped once the new file
+    exists). Best-effort: any failure leaves both files untouched.
+    """
+    try:
+        if EXCLUSIONS_FILE.exists() or not _LEGACY_EXCLUSIONS_FILE.exists():
+            return
+        EXCLUSIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _LEGACY_EXCLUSIONS_FILE.replace(EXCLUSIONS_FILE)
+    except Exception:
+        pass
+
+
 def load_upc_exclusions() -> Dict[str, dict]:
     """Load exclusions keyed by normalized UPC.
 
     Accepts both the canonical list format and a defensive legacy dict format.
     """
+    _migrate_legacy_exclusions_file()
     if not EXCLUSIONS_FILE.exists():
         return {}
     try:
@@ -113,4 +132,7 @@ def is_upc_excluded(upc: str) -> bool:
 
 
 def describe_upc_exclusions() -> List[dict]:
-    return [load_upc_exclusions()[upc] for upc in sorted(load_upc_exclusions().keys())]
+    # F3: Load the exclusion store once instead of re-reading the JSON file
+    # N+1 times (once for the keys, once per record).
+    data = load_upc_exclusions()
+    return [data[upc] for upc in sorted(data.keys())]

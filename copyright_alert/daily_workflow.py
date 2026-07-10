@@ -79,6 +79,10 @@ CHECKPOINT_FILE = "copyright_alert/scan_checkpoint.json"
 LAST_CARD_FILE = "copyright_alert/last_card.json"
 LOG_DIR = "copyright_alert/logs"
 TRIAGE_MAX = 50
+# G2: A failed message is retried at most this many times before it is dropped
+# from the retry list, so a message that will never succeed is not re-processed
+# on every run forever.
+MAX_RETRY_ATTEMPTS = 5
 ACTIVE_REGION = "BR"  # region this workflow run is configured for
 RECIPIENT_EMAIL = "filipe.cairo@bytedance.com"  # filipe.cairo — personal alert DM target (BR default)
 RECIPIENT_OPEN_ID = ""  # when set, ops DMs go to this open_id via the copyright bot
@@ -209,9 +213,12 @@ def load_failed_message_ids():
                     "message_id": item.get("message_id"),
                     "subject": item.get("subject", ""),
                     "date": item.get("date", ""),
+                    # G2: retry attempt counter. Backward-compatible: entries
+                    # written before G2 lack this key and default to 1.
+                    "attempts": int(item.get("attempts") or 1),
                 })
             elif isinstance(item, str) and item:
-                normalized.append({"message_id": item, "subject": "", "date": ""})
+                normalized.append({"message_id": item, "subject": "", "date": "", "attempts": 1})
         return normalized
     except Exception as e:
         log(f"  ⚠ Could not read failed_message_ids from checkpoint: {e!r}")
@@ -341,6 +348,13 @@ def run_scan():
 
     checkpoint = load_checkpoint()
     prev_failed = load_failed_message_ids()
+    # G2: map message_id → prior attempt count so we can increment per run and
+    # drop entries that have exhausted their retry budget.
+    prev_attempts = {
+        item["message_id"]: int(item.get("attempts") or 1)
+        for item in prev_failed
+        if item.get("message_id")
+    }
 
     if not messages and not prev_failed:
         log("  ⚠ No emails fetched and no pending retries; nothing to scan.")
@@ -477,8 +491,31 @@ def run_scan():
             f"arrived since the last run; messages older than this window will be permanently "
             f"skipped once the checkpoint advances. Consider raising TRIAGE_MAX or paginating.")
 
-    failed_list = list(failed_entries.values())
+    # G2: Attach/increment attempt counters and drop entries that have exhausted
+    # their retry budget so a permanently-failing message is not retried forever.
+    failed_list = []
+    dropped = []
+    for entry in failed_entries.values():
+        mid = entry.get("message_id")
+        attempts = prev_attempts.get(mid, 0) + 1
+        entry["attempts"] = attempts
+        if attempts > MAX_RETRY_ATTEMPTS:
+            log(f"  ⚠ Dropping message {mid} from retry list after {attempts - 1} failed attempts (giving up).")
+            dropped.append(entry)
+            continue
+        failed_list.append(entry)
     summary["failed_pending_retry"] = len(failed_list)
+    summary["dropped_after_max_retries"] = len(dropped)
+    if dropped:
+        # Best-effort notify the ops owner so a stuck message is not silently lost.
+        try:
+            send_dm_post(
+                f"⚠️ {len(dropped)} message(s) dropped from the retry list",
+                [f"• {d.get('message_id')} — {d.get('subject') or 'N/A'} (after {MAX_RETRY_ATTEMPTS} failed attempts)"
+                 for d in dropped],
+            )
+        except Exception as exc:
+            log(f"  ⚠ Could not DM ops about dropped retries: {exc!r}")
     save_checkpoint(new_checkpoint, failed_message_ids=failed_list)
     log(f"\n  Scan summary: {json.dumps(summary, ensure_ascii=False)}")
     return summary
@@ -779,12 +816,10 @@ def _header_index(headers, name):
     return None
 
 
-def _cell(row, idx):
-    if idx is None or idx >= len(row):
-        return ""
-    return _norm(row[idx])
-
-
+# C4: The duplicate `_cell(row, idx)` definition that previously lived here was
+# removed. It silently shadowed the identical `_cell(row, i)` defined earlier in
+# this module (same behavior/signature). The single canonical definition above
+# is used by all callers.
 def ensure_spotify_columns(values):
     """Make sure the 'Card Message ID' and 'Email Status' headers exist.
 

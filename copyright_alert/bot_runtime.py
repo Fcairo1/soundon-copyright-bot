@@ -146,6 +146,12 @@ def configure_region(region: str) -> Dict[str, str]:
     ra.TARGET_CHAT_ID = cfg["chat_id"]
     ra.TRACKER_SHEET_URL = cfg["tracker_url"]
     ra.TRACKER_SHEET_ID = cfg["sheet_id"]
+    # B3: Rebuild EXCLUDED_MENTIONS from the permanent global baseline on every
+    # configure_region() call. Previously this only ever `.update()`d the set,
+    # so region-specific exclusions (e.g. added during a US scan) leaked into
+    # subsequent BR/SPLA scans. Resetting first keeps each region's exclusion
+    # list isolated.
+    ra.EXCLUDED_MENTIONS = set(ra.BASE_EXCLUDED_MENTIONS)
     ra.EXCLUDED_MENTIONS.update({u.lower() for u in cfg.get("ignored_mentions", set())})
     # Drive the region-aware scan filter in run_alert.qualifies().
     ra.CURRENT_REGION = region
@@ -289,7 +295,10 @@ def read_tracker_rows(region: str) -> Tuple[List[str], List[Dict[str, str]]]:
         "--sheet-id",
         cfg["sheet_id"],
         "--range",
-        "A1:Q200",
+        # B11: uncap the read range so trackers with more than ~200 rows are
+        # fully read (the old A1:Q200 both truncated rows and stopped before
+        # columns R/S/T).
+        "A1:T2000",
     ]
     res = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True, timeout=90)
     if res.returncode != 0:
@@ -308,7 +317,15 @@ def read_tracker_rows(region: str) -> Tuple[List[str], List[Dict[str, str]]]:
             for col_idx in range(len(headers))
             if headers[col_idx]
         }
-        if any(v for v in record.values()) and qualifies_region(record, region):
+        # A3: Do NOT re-apply qualifies_region() here. Rows in a regional
+        # tracker are already in-region by construction (they were written by
+        # the scan/email flow that already applied the region filter). The
+        # region filter looks for columns like "user_region"/"User Tier"/
+        # "source_type_name" that do not exist in the tracker, so applying it
+        # here silently dropped every row. The region filter belongs at
+        # scan/email time (manual_scan_region / run_alert), not tracker-read
+        # time. We still honor the UPC exclusion list.
+        if any(v for v in record.values()):
             if is_upc_excluded(record.get("UPC", "")):
                 continue
             record["_row_number"] = row_numbers[idx] if idx < len(row_numbers) else idx + 1
@@ -484,115 +501,129 @@ def region_last_scan(region: str) -> str:
 
 
 def manual_scan_region(region: str, max_messages: int = 80) -> dict:
+    # C6: normalize the config region up front so it is stored consistently
+    # (e.g. "US") in posted_claims — not a per-row Aeolus country code ("CA").
+    region = (region or "BR").upper()
     cfg = configure_region(region)
+    # C6: manual scans temporarily raise dw.TRIAGE_MAX; save the previous value
+    # and restore it in a finally block so a manual scan does not permanently
+    # change the fetch window for subsequent daily/manual scans in this process.
+    _saved_triage_max = dw.TRIAGE_MAX
     dw.TRIAGE_MAX = max_messages
-    messages = dw.fetch_messages_raw()
-    summary = {
-        "region": region,
-        "chat": cfg["chat_id"],
-        "fetched": len(messages),
-        "examined": 0,
-        "parsed_candidates": 0,
-        "unique_upcs": 0,
-        "posted": 0,
-        "skipped_duplicate": 0,
-        "skipped_not_qualifying": 0,
-        "skipped_no_aeolus": 0,
-        "skipped_no_identifier": 0,
-        "skipped_prefilter": 0,
-        "skipped_upc_excluded": 0,
-        "posted_items": [],
-    }
-    seen_threads = set()
-    candidates = []
-    for m in messages:
-        msg_id = m.get("message_id", "")
-        subject = m.get("subject", "")
-        date = m.get("date", "")
-        thread_id = m.get("thread_id") or msg_id
-        reason = dw._prefilter_skip_reason(subject, thread_id, seen_threads)
-        if reason:
-            summary["skipped_prefilter"] += 1
-            continue
-        seen_threads.add(thread_id)
-        if not msg_id:
-            continue
-        summary["examined"] += 1
-        body, meta = ra.fetch_email(msg_id)
-        if not body:
-            continue
-        ef = ra.extract_fields(body, subject, meta)
-        upc = str(ef.get("upc", "") or "").strip()
-        if not upc or upc == "N/A":
-            summary["skipped_no_identifier"] += 1
-            continue
-        if is_upc_excluded(upc):
-            summary["skipped_upc_excluded"] = summary.get("skipped_upc_excluded", 0) + 1
-            continue
-        candidates.append({"message_id": msg_id, "subject": subject, "date": date, "ef": ef})
-    summary["parsed_candidates"] = len(candidates)
-    aeolus_by_upc = ra.batch_query_aeolus_by_upc([c["ef"].get("upc") for c in candidates])
-    summary["unique_upcs"] = len(aeolus_by_upc)
+    try:
+        messages = dw.fetch_messages_raw()
+        summary = {
+            "region": region,
+            "chat": cfg["chat_id"],
+            "fetched": len(messages),
+            "examined": 0,
+            "parsed_candidates": 0,
+            "unique_upcs": 0,
+            "posted": 0,
+            "skipped_duplicate": 0,
+            "skipped_not_qualifying": 0,
+            "skipped_no_aeolus": 0,
+            "skipped_no_identifier": 0,
+            "skipped_prefilter": 0,
+            "skipped_upc_excluded": 0,
+            "posted_items": [],
+        }
+        seen_threads = set()
+        candidates = []
+        for m in messages:
+            msg_id = m.get("message_id", "")
+            subject = m.get("subject", "")
+            date = m.get("date", "")
+            thread_id = m.get("thread_id") or msg_id
+            reason = dw._prefilter_skip_reason(subject, thread_id, seen_threads)
+            if reason:
+                summary["skipped_prefilter"] += 1
+                continue
+            seen_threads.add(thread_id)
+            if not msg_id:
+                continue
+            summary["examined"] += 1
+            body, meta = ra.fetch_email(msg_id)
+            if not body:
+                continue
+            ef = ra.extract_fields(body, subject, meta)
+            upc = str(ef.get("upc", "") or "").strip()
+            if not upc or upc == "N/A":
+                summary["skipped_no_identifier"] += 1
+                continue
+            if is_upc_excluded(upc):
+                summary["skipped_upc_excluded"] = summary.get("skipped_upc_excluded", 0) + 1
+                continue
+            candidates.append({"message_id": msg_id, "subject": subject, "date": date, "ef": ef})
+        summary["parsed_candidates"] = len(candidates)
+        aeolus_by_upc = ra.batch_query_aeolus_by_upc([c["ef"].get("upc") for c in candidates])
+        summary["unique_upcs"] = len(aeolus_by_upc)
 
-    for candidate in candidates:
-        msg_id = candidate["message_id"]
-        subject = candidate["subject"]
-        ef = candidate["ef"]
-        upc = str(ef.get("upc", "") or "").strip()
-        ar = aeolus_by_upc.get(upc) or {}
-        if not ar:
-            summary["skipped_no_aeolus"] += 1
-            continue
-        if (not ef.get("isrc") or ef.get("isrc") == "N/A") and ar.get("isrc"):
-            ef["isrc"] = str(ar.get("isrc")).strip() or "N/A"
-        if not qualifies_region(ar, region):
-            summary["skipped_not_qualifying"] += 1
-            continue
-        dup_key = ra.claim_key(ef, ar, subject)
-        if ra.is_claim_already_posted(dup_key):
-            summary["skipped_duplicate"] += 1
-            continue
+        for candidate in candidates:
+            msg_id = candidate["message_id"]
+            subject = candidate["subject"]
+            ef = candidate["ef"]
+            upc = str(ef.get("upc", "") or "").strip()
+            ar = aeolus_by_upc.get(upc) or {}
+            if not ar:
+                summary["skipped_no_aeolus"] += 1
+                continue
+            if (not ef.get("isrc") or ef.get("isrc") == "N/A") and ar.get("isrc"):
+                ef["isrc"] = str(ar.get("isrc")).strip() or "N/A"
+            if not qualifies_region(ar, region):
+                summary["skipped_not_qualifying"] += 1
+                continue
+            dup_key = ra.claim_key(ef, ar, subject)
+            if ra.is_claim_already_posted(dup_key):
+                summary["skipped_duplicate"] += 1
+                continue
 
-        card = ra.build_card(ef, ar)
-        LAST_CARD_FILE.write_text(json.dumps(card, ensure_ascii=False, indent=2), encoding="utf-8")
-        success, posted_message_id = ra.post_card(card, ar, upc=upc, context=f"{region} manual scan group post")
-        if not (success and posted_message_id):
-            continue
+            card = ra.build_card(ef, ar)
+            LAST_CARD_FILE.write_text(json.dumps(card, ensure_ascii=False, indent=2), encoding="utf-8")
+            success, posted_message_id = ra.post_card(card, ar, upc=upc, context=f"{region} manual scan group post")
+            if not (success and posted_message_id):
+                continue
 
-        patched_card = ra.build_card(ef, ar, lark_message_id=posted_message_id)
-        LAST_CARD_FILE.write_text(json.dumps(patched_card, ensure_ascii=False, indent=2), encoding="utf-8")
-        ra.patch_card_message(posted_message_id, patched_card)
-        tracker_row = ra.append_tracker_row(ef, ar, posted_message_id, status="")
-        ra._save_posted_claim(
-            dup_key,
-            {
-                "message_id": posted_message_id,
-                "source_email_message_id": msg_id,
-                "subject": subject,
+            patched_card = ra.build_card(ef, ar, lark_message_id=posted_message_id)
+            LAST_CARD_FILE.write_text(json.dumps(patched_card, ensure_ascii=False, indent=2), encoding="utf-8")
+            ra.patch_card_message(posted_message_id, patched_card)
+            tracker_row = ra.append_tracker_row(ef, ar, posted_message_id, status="")
+            ra._save_posted_claim(
+                dup_key,
+                {
+                    "message_id": posted_message_id,
+                    "source_email_message_id": msg_id,
+                    "subject": subject,
+                    "upc": ef.get("upc", "N/A"),
+                    "isrc": ef.get("isrc", "N/A"),
+                    "title": ef.get("title") if ef.get("title") != "N/A" else ar.get("album_title", "N/A"),
+                    "artist": ra._format_artist_names(ar.get("display_artist")),
+                    "ref_id": ef.get("ref_id", "N/A"),
+                    # C6: store the config region (e.g. "US"), not the per-row
+                    # Aeolus country code (e.g. "CA"), so posted_claims agree
+                    # with the tracker/region routing.
+                    "region": region,
+                    "tracker_row": tracker_row,
+                    "source": ar.get("source_type_name", "N/A"),
+                    "tier": ar.get("User Tier", "N/A"),
+                    "date": candidate.get("date", ""),
+                    "claimant_name": ef.get("claimant_name", "N/A"),
+                    "claimant_email": ef.get("claimant_email", "N/A"),
+                    "chat_id": ra.TARGET_CHAT_ID,
+                },
+            )
+            summary["posted"] += 1
+            summary["posted_items"].append({
                 "upc": ef.get("upc", "N/A"),
-                "isrc": ef.get("isrc", "N/A"),
                 "title": ef.get("title") if ef.get("title") != "N/A" else ar.get("album_title", "N/A"),
                 "artist": ra._format_artist_names(ar.get("display_artist")),
-                "ref_id": ef.get("ref_id", "N/A"),
-                "region": ar.get("user_region", "N/A"),
-                "tracker_row": tracker_row,
-                "source": ar.get("source_type_name", "N/A"),
-                "tier": ar.get("User Tier", "N/A"),
-                "date": candidate.get("date", ""),
-                "claimant_name": ef.get("claimant_name", "N/A"),
-                "claimant_email": ef.get("claimant_email", "N/A"),
-                "chat_id": ra.TARGET_CHAT_ID,
-            },
-        )
-        summary["posted"] += 1
-        summary["posted_items"].append({
-            "upc": ef.get("upc", "N/A"),
-            "title": ef.get("title") if ef.get("title") != "N/A" else ar.get("album_title", "N/A"),
-            "artist": ra._format_artist_names(ar.get("display_artist")),
-            "message_id": posted_message_id,
-        })
-    update_last_scan(region, summary)
-    return summary
+                "message_id": posted_message_id,
+            })
+        update_last_scan(region, summary)
+        return summary
+    finally:
+        # C6: always restore the previous fetch window.
+        dw.TRIAGE_MAX = _saved_triage_max
 
 
 def daemon_processes() -> List[int]:
@@ -784,9 +815,9 @@ def command_help_lines() -> List:
         "/claims [am_name] — list cases grouped by AM (using tracker BD column as AM proxy)",
         "/restart — manually restart the callback daemon for all groups",
         "__HR__",
-        "/exclude — two forms (priority: manager form wins when the argument contains 'from' or starts with '@'):",
-        "  • Manager: `/exclude @ManagerName from <label_uid>` — stop tagging that manager for the label UID",
-        "  • UPC: `/exclude <12–13 digit UPC> [reason]` — skip this UPC in weekly DSP digests and alert scans (only when the first token is a 12–13 digit UPC)",
+        "/exclude — two forms (routed by the FIRST token):",
+        "  • UPC: `/exclude <12–13 digit UPC> [reason]` — skip this UPC in weekly DSP digests and alert scans (used when the first token is a 12–13 digit UPC)",
+        "  • Manager: `/exclude @ManagerName from <label_uid>` — stop tagging that manager for the label UID (used for anything else, e.g. contains 'from' or starts with '@')",
         "/unexclude <UPC> — remove a UPC from the UPC exclusion list",
         "/exclusions — show the current UPC exclusion list",
         "/include @ManagerName for [label_uid] — re-enable tagging that manager for the label UID",
@@ -1127,8 +1158,13 @@ def upc_exclusion_lines() -> Tuple[str, List]:
 
 
 def exclude_manager_lines(manager: str, label_uid: str) -> Tuple[str, List]:
+    # C7: Validate inputs BEFORE mutating the exclusion store. Previously
+    # add_exclusion() ran first and could persist a bogus/empty entry even when
+    # the command was malformed. Only save once both fields are present.
+    if not label_uid or not manager:
+        return "/exclude", ["Usage: /exclude @ManagerName from [label_uid]"]
     ok, added = add_exclusion(label_uid, [manager])
-    if not ok or not label_uid or not manager:
+    if not ok:
         return "/exclude", ["Usage: /exclude @ManagerName from [label_uid]"]
     return (
         "/exclude",
