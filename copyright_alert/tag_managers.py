@@ -355,13 +355,32 @@ def _md_escape(text: str) -> str:
     return _norm(text).replace("\\", "\\\\").replace("[", "(").replace("]", ")")
 
 
-def build_tag_card(managers, no_manager_rows=None):
-    """Build an interactive card that @-mentions each manager with their UPCs.
+def _current_region() -> str:
+    """Return the active region configured by bot_runtime/daily_workflow, if any."""
+    try:
+        from copyright_alert import run_alert as ra
+        return (getattr(ra, "CURRENT_REGION", "BR") or "BR").upper()
+    except Exception:
+        return "BR"
+
+
+def _manager_label(username: str, display_name: str, region: str = None) -> str:
+    """Render manager in cards: US uses plain text; BR/SPLA keep Lark mentions."""
+    if (region or _current_region()).upper() == "US":
+        return _md_escape(display_name)
+    return f'<at email="{username}@{MENTION_DOMAIN}">{display_name}</at>'
+
+
+def build_tag_card(managers, no_manager_rows=None, region=None):
+    """Build an interactive card that names each manager with their UPCs.
 
     Layout (per manager):
         @Manager Name — please provide an update on these infringement claims:
         • [UPC1](admin_url) — Title 1
         • [UPC2](admin_url) — Title 2
+
+    US group cards intentionally render manager names as plain text (no Lark
+    @mention). BR/SPLA and any other region retain the existing @mention behavior.
     """
     elements = [
         {"tag": "div", "text": {"tag": "lark_md",
@@ -372,8 +391,10 @@ def build_tag_card(managers, no_manager_rows=None):
     today = today_brt()
     no_manager_rows = no_manager_rows or []
 
+    region = (region or _current_region()).upper()
+
     for uname, info in managers.items():
-        mention = f'<at email="{uname}@{MENTION_DOMAIN}">{info["display"]}</at>'
+        mention = _manager_label(uname, info["display"], region)
         elements.append({
             "tag": "div",
             "text": {"tag": "lark_md",
