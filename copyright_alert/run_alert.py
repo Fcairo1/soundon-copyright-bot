@@ -26,7 +26,7 @@ from pathlib import Path
 from copyright_alert.lark_auth import request_json_with_auth_retry
 from copyright_alert.manager_exclusions import is_manager_excluded
 from copyright_alert.upc_exclusions import is_upc_excluded
-from copyright_alert.region_guard import assert_region_allowed
+from copyright_alert.region_guard import assert_region_allowed, assert_chat_matches_region
 
 # ── Config ──────────────────────────────────────────────────────────────────
 
@@ -1458,15 +1458,45 @@ def append_tracker_row(ef, ar, message_id, status=""):
     return next_row if res.returncode == 0 else None
 
 
-def post_card(card, aeolus_row=None, *, upc=None, context="group post"):
+def post_card(card, aeolus_row=None, *, upc=None, context="group post",
+              chat_id=None, expected_region=None):
     """Post the card to Lark via direct REST API using BOT_APP_ID as sender.
 
     When claim metadata is available, enforce the chat/region guard inside the
     final posting primitive so callers cannot accidentally route an out-of-scope
     UPC to the currently configured group.
+
+    H2: `chat_id` and `expected_region` let a caller pin the destination
+    explicitly instead of trusting the process-global TARGET_CHAT_ID, which can
+    be mutated by a concurrent region reconfiguration mid-post. When `chat_id`
+    is given the card is posted there (not to TARGET_CHAT_ID); when
+    `expected_region` is given the target chat is asserted to be scoped to that
+    region even if no per-claim Aeolus row is available (e.g. the countdown
+    replacement card path). Every post logs (intended_region, global
+    TARGET_CHAT_ID, target_chat_id) so any future wrong-region incident is
+    attributable.
     """
+    target_chat_id = chat_id or TARGET_CHAT_ID
+    intended_region = expected_region or (aeolus_row or {}).get("user_region")
+
+    # H2: record intended vs. process-global vs. actual target for every post.
+    print(
+        "post_card routing: " + json.dumps({
+            "intended_region": intended_region,
+            "global_TARGET_CHAT_ID": TARGET_CHAT_ID,
+            "target_chat_id": target_chat_id,
+            "context": context,
+            "upc": upc or (aeolus_row or {}).get("upc"),
+        }, ensure_ascii=False),
+        flush=True,
+    )
+
+    # Enforce the region guard against the ACTUAL destination chat.
     if aeolus_row is not None:
-        assert_region_allowed(TARGET_CHAT_ID, aeolus_row, upc=upc, context=context)
+        assert_region_allowed(target_chat_id, aeolus_row, upc=upc, context=context)
+    if expected_region is not None:
+        # Guard even when no Aeolus row is available (H2 door #1).
+        assert_chat_matches_region(target_chat_id, expected_region, context=context)
 
     def make_request():
         token = _get_bot_access_token()
@@ -1474,7 +1504,7 @@ def post_card(card, aeolus_row=None, *, upc=None, context="group post"):
             raise RuntimeError("Could not get bot access token")
         url = "https://open.larksuite.com/open-apis/im/v1/messages?receive_id_type=chat_id"
         body = json.dumps({
-            "receive_id": TARGET_CHAT_ID,
+            "receive_id": target_chat_id,
             "msg_type": "interactive",
             "content": json.dumps(card, ensure_ascii=False),
         }).encode("utf-8")
@@ -1489,7 +1519,7 @@ def post_card(card, aeolus_row=None, *, upc=None, context="group post"):
         )
 
     try:
-        parsed = request_json_with_auth_retry(make_request, timeout=60, context=f"run_alert.post_card:{TARGET_CHAT_ID}")
+        parsed = request_json_with_auth_retry(make_request, timeout=60, context=f"run_alert.post_card:{target_chat_id}")
         print(f"Post result: code={parsed.get('code')} msg={parsed.get('msg')}")
         return parsed.get("code") == 0, ((parsed.get("data") or {}).get("message_id") or "")
     except Exception as exc:
@@ -1497,7 +1527,7 @@ def post_card(card, aeolus_row=None, *, upc=None, context="group post"):
         try:
             parsed = _send_interactive_via_lark_cli(
                 receive_id_type="chat_id",
-                receive_id=TARGET_CHAT_ID,
+                receive_id=target_chat_id,
                 content=json.dumps(card, ensure_ascii=False),
                 timeout=60,
             )

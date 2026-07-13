@@ -194,6 +194,32 @@ def _trigger_event_driven_recovery(chat_id, reason):
         return {"error": repr(exc)}
 
 
+def _region_local_timestamp(region):
+    """H3 (cosmetic): format an audit timestamp in the region's LOCAL time
+    rather than the Shanghai-hosted runtime's naive local time.
+
+    This is display-only. It does NOT touch deadline math (unified on BRT via
+    C1) or any cron schedule — it only stops the status-audit line from showing
+    Chinese time on a CST-hosted daemon. Falls back to a fixed BRT offset if the
+    tz database is unavailable, and to naive local time as a last resort.
+    """
+    from datetime import timezone, timedelta
+    try:
+        cfg = (REGION_CONFIGS.get(str(region or "").strip().upper())
+               or REGION_CONFIGS.get("BR") or {})
+        tz_name = cfg.get("scan_local_tz") or "America/Sao_Paulo"
+        try:
+            from zoneinfo import ZoneInfo
+            local = datetime.now(timezone.utc).astimezone(ZoneInfo(tz_name))
+            suffix = local.strftime("%Z") or ""
+        except Exception:
+            local = datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=-3)))
+            suffix = "BRT"
+        return (local.strftime("%Y-%m-%d %H:%M ") + suffix).strip()
+    except Exception:
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
 def _process_status_update(status, message_id, operator_name=None, operator_id=None, timestamp=None, upc=None, isrc=None, chat_id=None, region=None, tracker_row=None):
     try:
         _refresh_callback_credentials("callback tracker status write-back")
@@ -339,7 +365,29 @@ def _process_spotify_reply(value, custom_message="", notify_chat_id=None, event_
                 mark = "Failed ❌"
             status_value = f"{mark} – {reply_type} – {timestamp}"
             region = value.get("region")
-            sheet_ok = update_sheet_email_status(tracker_row, status_value, region=region)
+            # H1.1: The draft has ALREADY been created by send_reply() above
+            # (send_reply returns a result dict; it does not raise on the happy
+            # path). A tracker write-back failure must NOT be reported as a
+            # draft-creation failure — the old behavior surfaced the red "could
+            # not create draft" card, which made operators retry and produced
+            # duplicate/orphan drafts. Isolate the tracker write so any failure
+            # here only downgrades the outcome to a green "Draft ready" card
+            # carrying a warning that the status was not recorded.
+            sheet_ok = False
+            tracker_warning = ""
+            try:
+                sheet_ok = update_sheet_email_status(tracker_row, status_value, region=region)
+                if not sheet_ok:
+                    tracker_warning = (
+                        "⚠️ Could not record this in the tracker — status not updated."
+                    )
+            except Exception as sheet_exc:
+                print("spotify_reply tracker write-back error (draft still created):",
+                      repr(sheet_exc), flush=True)
+                print(traceback.format_exc(), flush=True)
+                tracker_warning = (
+                    "⚠️ Could not record this in the tracker — status not updated."
+                )
             send_preview_url = result.get("send_preview_url", "") if isinstance(result, dict) else ""
             print(json.dumps({
                 "spotify_reply": reply_type,
@@ -364,6 +412,7 @@ def _process_spotify_reply(value, custom_message="", notify_chat_id=None, event_
                     mode=mode,
                     draft_url=send_preview_url,
                     error_detail=(result.get("error") if isinstance(result, dict) else None),
+                    tracker_warning=tracker_warning,
                 )
             except Exception as exc:
                 print("spotify_reply outcome-card send error:", repr(exc), flush=True)
@@ -403,7 +452,7 @@ def _send_chat_text(chat_id, text):
 
 
 def _send_outcome_card(chat_id, reply_type, value, mode, draft_url="",
-                       error_detail=None):
+                       error_detail=None, tracker_warning=""):
     """Post an outcome card after a Spotify reply attempt.
 
     Two visual variants:
@@ -412,6 +461,11 @@ def _send_outcome_card(chat_id, reply_type, value, mode, draft_url="",
           Green header "✉️ Draft ready – <action>" with a primary
           "🔗 Review & Send Draft" button linking to draft_url. The operator
           opens the draft in Lark Mail and clicks Send manually.
+
+          When `tracker_warning` is supplied (H1.1), the draft still succeeded
+          but the tracker Email Status write-back failed — the warning is
+          appended to the green card body so the operator knows the draft is
+          real (do NOT retry) but the tracker row was not updated.
 
       • anything else (treated as failure)
           Red header "❌ Draft failed – <specific cause>" with the underlying
@@ -453,6 +507,14 @@ def _send_outcome_card(chat_id, reply_type, value, mode, draft_url="",
             intro += (
                 "\n\n⚠️ The draft URL was not returned by Lark Mail — please "
                 "open the `soundon-copyright` mailbox drafts folder manually."
+            )
+        # H1.1: the draft is real even though the tracker row could not be
+        # updated. Tell the operator NOT to retry (retrying makes orphan drafts).
+        if tracker_warning:
+            intro += (
+                f"\n\n{tracker_warning} The draft above is valid — please do "
+                "**not** click the button again; update the tracker row "
+                "manually if needed."
             )
     else:
         template = "red"
@@ -685,10 +747,12 @@ def handle_card_action(data):
         operator_payload = ((payload.get("event") or {}).get("operator") or {})
         operator_id = (getattr(operator, "open_id", None) if operator else None) or operator_payload.get("open_id") or operator_payload.get("user_id")
         operator_name = operator_payload.get("name") or operator_payload.get("open_id") or operator_payload.get("user_id")
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         upc = value.get("upc")
         isrc = value.get("isrc")
         region = value.get("region") or CHAT_TO_REGION.get(chat_id or "")
+        # H3 (cosmetic): stamp the status-audit line in the region's local time
+        # instead of the daemon host's naive (Shanghai) time.
+        timestamp = _region_local_timestamp(region)
         tracker_row = value.get("tracker_row")
 
         worker = threading.Thread(

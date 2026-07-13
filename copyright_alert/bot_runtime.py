@@ -111,6 +111,17 @@ REGION_CONFIGS = {
 }
 CHAT_TO_REGION = {cfg["chat_id"]: region for region, cfg in REGION_CONFIGS.items()}
 
+# H2 (door #2): region configuration lives in PROCESS-GLOBAL state
+# (ra.TARGET_CHAT_ID / ra.TRACKER_SHEET_URL / ra.QUALIFY_COUNTRIES / etc.).
+# In the long-lived daemon, multiple worker threads (concurrent /scan commands,
+# manual scans, callback-triggered reconfigurations) can mutate that global
+# state while another thread is mid-post, causing a card to land in the wrong
+# region's group. Serialize all region-sensitive reconfiguration + posting work
+# under a single reentrant lock so a scan holds the region config stable for the
+# full duration of its posting loop. RLock (not Lock) because manual_scan_region
+# calls configure_region while already holding the lock.
+REGION_LOCK = threading.RLock()
+
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -142,21 +153,26 @@ def parse_text_message(content: str) -> str:
 
 def configure_region(region: str) -> Dict[str, str]:
     region = (region or "BR").upper()
-    cfg = REGION_CONFIGS[region]
-    ra.TARGET_CHAT_ID = cfg["chat_id"]
-    ra.TRACKER_SHEET_URL = cfg["tracker_url"]
-    ra.TRACKER_SHEET_ID = cfg["sheet_id"]
-    # B3: Rebuild EXCLUDED_MENTIONS from the permanent global baseline on every
-    # configure_region() call. Previously this only ever `.update()`d the set,
-    # so region-specific exclusions (e.g. added during a US scan) leaked into
-    # subsequent BR/SPLA scans. Resetting first keeps each region's exclusion
-    # list isolated.
-    ra.EXCLUDED_MENTIONS = set(ra.BASE_EXCLUDED_MENTIONS)
-    ra.EXCLUDED_MENTIONS.update({u.lower() for u in cfg.get("ignored_mentions", set())})
-    # Drive the region-aware scan filter in run_alert.qualifies().
-    ra.CURRENT_REGION = region
-    ra.QUALIFY_COUNTRIES = set(cfg.get("countries") or set())
-    return cfg
+    # H2 (door #2): mutating the process-global run_alert region config must be
+    # serialized with any in-flight scan/post so a concurrent thread never reads
+    # a half-updated (chat_id from region A, tracker from region B) config.
+    # RLock is reentrant, so manual_scan_region holding the lock can call this.
+    with REGION_LOCK:
+        cfg = REGION_CONFIGS[region]
+        ra.TARGET_CHAT_ID = cfg["chat_id"]
+        ra.TRACKER_SHEET_URL = cfg["tracker_url"]
+        ra.TRACKER_SHEET_ID = cfg["sheet_id"]
+        # B3: Rebuild EXCLUDED_MENTIONS from the permanent global baseline on every
+        # configure_region() call. Previously this only ever `.update()`d the set,
+        # so region-specific exclusions (e.g. added during a US scan) leaked into
+        # subsequent BR/SPLA scans. Resetting first keeps each region's exclusion
+        # list isolated.
+        ra.EXCLUDED_MENTIONS = set(ra.BASE_EXCLUDED_MENTIONS)
+        ra.EXCLUDED_MENTIONS.update({u.lower() for u in cfg.get("ignored_mentions", set())})
+        # Drive the region-aware scan filter in run_alert.qualifies().
+        ra.CURRENT_REGION = region
+        ra.QUALIFY_COUNTRIES = set(cfg.get("countries") or set())
+        return cfg
 
 
 def qualifies_region(row: Dict[str, str], region: str) -> bool:
@@ -504,6 +520,13 @@ def manual_scan_region(region: str, max_messages: int = 80) -> dict:
     # C6: normalize the config region up front so it is stored consistently
     # (e.g. "US") in posted_claims — not a per-row Aeolus country code ("CA").
     region = (region or "BR").upper()
+    # H2 (door #2): hold REGION_LOCK for the ENTIRE scan so no other thread can
+    # reconfigure the process-global region while this scan is building + posting
+    # cards. Callback outcome cards post to explicit DM chats (notify_chat_id),
+    # not TARGET_CHAT_ID, so they are unaffected and will not be blocked.
+    # Acquire explicitly (rather than `with`) to keep the scan body indentation
+    # unchanged; release in the finally below.
+    REGION_LOCK.acquire()
     cfg = configure_region(region)
     # C6: manual scans temporarily raise dw.TRIAGE_MAX; save the previous value
     # and restore it in a finally block so a manual scan does not permanently
@@ -624,6 +647,8 @@ def manual_scan_region(region: str, max_messages: int = 80) -> dict:
     finally:
         # C6: always restore the previous fetch window.
         dw.TRIAGE_MAX = _saved_triage_max
+        # H2 (door #2): release the region lock acquired above.
+        REGION_LOCK.release()
 
 
 def daemon_processes() -> List[int]:
@@ -1021,6 +1046,61 @@ def health_lines() -> Tuple[str, List]:
     lines.append("__HR__")
     lines.append(f"Overall: {_STATUS_ICON.get(overall, '❓')} {overall.upper()}")
     return title, lines
+
+
+def proactive_jwt_healthcheck(alert: bool = True) -> Dict:
+    """H1.3: proactively verify the AIME user JWT and alert the operator when it
+    is expired/expiring, instead of letting a button click discover it.
+
+    The long-lived daemon's sheet READS depend on a fresh
+    aime_env_refresh.json; when the JWT goes stale the lark-cli user path dies
+    and the bot-tenant fallback 403s on the BR tracker, so button clicks crash
+    with "Tracker is empty or unreadable" (H1). Running this on a schedule
+    surfaces the problem before an operator hits it.
+
+    Steps:
+      1. Best-effort self-heal: re-load aime_env_refresh.json into os.environ so
+         the freshest token AIME dropped to disk is picked up.
+      2. Re-check the JWT.
+      3. If still warn/err, DM the operator via the shared auth-alert channel.
+
+    Returns the JWT check dict augmented with {reloaded, alerted}.
+    """
+    # 1) self-heal from disk snapshot
+    reloaded = 0
+    try:
+        snapshot = load_json_file(AIME_ENV_REFRESH_FILE, {}) or {}
+        for k, v in snapshot.items():
+            if isinstance(v, str) and v and os.environ.get(k) != v:
+                os.environ[k] = v
+                reloaded += 1
+    except Exception as exc:
+        print(f"proactive_jwt_healthcheck: env reload failed: {exc!r}", flush=True)
+
+    # 2) re-check
+    result = _check_jwt_credentials()
+    result["reloaded"] = reloaded
+    result["alerted"] = False
+
+    # 3) alert if still not healthy
+    if alert and result.get("status") in ("warn", "err"):
+        try:
+            from copyright_alert import lark_auth
+            detail = result.get("detail", "JWT stale")
+            if reloaded:
+                detail += f" (after reloading {reloaded} key(s) from aime_env_refresh.json)"
+            detail += (
+                ". Sheet reads will fail until the token is refreshed — button "
+                "clicks may crash with 'Tracker is empty or unreadable'."
+            )
+            result["alerted"] = bool(
+                lark_auth.send_stale_token_alert("proactive JWT healthcheck", detail)
+            )
+        except Exception as exc:
+            print(f"proactive_jwt_healthcheck: alert send failed: {exc!r}", flush=True)
+
+    print("proactive_jwt_healthcheck:" + json.dumps(result, ensure_ascii=False, default=str), flush=True)
+    return result
 
 
 def attempt_self_heal(current_pid: Optional[int] = None) -> Tuple[str, List]:

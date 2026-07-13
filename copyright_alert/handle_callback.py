@@ -47,6 +47,23 @@ EMAIL_STATUS_COL = "T"
 # Admin Action) and was a landmine waiting to corrupt the tracker.
 
 
+# H1: Distinguish "the sheet could not be read at all" (empty/unreadable —
+# usually a stale JWT in the long-lived daemon) from "the sheet was read fine
+# but the header is missing" (a real layout change). Both subclass RuntimeError
+# so existing `except RuntimeError` handlers keep working, but callers can now
+# treat a transient read failure differently from a genuine layout problem.
+class TrackerReadError(RuntimeError):
+    """The tracker could not be read (empty/unreadable). Likely transient
+    (stale credential / 403 fallback). Callers MAY fall back to a known-schema
+    column letter because the header layout was never actually observed."""
+
+
+class TrackerColumnMissingError(RuntimeError):
+    """The tracker WAS read successfully but the requested header is absent —
+    a genuine layout change. Callers must NEVER blind-write to a hardcoded
+    fallback column here, or an unrelated column could be corrupted (B1)."""
+
+
 def _tracker_config(region=None):
     """Return tracker URL/sheet for a region, defaulting to the legacy BR tracker."""
     if region:
@@ -558,12 +575,12 @@ def _find_col_letter(header_name, fallback_letter, region=None):
 
                 return _col_letter(idx)
 
-        raise RuntimeError(
+        raise TrackerColumnMissingError(
             f"Tracker is missing the {header_name!r} column; refusing to write. "
             f"Headers: {headers}"
         )
 
-    raise RuntimeError(
+    raise TrackerReadError(
         f"Tracker is empty or unreadable; cannot resolve column {header_name!r}."
     )
 
@@ -592,7 +609,24 @@ def update_sheet_email_status(tracker_row, value, region=None):
         return False
 
     sheet_url, sheet_id = _tracker_config(region)
-    col = _find_col_letter(EMAIL_STATUS_COL_NAME, EMAIL_STATUS_COL, region=region)
+    # H1.4: The Email Status column letter is stable ("T" per the tracker
+    # schema). If the READ itself failed (empty/unreadable — typically a stale
+    # daemon JWT), a recorded status in the known-schema column beats crashing
+    # the whole reply flow and mis-blaming draft creation. This fallback is
+    # ONLY taken on a read failure (TrackerReadError). It must NOT be taken when
+    # the sheet was read fine but the header is absent (TrackerColumnMissingError
+    # — a real layout change), because blind-writing there could corrupt an
+    # unrelated column (B1).
+    try:
+        col = _find_col_letter(EMAIL_STATUS_COL_NAME, EMAIL_STATUS_COL, region=region)
+    except TrackerReadError as exc:
+        col = EMAIL_STATUS_COL
+        print(
+            f"⚠️ update_sheet_email_status: tracker READ failed ({exc}); "
+            f"falling back to stable Email Status column {EMAIL_STATUS_COL!r}{row_num} "
+            f"— recording status in the known-schema column instead of crashing.",
+            flush=True,
+        )
     val_str = str(value if value is not None else "")
     cell = f"{col}{row_num}"
     try:

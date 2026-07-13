@@ -1144,9 +1144,22 @@ def _replace_card_message_via_lark_cli(old_message_id, card, *, row_num=None, id
     """
     from copyright_alert import run_alert as ra
 
-    ok, new_message_id = ra.post_card(card)
+    # H2 (door #1): snapshot the intended destination + region at call time and
+    # pass them explicitly. Previously this called ra.post_card(card) with no
+    # aeolus_row, which skipped the region guard entirely and posted to whatever
+    # the process-global TARGET_CHAT_ID happened to hold — if another thread had
+    # reconfigured the region mid-refresh, the replacement card landed in the
+    # wrong group. Pinning chat_id + expected_region enforces the guard and
+    # posts to the correct group regardless of concurrent reconfiguration.
+    target_chat_id = TARGET_CHAT_ID
+    ok, new_message_id = ra.post_card(
+        card,
+        chat_id=target_chat_id,
+        expected_region=ACTIVE_REGION,
+        context=f"{ACTIVE_REGION} countdown replacement card",
+    )
     if not ok or not new_message_id:
-        raise RuntimeError(f"Replacement send failed for chat_id={TARGET_CHAT_ID}")
+        raise RuntimeError(f"Replacement send failed for chat_id={target_chat_id}")
     _sync_replacement_message_id(old_message_id, new_message_id, card, row_num=row_num, idx=idx)
     return new_message_id
 
