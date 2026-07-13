@@ -254,6 +254,42 @@ def reply_text(message_id: str, text: str) -> dict:
     )
 
 
+def notify_if_scan_running(message_id: str) -> bool:
+    """I2: give the operator feedback when a read command is about to block.
+
+    A /scan holds REGION_LOCK for its ENTIRE run — fetching up to 80 emails one
+    lark-cli call at a time plus Aeolus batches, potentially several minutes.
+    Every read command (/pending, /status, /claims, /unassigned) funnels through
+    read_tracker_rows → configure_region → REGION_LOCK, so during that window it
+    blocks silently and the bot looks dead to the operator.
+
+    This does a NON-blocking probe: try to grab REGION_LOCK with a 2s timeout.
+    If we get it, no scan is running — release immediately and return False so the
+    command proceeds normally. If we time out, a scan is in progress: tell the
+    operator results may be delayed, then return True. The command still proceeds
+    afterwards (its own configure_region call will wait on the lock as usual), but
+    now the operator has feedback instead of silence.
+
+    REGION_LOCK is a *reentrant* lock; acquiring it here on the command thread and
+    releasing it before the command's own read path re-acquires it is safe because
+    they run on the same thread only in the success (no-scan) case.
+    """
+    got = REGION_LOCK.acquire(timeout=2)
+    if got:
+        REGION_LOCK.release()
+        return False
+    try:
+        reply_post(
+            message_id,
+            "⏳ Scan in progress",
+            ["A scan is currently running; results may be delayed until it finishes."],
+        )
+    except Exception as exc:
+        print(f"notify_if_scan_running: could not post delay notice: {exc!r}", flush=True)
+    return True
+
+
+
 def send_chat_card(chat_id: str, card: dict) -> dict:
     return _post_api(
         "/im/v1/messages?receive_id_type=chat_id",
@@ -526,14 +562,24 @@ def manual_scan_region(region: str, max_messages: int = 80) -> dict:
     # not TARGET_CHAT_ID, so they are unaffected and will not be blocked.
     # Acquire explicitly (rather than `with`) to keep the scan body indentation
     # unchanged; release in the finally below.
-    REGION_LOCK.acquire()
-    cfg = configure_region(region)
-    # C6: manual scans temporarily raise dw.TRIAGE_MAX; save the previous value
-    # and restore it in a finally block so a manual scan does not permanently
-    # change the fetch window for subsequent daily/manual scans in this process.
+    #
+    # I1 (HIGH): read the current TRIAGE_MAX BEFORE acquiring the lock (a plain
+    # module-attribute read cannot raise), then enter the try IMMEDIATELY after
+    # acquiring so the finally ALWAYS releases the lock. Previously
+    # configure_region() and the TRIAGE_MAX save ran between acquire() and try:,
+    # so if configure_region() raised (e.g. a KeyError on an unexpected region
+    # string) the lock was leaked by a dead thread forever — freezing every
+    # subsequent /scan, /pending, /status, /claims and /unassigned because they
+    # all funnel through configure_region() under the same lock.
     _saved_triage_max = dw.TRIAGE_MAX
-    dw.TRIAGE_MAX = max_messages
+    REGION_LOCK.acquire()
     try:
+        cfg = configure_region(region)
+        # C6: manual scans temporarily raise dw.TRIAGE_MAX; the previous value
+        # was captured above and is restored in the finally block so a manual
+        # scan does not permanently change the fetch window for subsequent
+        # daily/manual scans in this process.
+        dw.TRIAGE_MAX = max_messages
         messages = dw.fetch_messages_raw()
         summary = {
             "region": region,

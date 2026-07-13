@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import threading
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -20,6 +21,37 @@ _ALERT_CHAT_ID = "oc_6e157309d8d7145ba5ce7f0ba67354cb"
 _AUTH_ERROR_CODES = {99991663, 99991664}
 _AUTH_ALERT_LOCK = threading.Lock()
 _AUTH_ALERT_FINGERPRINTS: set[str] = set()
+
+# I4: persistent, cross-process throttle for operator alerts. The proactive JWT
+# healthcheck runs as a FRESH process on every cron tick, so the in-memory
+# _AUTH_ALERT_FINGERPRINTS set can never dedupe across runs — and because the
+# detail string embeds a changing "expires in Xs", the fingerprint changes every
+# run anyway. That means a stale token spams the operator with one DM per cron
+# run (every 2h, or every 10 min if scheduled that way). We persist the last
+# time we alerted per-context to disk and re-alert at most once per interval.
+_ALERT_STATE_FILE = ROOT / "runtime" / "auth_alert_last_sent.json"
+_ALERT_MIN_INTERVAL_SEC = 6 * 3600  # re-alert at most once per 6 hours per context
+
+
+def _load_alert_state() -> dict:
+    try:
+        if _ALERT_STATE_FILE.exists():
+            data = json.loads(_ALERT_STATE_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        pass
+    return {}
+
+
+def _save_alert_state(state: dict) -> None:
+    try:
+        _ALERT_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _ALERT_STATE_FILE.write_text(
+            json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except Exception as exc:
+        print(f"⚠ could not persist auth alert state: {exc!r}", flush=True)
 
 
 def _safe_json_loads(raw: str):
@@ -142,6 +174,22 @@ def _refresh_aime_credentials() -> int:
 
 def send_stale_token_alert(context: str, detail: str) -> bool:
     """Best-effort operator alert when auth still fails after one refresh retry."""
+    # I4: persistent, cross-process throttle FIRST. Keyed by context only (not the
+    # detail, which embeds a changing "expires in Xs" and would defeat dedupe).
+    # A stale token seen on every cron run only alerts once per interval.
+    now = time.time()
+    with _AUTH_ALERT_LOCK:
+        state = _load_alert_state()
+        last = state.get(context)
+        if isinstance(last, (int, float)) and (now - last) < _ALERT_MIN_INTERVAL_SEC:
+            mins_left = int((_ALERT_MIN_INTERVAL_SEC - (now - last)) // 60)
+            print(
+                f"⚠ auth alert throttled for {context}: last alerted "
+                f"{int((now - last) // 60)} min ago, ~{mins_left} min until re-alert",
+                flush=True,
+            )
+            return False
+
     fingerprint = f"{context}|{detail}"
     with _AUTH_ALERT_LOCK:
         if fingerprint in _AUTH_ALERT_FINGERPRINTS:
@@ -179,6 +227,13 @@ def send_stale_token_alert(context: str, detail: str) -> bool:
             )
             if res.returncode == 0:
                 print(f"⚠ stale-token alert sent via {' '.join(cmd[3:5])}", flush=True)
+                # I4: record the successful alert time so we do not re-alert for
+                # this context until _ALERT_MIN_INTERVAL_SEC has elapsed. Only
+                # recorded on success so a transient send failure still retries.
+                with _AUTH_ALERT_LOCK:
+                    state = _load_alert_state()
+                    state[context] = now
+                    _save_alert_state(state)
                 return True
             print(f"⚠ stale-token alert failed rc={res.returncode}: {(res.stdout + res.stderr)[:400]}", flush=True)
         except Exception as exc:

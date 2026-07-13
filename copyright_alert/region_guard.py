@@ -8,6 +8,27 @@ EXPECTED_REGIONS_BY_CHAT_ID = {
 }
 
 
+class RegionGuardError(Exception):
+    """Raised when a region guard blocks a post.
+
+    I3: the guards used to ``raise SystemExit(...)``, which is thread-hostile.
+    In a daemon worker thread SystemExit is swallowed by the interpreter and the
+    thread dies silently — the operator never learns a post was blocked. And in
+    daily_workflow every section wraps its work in ``except Exception``, which
+    does NOT catch SystemExit, so a single tripped guard aborted the entire
+    remaining daily run (later sections like the DM action cards never ran).
+
+    Raising a normal Exception subclass instead means:
+      * daemon worker threads catch it via ``except Exception`` and surface an
+        error reply to the operator instead of dying silently, and
+      * daily_workflow sections catch it via ``except Exception`` and continue to
+        the next section.
+
+    SystemExit is still appropriate in ``if __name__ == "__main__"`` entry-point
+    scripts, where aborting the whole process is the desired behaviour.
+    """
+
+
 def normalize_region(value):
     return str(value or "").strip().upper()
 
@@ -24,7 +45,7 @@ def assert_region_allowed(chat_id, aeolus_row, *, upc=None, context="group post"
 
     upc_text = upc or (aeolus_row or {}).get("upc") or "N/A"
     expected_text = ", ".join(sorted(expected))
-    raise SystemExit(
+    raise RegionGuardError(
         f"ERROR: Region guard aborted {context}: UPC {upc_text} has "
         f"user_region={actual or 'N/A'}, but chat_id={chat_id} only allows "
         f"{{{expected_text}}}. No group post was made."
@@ -52,7 +73,7 @@ def assert_chat_matches_region(chat_id, region, *, context="group post"):
     if region_norm in expected:
         return True
     expected_text = ", ".join(sorted(expected))
-    raise SystemExit(
+    raise RegionGuardError(
         f"ERROR: Region guard aborted {context}: intended region "
         f"{region_norm} does not match chat_id={chat_id}, which only allows "
         f"{{{expected_text}}}. No group post was made (likely a concurrent "

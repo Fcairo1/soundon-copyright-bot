@@ -33,6 +33,7 @@ from copyright_alert.bot_runtime import (
     grouped_claim_lines,
     health_lines,
     include_manager_lines,
+    notify_if_scan_running,
     parse_exclude_command,
     parse_include_command,
     parse_text_message,
@@ -1012,11 +1013,14 @@ def _handle_command(command_text: str, message_id: str, region: str) -> None:
         if cmd == "/help":
             reply_post(message_id, "/help", command_help_lines())
         elif cmd == "/status":
+            notify_if_scan_running(message_id)
             reply_post(message_id, "/status", status_lines(region))
         elif cmd == "/pending":
             # Optional argument: account manager name to filter by.
+            notify_if_scan_running(message_id)
             reply_post(message_id, "/pending", pending_lines(region, arg or None))
         elif cmd == "/claims":
+            notify_if_scan_running(message_id)
             title, lines = grouped_claim_lines(region, arg or None)
             reply_post(message_id, title, lines)
         elif cmd == "/scan":
@@ -1069,6 +1073,7 @@ def _handle_command(command_text: str, message_id: str, region: str) -> None:
             title, lines = exception_lines(arg or "")
             reply_post(message_id, title, lines)
         elif cmd == "/unassigned":
+            notify_if_scan_running(message_id)
             target_region = (arg or region or "BR").upper()
             title, lines = unassigned_lines(target_region)
             reply_post(message_id, title, lines)
