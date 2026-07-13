@@ -163,7 +163,9 @@ def run_region_manager_alert(region: str) -> dict:
             print(json.dumps(digest_card, ensure_ascii=False, indent=2), flush=True)
         return {"region": region, "pending_rows": len(pending_rows), "managers": 0, "no_manager_rows": 0, "posted": False}
 
-    tag_card = tm.build_tag_card(managers, no_manager_rows)
+    # Pass the region explicitly so US cards never depend on the mutable
+    # run_alert.CURRENT_REGION global for the no-@mention behavior.
+    tag_card = tm.build_tag_card(managers, no_manager_rows, region=region)
     digest_card = _build_digest_card(region, cfg, alert_cfg, managers, pending_rows)
 
     if dry_run:

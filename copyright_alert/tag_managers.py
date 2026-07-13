@@ -379,8 +379,9 @@ def build_tag_card(managers, no_manager_rows=None, region=None):
         • [UPC1](admin_url) — Title 1
         • [UPC2](admin_url) — Title 2
 
-    US group cards intentionally render manager names as plain text (no Lark
-    @mention). BR/SPLA and any other region retain the existing @mention behavior.
+    Callers should pass ``region`` explicitly whenever they know it. US group
+    cards intentionally render manager names as plain text (no Lark @mention).
+    BR/SPLA and any other region retain the existing @mention behavior.
     """
     elements = [
         {"tag": "div", "text": {"tag": "lark_md",
