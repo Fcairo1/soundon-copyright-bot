@@ -366,7 +366,7 @@ def _display_name_from_username(username):
     return " ".join(p.capitalize() for p in parts) or str(username)
 
 
-def _mention_people(value, include_test_user=False, label_uid=""):
+def _mention_people(value, include_test_user=False, label_uid="", region=""):
     people = _parse_people_list(value)
     if label_uid:
         people = [
@@ -377,6 +377,9 @@ def _mention_people(value, include_test_user=False, label_uid=""):
         people.append("filipe.cairo")
     if not people:
         return "N/A"
+    region_value = (region or CURRENT_REGION or "BR").upper()
+    if region_value == "US":
+        return ", ".join(_display_name_from_username(p) for p in people)
     # Lark card markdown resolves mentions via <at email="...">Display Name</at>.
     # The username is the account name; @bytedance.com is the corporate email domain.
     return " ".join(
@@ -1055,6 +1058,18 @@ def _ops_context_for_region(region: str):
     return configs.get(region, configs["BR"])
 
 
+def _region_from_aeolus_row(row) -> str:
+    """Infer alert region from Aeolus user_region when an explicit region is absent."""
+    user_region = str((row or {}).get("user_region") or "").strip().upper()
+    if user_region == "BR":
+        return "BR"
+    if user_region in {"US", "CA", "AU", "NZ"}:
+        return "US"
+    if user_region in {"MX", "CL", "CO", "AR", "ES", "PR", "PE"}:
+        return "SPLA"
+    return ""
+
+
 
 def build_card(
     ef,
@@ -1079,14 +1094,14 @@ def build_card(
 
     display_title = ef.get("title") if ef.get("title") and ef.get("title") != "N/A" else ar.get("album_title")
     label_uid = ar.get("uid", "")
-    bd_mentions = _mention_people(ar.get("bd_manager_list"), label_uid=label_uid)
-    label_manager_mentions = _mention_people(ar.get("operation_manager_list"), label_uid=label_uid)
+    region_value = (region or _region_from_aeolus_row(ar) or CURRENT_REGION or "BR").upper()
+    bd_mentions = _mention_people(ar.get("bd_manager_list"), label_uid=label_uid, region=region_value)
+    label_manager_mentions = _mention_people(ar.get("operation_manager_list"), label_uid=label_uid, region=region_value)
     artist_names = _format_artist_names(ar.get("display_artist"))
     claimant_message = _clean_email_value(ef.get("claimant_message", "N/A"))
     claimant_preview = _message_preview(claimant_message)
     upc_value = v(ef.get("upc"))
     upc_display = f"[{upc_value}](https://sg-musician-admin.bytedance.net/avenue/content/album/new?currentPage=1&pageSize=10&showFields=upc&upc={upc_value})" if upc_value != "N/A" else "N/A"
-    region_value = (region or CURRENT_REGION or "BR").upper()
     ops_ctx = _ops_context_for_region(region_value)
     ref_id_value = ef.get("ref_id", "")
     source_email_value = source_email_message_id or ef.get("source_email_message_id", "")
@@ -1644,7 +1659,7 @@ def main():
             continue
 
         print("  ✓ Building and posting Lark card...")
-        card = build_card(ef, ar)
+        card = build_card(ef, ar, region=CURRENT_REGION)
 
         # Save card for inspection
         with open("copyright_alert/last_card.json", "w") as f:

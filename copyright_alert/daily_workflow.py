@@ -443,7 +443,7 @@ def run_scan():
             continue
 
         log(f"     ✓ Qualifies & new — posting card for UPC {upc} …")
-        card = build_card(ef, ar)
+        card = build_card(ef, ar, region=ACTIVE_REGION)
         with open(LAST_CARD_FILE, "w", encoding="utf-8") as fh:
             json.dump(card, fh, indent=2)
 
