@@ -23,7 +23,7 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
-from copyright_alert.lark_auth import request_json_with_auth_retry
+from copyright_alert.lark_auth import extract_sheet_values, request_json_with_auth_retry, sheet_values_api
 from copyright_alert.run_alert import BOT_APP_ID, BOT_SECRET, build_card, _get_bot_access_token, load_posted_card
 from copyright_alert import run_alert as ra
 
@@ -105,37 +105,8 @@ def _spreadsheet_token(sheet_url):
 
 
 def _sheet_api(method, sheet_url, sheet_id, cell_range, values=None, timeout=60):
-    """Read/write sheet values through Lark OpenAPI using the bot tenant token.
-
-    Callback daemons must not rely on lark-cli's injected user/AIME JWT because
-    that credential can expire while the long-running daemon stays alive. The bot
-    tenant_access_token is obtained via the app_id/app_secret flow and refreshed
-    per request by _get_bot_access_token().
-    """
-    token = _get_bot_access_token()
-    if not token:
-        raise RuntimeError("Could not get bot access token")
-    spreadsheet_token = _spreadsheet_token(sheet_url)
-    a1_range = f"{sheet_id}!{cell_range}"
-    encoded_range = urllib.parse.quote(a1_range, safe="")
-    url = f"https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/{spreadsheet_token}/values/{encoded_range}"
-    body = None
-    if values is not None:
-        body = json.dumps({"valueRange": {"range": a1_range, "values": values}}, ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=body,
-        method=method,
-        headers={
-            "Content-Type": "application/json; charset=utf-8",
-            "Authorization": f"Bearer {token}",
-        },
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        payload = json.loads(resp.read().decode("utf-8") or "{}")
-    if payload.get("code") != 0:
-        raise RuntimeError(f"Sheet API {method} {a1_range} failed: {json.dumps(payload, ensure_ascii=False)[:1000]}")
-    return payload
+    """Read/write sheet values through Lark OpenAPI using persisted user OAuth."""
+    return sheet_values_api(method, sheet_url, sheet_id, cell_range, values=values, timeout=timeout)
 
 
 def _parse_lark_json(raw):
@@ -380,24 +351,8 @@ def patch_message(message_id, card):
 
 def read_sheet_values(region=None):
     sheet_url, sheet_id = _tracker_config(region)
-    # Tracker reads must use the current user's OAuth context. The BR tracker is
-    # not readable by the bot tenant token (403), and returning an empty list on
-    # that path makes commands like `/card <UPC>` incorrectly report "not found".
-    # lark-cli defaults to user identity in AIME and is the same auth path used by
-    # the daily scan/tracker workflows.
     try:
-        try:
-            from copyright_alert.lark_auth import _refresh_aime_credentials
-            _refresh_aime_credentials()
-        except Exception as refresh_exc:
-            print(f"Sheet read user-credential refresh skipped: {refresh_exc!r}", flush=True)
-        return _read_sheet_values_cli(sheet_url, sheet_id)
-    except Exception as exc:
-        print(f"Sheet read via lark-cli user OAuth failed; falling back to bot token: {exc!r}", flush=True)
-    try:
-        data = _sheet_api("GET", sheet_url, sheet_id, "A1:Z2000")  # B11: uncapped from A1:Z500
-        value_range = (data.get("data") or {}).get("valueRange") or {}
-        raw_values = value_range.get("values") or []
+        raw_values = extract_sheet_values(_sheet_api("GET", sheet_url, sheet_id, "A1:Z2000"))
         rows = []
         for row in raw_values:
             row = list(row or [])
@@ -406,7 +361,11 @@ def read_sheet_values(region=None):
             rows.append(row[:26])
         return rows
     except Exception as exc:
-        print(f"Sheet read failed via bot token fallback: {exc!r}", flush=True)
+        print(f"Sheet read via persisted user OAuth failed; falling back to lark-cli legacy path: {exc!r}", flush=True)
+    try:
+        return _read_sheet_values_cli(sheet_url, sheet_id)
+    except Exception as exc:
+        print(f"Sheet read via lark-cli fallback failed: {exc!r}", flush=True)
         return []
 
 

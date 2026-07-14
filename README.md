@@ -83,7 +83,10 @@ Copy `.env.example` to `.env` and fill in the values, then load it
 ### 3. External tools (not installed via pip)
 
 - **`lark-cli`** — the Lark/Feishu CLI binary must be on `PATH`. Used for mailbox
-  triage, sheet read/write, and mail draft surfaces.
+  triage and as a legacy fallback for sheet reads.
+- **Lark OAuth user token** — sheet reads/writes and mail drafts use a persisted
+  Filipe Cairo OAuth refresh token in `runtime/lark_oauth_secret.json`, so the
+  daemon does not depend on an AIME session JWT.
 - **`lark_oapi`** — Python SDK (installed via `requirements.txt`); used by the
   callback websocket daemon.
 - **AIME `inner_skills`** — the `feishu-im-send` and `aeolus-platform-analysis`
@@ -92,15 +95,24 @@ Copy `.env.example` to `.env` and fill in the values, then load it
 
 ### 4. Secrets & generated files (never committed)
 
-- `runtime/lark_mail_oauth.json` — Lark Mail OAuth token (created by `oauth_setup.py`).
-- `runtime/aime_env_refresh.json` — cached env-refresh state.
+- `runtime/lark_oauth_secret.json` — session-independent Lark OAuth token for
+  sheet operations and mail drafts (created by `oauth_setup.py`; gitignored).
+- `copyright_alert/aime_env_refresh.json` — legacy AIME JWT snapshot used only as
+  a fallback for older `lark-cli` paths.
 - `secrets.json`, `.env` — credentials.
 
-Run the one-time Lark Mail OAuth bootstrap when first enabling draft access:
+Run the one-time Lark OAuth bootstrap when first enabling user-token access:
 
 ```bash
 python -m copyright_alert.oauth_setup
 ```
+
+The operator should approve consent with the `filipe.cairo` account. The setup
+script prints the authorization URL for app `cli_aa94690b12b81cde`, captures the
+returned code on `http://localhost:9876/oauth/callback`, exchanges it for tokens,
+and writes the refresh token to `runtime/lark_oauth_secret.json`. Required scopes
+are `sheets:spreadsheet:readonly`, `sheets:spreadsheet`, and
+`mail:user_mailbox.message:modify`.
 
 ## Running
 

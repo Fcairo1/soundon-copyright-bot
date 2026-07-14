@@ -29,10 +29,10 @@ if str(ROOT) not in sys.path:
 
 APP_ID_EXPECTED = "cli_aa94690b12b81cde"
 REDIRECT_URI = "http://localhost:9876/oauth/callback"
-SCOPE = "mail:user_mailbox.message:modify"
+SCOPE = "sheets:spreadsheet:readonly sheets:spreadsheet mail:user_mailbox.message:modify"
 TOKEN_URL = "https://open.larksuite.com/open-apis/authen/v1/oidc/access_token"
 OAUTH_URL = "https://accounts.larksuite.com/open-apis/authen/v1/authorize"
-TOKEN_FILE = ROOT / "copyright_alert" / "lark_mail_oauth.json"
+TOKEN_FILE = ROOT / "runtime" / "lark_oauth_secret.json"
 
 
 def _first_attr(module: Any, names: tuple[str, ...]) -> Optional[str]:

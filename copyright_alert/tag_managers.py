@@ -52,6 +52,7 @@ from copyright_alert.manager_exclusions import (
     filter_manager_pairs,
 )
 from copyright_alert.upc_exclusions import is_upc_excluded
+from copyright_alert.lark_auth import extract_sheet_values, sheet_values_api
 
 ADMIN_ACTION_HEADER = "Admin Action Taken"
 PENDING_STATUSES = {
@@ -226,6 +227,10 @@ def _cell(row, i):
 
 
 def read_sheet_values(rng="A:Z"):
+    try:
+        return extract_sheet_values(sheet_values_api("GET", TRACKER_SHEET_URL, TRACKER_SHEET_ID, rng))
+    except Exception as exc:
+        log(f"⚠ Sheet read via OAuth failed; trying legacy lark-cli fallback: {exc!r}")
     cmd = [
         "lark-cli", "sheets", "+read", "--url", TRACKER_SHEET_URL,
         "--sheet-id", TRACKER_SHEET_ID, "--range", rng, "--format", "json",
@@ -237,14 +242,7 @@ def read_sheet_values(rng="A:Z"):
     parsed = parse_lark_json(res.stdout)
     if not parsed:
         return []
-    data_obj = parsed.get("data") or {}
-    value_range = data_obj.get("valueRange") or {}
-    if value_range.get("values") is not None:
-        return value_range.get("values") or []
-    ranges = data_obj.get("ranges") or []
-    if ranges and ranges[0].get("cells") is not None:
-        return [[(cell or {}).get("value") for cell in row] for row in (ranges[0].get("cells") or [])]
-    return []
+    return extract_sheet_values(parsed)
 
 
 def _username_from_display(display):

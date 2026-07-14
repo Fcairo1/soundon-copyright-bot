@@ -29,7 +29,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 APP_ID_EXPECTED = "cli_aa94690b12b81cde"
-TOKEN_FILE = Path(__file__).resolve().parent / "lark_mail_oauth.json"
+TOKEN_FILE = ROOT / "runtime" / "lark_oauth_secret.json"
 REFRESH_URL = "https://open.larksuite.com/open-apis/authen/v1/refresh_access_token"
 MAIL_API_BASE = "https://open.larksuite.com/open-apis/mail/v1"
 TOKEN_REFRESH_SKEW_SECONDS = 120
@@ -103,6 +103,7 @@ def _load_oauth_record() -> Dict[str, Any]:
 
 
 def _save_oauth_record(record: Dict[str, Any]) -> None:
+    TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
     TOKEN_FILE.write_text(json.dumps(record, indent=2, sort_keys=True), encoding="utf-8")
 
 

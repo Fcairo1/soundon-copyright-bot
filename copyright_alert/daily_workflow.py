@@ -36,7 +36,7 @@ import urllib.request
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from copyright_alert.lark_auth import request_json_with_auth_retry
+from copyright_alert.lark_auth import extract_sheet_values, request_json_with_auth_retry, sheet_values_api
 
 # ── Make the copyright_alert package importable & anchor relative paths ───────
 ROOT = Path(__file__).resolve().parents[1]
@@ -571,7 +571,11 @@ def _is_open_for_ops(status, admin_action=""):
 
 
 def read_sheet_values(rng="A:Z"):
-    """Read tracker rows as a 2D list (header row first)."""
+    """Read tracker rows as a 2D list using persisted Lark OAuth, with legacy CLI fallback."""
+    try:
+        return extract_sheet_values(sheet_values_api("GET", TRACKER_SHEET_URL, TRACKER_SHEET_ID, rng))
+    except Exception as exc:
+        log(f"  ⚠ Sheet read via OAuth failed; trying legacy lark-cli fallback: {exc!r}")
     cmd = [
         "lark-cli", "sheets", "+read", "--url", TRACKER_SHEET_URL,
         "--sheet-id", TRACKER_SHEET_ID, "--range", rng, "--format", "json",
@@ -583,22 +587,22 @@ def read_sheet_values(rng="A:Z"):
     parsed = parse_lark_json(res.stdout)
     if not parsed:
         return []
-    data_obj = parsed.get("data") or {}
-    value_range = data_obj.get("valueRange") or {}
-    if value_range.get("values") is not None:
-        return value_range.get("values") or []
-    ranges = data_obj.get("ranges") or []
-    if ranges and ranges[0].get("cells") is not None:
-        return [[(cell or {}).get("value") for cell in row] for row in (ranges[0].get("cells") or [])]
-    return []
+    return extract_sheet_values(parsed)
 
 
 def write_cell(col_letter, row_num, value):
     # Harden: ensure value is written as a string to the sheet
     val_str = str(value if value is not None else "")
+    cell_range = f"{col_letter}{row_num}:{col_letter}{row_num}"
+    try:
+        sheet_values_api("PUT", TRACKER_SHEET_URL, TRACKER_SHEET_ID, cell_range, values=[[val_str]])
+        log(f"  Sheet write {col_letter}{row_num} via OAuth -> {value}")
+        return True
+    except Exception as exc:
+        log(f"  ⚠ Sheet write {col_letter}{row_num} via OAuth failed; trying legacy lark-cli fallback: {exc!r}")
     cmd = [
         "lark-cli", "sheets", "+write", "--url", TRACKER_SHEET_URL,
-        "--sheet-id", TRACKER_SHEET_ID, "--range", f"{col_letter}{row_num}:{col_letter}{row_num}",
+        "--sheet-id", TRACKER_SHEET_ID, "--range", cell_range,
         "--values", json.dumps([[val_str]], ensure_ascii=False),
     ]
     res = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
