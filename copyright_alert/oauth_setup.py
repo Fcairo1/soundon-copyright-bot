@@ -29,7 +29,16 @@ if str(ROOT) not in sys.path:
 
 APP_ID_EXPECTED = "cli_aa94690b12b81cde"
 REDIRECT_URI = "http://localhost:9876/oauth/callback"
-SCOPE = "sheets:spreadsheet:readonly sheets:spreadsheet mail:user_mailbox.message:modify"
+# OAuth scopes must match the published/live Lark app version exactly.
+# The SoundOn app currently has these granular Sheets scopes published:
+# sheets:spreadsheet:read for values GET, and sheets:spreadsheet:write_only
+# for values PUT updates.
+SCOPE_KEYS = (
+    "sheets:spreadsheet:read",
+    "sheets:spreadsheet:write_only",
+    "mail:user_mailbox.message:modify",
+)
+SCOPE = " ".join(SCOPE_KEYS)
 TOKEN_URL = "https://open.larksuite.com/open-apis/authen/v1/oidc/access_token"
 OAUTH_URL = "https://accounts.larksuite.com/open-apis/authen/v1/authorize"
 TOKEN_FILE = ROOT / "runtime" / "lark_oauth_secret.json"
@@ -224,6 +233,13 @@ def main() -> int:
     auth_url = OAUTH_URL + "?" + urllib.parse.urlencode(auth_params)
 
     print(f"Loaded app credentials from {source_module}.")
+    print("\nRequired OAuth scopes for this setup:")
+    for scope in SCOPE_KEYS:
+        print(f"  - {scope}")
+    print(
+        "\nIf Lark consent returns error 20027, add these exact scopes to app "
+        f"{APP_ID_EXPECTED} and publish a new app version before retrying."
+    )
     print("\nOpen this URL in your browser and approve the requested scope:\n")
     print(auth_url)
     print("\nWaiting for callback on http://localhost:9876/oauth/callback ...", flush=True)

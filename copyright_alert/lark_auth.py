@@ -23,7 +23,16 @@ _OAUTH_SECRET_FILE = ROOT / "runtime" / "lark_oauth_secret.json"
 _REFRESH_URL = "https://open.larksuite.com/open-apis/authen/v1/refresh_access_token"
 _OAUTH_AUTHORIZE_URL = "https://accounts.larksuite.com/open-apis/authen/v1/authorize"
 _OAUTH_REDIRECT_URI = "http://localhost:9876/oauth/callback"
-_OAUTH_REQUIRED_SCOPES = "sheets:spreadsheet:readonly sheets:spreadsheet mail:user_mailbox.message:modify"
+# OAuth scopes must match the published/live Lark app version exactly.
+# The SoundOn app currently has these granular Sheets scopes published:
+# sheets:spreadsheet:read for values GET, and sheets:spreadsheet:write_only
+# for values PUT updates.
+_OAUTH_REQUIRED_SCOPE_KEYS = (
+    "sheets:spreadsheet:read",
+    "sheets:spreadsheet:write_only",
+    "mail:user_mailbox.message:modify",
+)
+_OAUTH_REQUIRED_SCOPES = " ".join(_OAUTH_REQUIRED_SCOPE_KEYS)
 _TOKEN_REFRESH_SKEW_SECONDS = 120
 _OAUTH_LOCK = threading.Lock()
 _FEISHU_IM_DIR = ROOT / "inner_skills" / "feishu-im-send"
