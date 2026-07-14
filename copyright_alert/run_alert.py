@@ -1643,6 +1643,17 @@ def patch_card_message(message_id, card):
               f"{list(card.keys()) if isinstance(card, dict) else type(card).__name__}).")
         return False
 
+    # Persist the exact patchable card to disk BEFORE the network PATCH. A button
+    # click loads the card from posted_cards.json (via load_posted_card); if the
+    # copy is only written on PATCH success — as it was previously — then a
+    # transient PATCH failure at card-creation time leaves the card with no saved
+    # copy, and the first button click fails with "no saved copy exists and it
+    # could not be rebuilt from the tracker". Registering the card here, at
+    # creation time, makes the saved copy independent of the follow-up PATCH and
+    # survive daemon restarts. This is safe: the card was just validated above as
+    # a real interactive-card object ({config, header, elements}).
+    save_posted_card(message_id, card)
+
     def make_request():
         token = _get_bot_access_token()
         if not token:
@@ -1663,10 +1674,8 @@ def patch_card_message(message_id, card):
         result = request_json_with_auth_retry(make_request, timeout=15, context=f"run_alert.patch_card_message:{message_id}")
         ok = result.get("code") == 0
         print(f"  Patch result: code={result.get('code')} msg={result.get('msg')}")
-        if ok:
-            # Keep the persisted copy in sync so the next refresh patches the
-            # latest card shape rather than the GET rendered format.
-            save_posted_card(message_id, card)
+        # NOTE: the card was already persisted (save_posted_card) above, before
+        # this PATCH ran, so the saved copy is kept regardless of PATCH outcome.
         return ok
     except Exception as e:
         print(f"  ⚠ Patch failed: {e}")

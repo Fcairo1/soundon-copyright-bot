@@ -259,6 +259,18 @@ def _process_status_update(status, message_id, operator_name=None, operator_id=N
                     print(f"_process_status_update: could not surface error: {reply_exc!r}", flush=True)
             return
         card = update_card_state(card, status, message_id, operator_name=operator_name, operator_id=operator_id, timestamp=timestamp)
+        # Persist the updated card (new status, audit line, button highlight) to
+        # disk BEFORE patching Lark. The button flow only writes col N (Status)
+        # to the tracker; the card's richer visual state lives only in
+        # posted_cards.json. Without this, a status set via button click was
+        # never saved, so after a daemon restart the next click found no saved
+        # copy and had to fall back to a tracker rebuild (which drops the audit
+        # line and can fail on a transient sheet-read error) → the reported
+        # "no saved copy exists and it could not be rebuilt from the tracker".
+        try:
+            ra.save_posted_card(message_id, card)
+        except Exception as persist_exc:
+            print(f"_process_status_update: could not persist updated card {message_id}: {persist_exc!r}", flush=True)
         (ROOT / "copyright_alert/last_card_callback.json").write_text(json.dumps(card, ensure_ascii=False, indent=2))
         patched = patch_message(message_id, card)
         sheet_ok = update_sheet_status(message_id, status, upc=upc, isrc=isrc, region=region, tracker_row=tracker_row)

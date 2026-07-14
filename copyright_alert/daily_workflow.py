@@ -461,6 +461,12 @@ def run_scan():
             )
             with open(LAST_CARD_FILE, "w", encoding="utf-8") as fh:
                 json.dump(card, fh, indent=2)
+            # Register the freshly-posted card's state to disk (posted_cards.json)
+            # at creation time, BEFORE the follow-up PATCH. Button clicks load the
+            # card via load_posted_card(); persisting here guarantees a saved copy
+            # exists even if patch_card_message() below fails or the daemon
+            # restarts, so the first click never hits "no saved copy exists".
+            save_posted_card(posted_message_id, card)
             patch_card_message(posted_message_id, card)
             tracker_row = append_tracker_row(ef, ar, posted_message_id, status="")
             _save_posted_claim(dup_key, {
@@ -1058,7 +1064,7 @@ def build_card_with_countdown(card, days_remaining):
     return card
 
 
-def _reconstruct_card_from_row(row, idx, message_id=""):
+def _reconstruct_card_from_row(row, idx, message_id="", region=""):
     """Rebuild a valid interactive card from the tracker-sheet row.
 
     Fallback for cards posted before card-persistence existed. The GET messages
@@ -1067,6 +1073,11 @@ def _reconstruct_card_from_row(row, idx, message_id=""):
     run_alert.build_card from the data we logged in the sheet. Fields not stored
     in the sheet (claimant company/email/message, mention user-ids) degrade to
     "N/A"/plain text, but the card stays structurally valid and patchable.
+
+    ``region`` (optional) pins the card's region context so a rebuilt US/SPLA/BR
+    card keeps its own PoC/ops routing instead of the caller's global
+    CURRENT_REGION. Callers that already configured the region (e.g. the
+    countdown refresh) can omit it and build_card falls back to CURRENT_REGION.
     """
     def cell(key):
         i = idx.get(key)
@@ -1094,7 +1105,7 @@ def _reconstruct_card_from_row(row, idx, message_id=""):
         "operation_manager_list": None,
     }
     status = cell("status") or ""
-    return build_card(ef, ar, current_status=status, lark_message_id=message_id)
+    return build_card(ef, ar, current_status=status, lark_message_id=message_id, region=region)
 
 
 def _sync_replacement_message_id(old_message_id, new_message_id, card, *, row_num=None, idx=None):

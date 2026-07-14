@@ -222,6 +222,12 @@ def reconstruct_card_from_tracker(message_id, region=None, upc=None, isrc=None, 
         print(f"reconstruct_card_from_tracker: could not read sheet: {exc!r}", flush=True)
         return None
     if not values:
+        print(
+            f"reconstruct_card_from_tracker: sheet read returned no rows "
+            f"(region={region}); cannot rebuild message_id={message_id}. "
+            f"This is usually a transient sheet-read/auth failure, not a missing row.",
+            flush=True,
+        )
         return None
     row_num, _match_reason, header_index = _find_tracker_row(
         values, message_id=message_id, upc=upc, isrc=isrc, tracker_row=tracker_row,
@@ -233,7 +239,11 @@ def reconstruct_card_from_tracker(message_id, region=None, upc=None, isrc=None, 
     idx = {short: header_index.get(header) for short, header in _TRACKER_RECONSTRUCT_HEADER_KEYS.items()}
     try:
         from copyright_alert.daily_workflow import _reconstruct_card_from_row
-        return _reconstruct_card_from_row(row, idx, message_id or "")
+        # Thread the callback's region through so a rebuilt US/SPLA/BR card keeps
+        # its own region context (PoC mentions, ops routing). Without this the
+        # rebuild fell back to the daemon's global CURRENT_REGION (often "BR"),
+        # producing a structurally-valid but wrong-region card.
+        return _reconstruct_card_from_row(row, idx, message_id or "", region=region or "")
     except Exception as exc:
         print(f"reconstruct_card_from_tracker: rebuild failed: {exc!r}", flush=True)
         return None
