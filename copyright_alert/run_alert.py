@@ -127,17 +127,51 @@ def parse_lark_json(raw):
 
 
 def parse_lark_annotated_csv(raw):
-    """Parse lark-cli +csv-get output into JSON payload, row matrix and row numbers."""
+    """Parse lark-cli +csv-get output into JSON payload, row matrix and row numbers.
+
+    Bug 2 (rows appended near the top / prepended instead of at the bottom):
+    the real sheet row number MUST come from the authoritative ``[row=N]`` prefix
+    that lark-cli writes at the start of every logical row (per the API contract,
+    N is the true 1-based sheet row). The previous implementation stripped those
+    prefixes and instead relied on ``row_indices`` with a positional fallback of
+    ``range(1, len(rows) + 1)``. When a chunked read starts below row 1 (e.g.
+    scanning ``A501:T1000``) that positional fallback produces 1..N — relative to
+    the chunk, not the sheet — so the computed "last occupied row" collapses
+    toward the top and the next append lands near row 1.
+
+    We now derive absolute row numbers from the ``[row=N]`` markers, keeping
+    ``rows`` and ``row_numbers`` aligned 1:1. When markers are absent we only
+    trust ``row_indices`` if it lines up with the parsed rows; otherwise we return
+    an empty ``row_numbers`` so callers fall back to their own absolute
+    (``start_row + idx``) mapping rather than a misleading chunk-relative count.
+    """
     parsed = parse_lark_json(raw)
     if not parsed:
         return None, [], []
     data = parsed.get("data") or {}
     annotated_csv = data.get("annotated_csv") or ""
-    cleaned_csv = re.sub(r"(?m)^\[row=\d+\]\s?", "", annotated_csv)
-    rows = list(csv.reader(io.StringIO(cleaned_csv))) if cleaned_csv else []
-    row_numbers = list(data.get("row_indices") or [])
-    if rows and not row_numbers:
-        row_numbers = list(range(1, len(rows) + 1))
+
+    rows = []
+    row_numbers = []
+    if annotated_csv:
+        # Split into logical rows on each "[row=N]" marker. A CSV field may itself
+        # contain quoted newlines, so the marker — not the physical line break —
+        # is the only reliable logical-row boundary.
+        markers = list(re.finditer(r"(?m)^\[row=(\d+)\]\s?", annotated_csv))
+        if markers:
+            for i, marker in enumerate(markers):
+                start = marker.end()
+                end = markers[i + 1].start() if i + 1 < len(markers) else len(annotated_csv)
+                segment = annotated_csv[start:end].rstrip("\n")
+                parsed_row = next(csv.reader(io.StringIO(segment)), [])
+                rows.append(parsed_row)
+                row_numbers.append(int(marker.group(1)))
+        else:
+            # No row markers — parse plainly and only trust row_indices when it
+            # aligns with the parsed rows (it is absolute when present).
+            rows = list(csv.reader(io.StringIO(annotated_csv)))
+            indices = [int(n) for n in (data.get("row_indices") or []) if str(n).strip().lstrip("-").isdigit()]
+            row_numbers = indices if len(indices) == len(rows) else []
     return parsed, rows, row_numbers
 
 
@@ -376,7 +410,10 @@ def _mention_people(value, include_test_user=False, label_uid="", region=""):
     if include_test_user and "filipe.cairo" not in [p.lower() for p in people]:
         people.append("filipe.cairo")
     if not people:
-        return "N/A"
+        # Bug 1: when there are no names to mention, leave the field blank.
+        # Returning "N/A" made the BD / Label Manager card fields show a noisy
+        # "N/A" instead of an empty value.
+        return ""
     region_value = (region or CURRENT_REGION or "BR").upper()
     if region_value == "US":
         return ", ".join(_display_name_from_username(p) for p in people)
@@ -1181,10 +1218,10 @@ def build_card(
                 "background_style": "grey",
                 "columns": [
                     {"tag": "column", "width": "weighted", "weight": 1, "elements": [
-                        {"tag": "div", "text": {"tag": "lark_md", "content": f"**BD**\n{v(bd_mentions)}"}}
+                        {"tag": "div", "text": {"tag": "lark_md", "content": f"**BD**\n{bd_mentions}"}}
                     ]},
                     {"tag": "column", "width": "weighted", "weight": 1, "elements": [
-                        {"tag": "div", "text": {"tag": "lark_md", "content": f"**Label Manager**\n{v(label_manager_mentions)}"}}
+                        {"tag": "div", "text": {"tag": "lark_md", "content": f"**Label Manager**\n{label_manager_mentions}"}}
                     ]},
                 ]
             },

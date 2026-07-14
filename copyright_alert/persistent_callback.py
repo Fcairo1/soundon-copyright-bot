@@ -70,6 +70,18 @@ COMMAND_PREFIXES = ("/status", "/scan", "/pending", "/claims", "/restart", "/hel
 P2P_CHAT_CACHE_FILE = ROOT / "copyright_alert" / "bot_p2p_chats.json"
 P2P_CHAT_CACHE_LOCK = threading.Lock()
 
+# Bug 3: A DM action-card button click records the outcome in the tracker's
+# Email Status column (T) but must ALSO reflect the operator's decision in the
+# Status column (N). Map each reply action to the same Status vocabulary the
+# group-card status buttons write (see run_alert.build_card status buttons), so
+# both entry points keep column N consistent. "agree" means SoundOn accepts the
+# claim, i.e. the content should be taken down.
+STATUS_BY_REPLY_TYPE = {
+    "agree": "🔴 Confirm Takedown",
+    "investigating": "🔍 Investigating",
+    "dispute": "⚖️ Disputing",
+}
+
 # ── Dispute button behavior (intentional) ────────────────────────────────────
 # C2: The "⚖️ Dispute claim" button intentionally sends a *fixed* pre-made
 # dispute template immediately (see handle_card_action → _process_spotify_reply
@@ -389,12 +401,49 @@ def _process_spotify_reply(value, custom_message="", notify_chat_id=None, event_
                 tracker_warning = (
                     "⚠️ Could not record this in the tracker — status not updated."
                 )
+            # Bug 3: also reflect the operator's decision in column N ("Status").
+            # Previously only Email Status (column T) was written, so a case that
+            # was clearly acted on from the DM action card still showed a blank
+            # Status. Only write on the happy path (a draft was created) and keep
+            # this isolated so a Status write failure never turns a successful
+            # draft into a red failure card.
+            status_written = None
+            if mode == "draft":
+                mapped_status = STATUS_BY_REPLY_TYPE.get(reply_type)
+                if mapped_status:
+                    try:
+                        status_written = update_sheet_status(
+                            value.get("lark_card_message_id", ""),
+                            mapped_status,
+                            upc=value.get("upc"),
+                            isrc=value.get("isrc"),
+                            region=region,
+                            tracker_row=tracker_row,
+                        )
+                        print(
+                            f"spotify_reply Status (col N) write-back "
+                            f"({reply_type} -> {mapped_status}): {status_written}",
+                            flush=True,
+                        )
+                        if not status_written and not tracker_warning:
+                            tracker_warning = (
+                                "⚠️ Could not record this in the tracker — status not updated."
+                            )
+                    except Exception as status_exc:
+                        print("spotify_reply Status (col N) write-back error "
+                              "(draft still created):", repr(status_exc), flush=True)
+                        print(traceback.format_exc(), flush=True)
+                        if not tracker_warning:
+                            tracker_warning = (
+                                "⚠️ Could not record this in the tracker — status not updated."
+                            )
             send_preview_url = result.get("send_preview_url", "") if isinstance(result, dict) else ""
             print(json.dumps({
                 "spotify_reply": reply_type,
                 "reply_ok": ok,
                 "reply_mode": mode,
                 "email_status_written": sheet_ok,
+                "status_col_written": status_written,
                 "tracker_row": tracker_row,
                 "upc": value.get("upc"),
                 "message_id": result.get("message_id") if isinstance(result, dict) else "",

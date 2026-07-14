@@ -346,12 +346,26 @@ def _spreadsheet_token(sheet_url: str) -> str:
 
 def sheet_values_api(method: str, sheet_url: str, sheet_id: str, cell_range: str, values=None, timeout: int = 60) -> dict:
     spreadsheet_token = _spreadsheet_token(sheet_url)
+    # Bug 3: the Sheets v2 API rejects a single-cell reference (e.g. "N3") with
+    # code 90202 "wrong range" — it must be a full range ("N3:N3"). Callers that
+    # write one cell (status / email-status write-backs) pass a bare cell, so
+    # normalize it here for both reads and writes.
+    if ":" not in cell_range:
+        cell_range = f"{cell_range}:{cell_range}"
     a1_range = f"{sheet_id}!{cell_range}"
-    encoded_range = urllib.parse.quote(a1_range, safe="")
-    url = f"https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/{spreadsheet_token}/values/{encoded_range}"
+    base = f"https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/{spreadsheet_token}/values"
     body = None
     if values is not None:
+        # Bug 3 (root cause): the single-range WRITE endpoint is `.../values`
+        # (PUT) with the range carried inside the body's valueRange — NOT
+        # `.../values/{range}`. Reusing the read-style path for writes returned
+        # HTTP 404, so EVERY status write-back (group-card buttons and the new
+        # DM-card write-back alike) silently failed and column N stayed blank.
         body = json.dumps({"valueRange": {"range": a1_range, "values": values}}, ensure_ascii=False).encode("utf-8")
+        url = base
+    else:
+        encoded_range = urllib.parse.quote(a1_range, safe="")
+        url = f"{base}/{encoded_range}"
 
     force_refresh = False
 
