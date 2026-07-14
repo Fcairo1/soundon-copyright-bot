@@ -811,7 +811,21 @@ def handle_card_action(data):
         operator_name = operator_payload.get("name") or operator_payload.get("open_id") or operator_payload.get("user_id")
         upc = value.get("upc")
         isrc = value.get("isrc")
-        region = value.get("region") or CHAT_TO_REGION.get(chat_id or "")
+        # The group a status card lives in is AUTHORITATIVE for its region: each
+        # regional group (BR / US / SPLA) maps 1:1 to exactly one tracker sheet.
+        # The button's embedded `region` value can be stale/wrong — a card built
+        # during a region-config race (H2) can bake in the daemon's default
+        # CURRENT_REGION ("BR") into every button even though the card was posted
+        # to the US/SPLA group. Trusting that stale value made every subsequent
+        # click resolve region="BR", so reconstruct_card_from_tracker() read the
+        # BR tracker (where this US claim's UPC does not exist), found no row, and
+        # surfaced "no saved copy exists and it could not be rebuilt from the
+        # tracker" (see UPC 028324771826 / Brown Eyes in the US group). Derive the
+        # region from chat_id first and only fall back to the button value for a
+        # chat that is not mapped to a known region group. This is also
+        # self-healing: the rebuilt card is re-patched with correctly-regioned
+        # buttons, so the stale region disappears after the first click.
+        region = CHAT_TO_REGION.get(chat_id or "") or value.get("region")
         # H3 (cosmetic): stamp the status-audit line in the region's local time
         # instead of the daemon host's naive (Shanghai) time.
         timestamp = _region_local_timestamp(region)
