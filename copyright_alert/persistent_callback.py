@@ -750,6 +750,7 @@ def handle_card_action(data):
                     "artist": value.get("artist", "N/A"),
                     "claimant_name": value.get("claimant_name", "N/A"),
                     "claimant_email": value.get("claimant_email", "N/A"),
+                    "dsp": value.get("dsp", "N/A"),
                     "source_email_message_id": (
                         value.get("source_email_message_id")
                         or value.get("source_message_id")
@@ -889,7 +890,7 @@ def _enrich_case_for_reply(case: dict) -> dict:
 
     posted = _posted_claim_record_for_upc(upc)
     if posted:
-        for key in ("source_email_message_id", "claimant_email", "ref_id", "claimant_name", "title", "artist"):
+        for key in ("source_email_message_id", "claimant_email", "ref_id", "claimant_name", "title", "artist", "dsp"):
             value = posted.get(key)
             if value not in (None, "", "N/A"):
                 case[key] = value
@@ -948,7 +949,7 @@ def _read_tracker_fresh(region: str):
         "lark-cli", "sheets", "+csv-get",
         "--url", tracker_url,
         "--sheet-id", sheet_id,
-        "--range", "A1:T2000",
+        "--range", "A1:U2000",
         "--max-chars", "200000",
     ]
     # Refresh AIME-injected credentials in-place before spawning lark-cli. The
@@ -1044,9 +1045,10 @@ def _handle_card_command(command_text, message_id, target_chat_id="", target_ope
             "artist": cell(7) or "N/A",
             "claimant_name": cell(9) or "N/A",
             "claimant_email": "N/A",
+            "dsp": cell(8) or "N/A",
             "detected_at": cell(14) or "",
             "source_email_message_id": "",
-            "ref_id": "",
+            "ref_id": cell(20) or "",
             "region": region,
             "tracker_row": row_num,
             "ops_dm_email": cfg.get("ops_dm_email", ""),

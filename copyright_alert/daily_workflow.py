@@ -78,7 +78,13 @@ from copyright_alert.dm_action_card import (  # noqa: E402
 CHECKPOINT_FILE = "copyright_alert/scan_checkpoint.json"
 LAST_CARD_FILE = "copyright_alert/last_card.json"
 LOG_DIR = "copyright_alert/logs"
-TRIAGE_MAX = 50
+TRIAGE_MAX = 50            # messages fetched per triage page (page size)
+# Absolute ceiling on how many messages a single scan will pull while paginating
+# back to the previous checkpoint. Bounds the work per run so a runaway inbox
+# cannot make one scan fetch unboundedly, while still being large enough to span
+# any realistic backlog between two daily runs. The +triage CLI caps --max at
+# 400, so this is also the practical maximum reach of one scan.
+TRIAGE_HARD_CAP = 400
 # G2: A failed message is retried at most this many times before it is dropped
 # from the retry list, so a message that will never succeed is not re-processed
 # on every run forever.
@@ -103,6 +109,10 @@ TITLE_HEADER = "Title"
 ARTIST_HEADER = "Artist(s)"
 CLAIMANT_HEADER = "Claimant"
 STATUS_HEADER = "Status"
+DSP_HEADER = "DSP"
+# New tracker column (appended after the last existing column) that stores the
+# Spotify claim reference code (e.g. "ref:_00D0992XChO._500QvfHqBc:ref").
+SPOTIFY_REF_HEADER = "Spotify Ref Code"
 POSTED_CLAIMS_FILES = [
     "copyright_alert/posted_claims.json",
     "copyright_alert/posted_claims_ap_direitos_br.json",
@@ -249,27 +259,81 @@ def save_checkpoint(message_id, failed_message_ids=None):
 
 
 # ── Mail fetching ────────────────────────────────────────────────────────────
-def fetch_messages_raw():
-    """Fetch up to TRIAGE_MAX inbox messages, newest-first, as raw dicts."""
-    cmd = [
-        "lark-cli", "mail", "+triage",
-        "--mailbox", MAILBOX,
-        "--query", TRIAGE_QUERY,
-        "--max", str(TRIAGE_MAX),
-        "--format", "json",
-    ]
-    log(f"Fetching inbox: query={TRIAGE_QUERY!r}, max={TRIAGE_MAX}, mailbox={MAILBOX}")
-    res = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
-    if res.returncode != 0:
-        log(f"  ✗ triage failed rc={res.returncode}: {(res.stdout + res.stderr)[:500]}")
-        return []
-    parsed = parse_lark_json(res.stdout)
-    if not parsed:
-        log(f"  ✗ Failed to parse triage output. Raw (first 400): {res.stdout[:400]}")
-        return []
-    messages = parsed.get("messages") or (parsed.get("data") or {}).get("messages") or []
-    log(f"  Fetched {len(messages)} emails (newest-first).")
-    return messages
+def fetch_messages_raw(checkpoint=None):
+    """Fetch inbox messages newest-first, paginating back to ``checkpoint``.
+
+    ROOT-CAUSE FIX (the "31 missing early-July BR cases" incident):
+
+    The previous implementation issued a single ``mail +triage --max 50`` call
+    and returned only the 50 newest messages. The caller then *unconditionally*
+    advanced the checkpoint to the newest message (``messages[0]``) at the end of
+    every run. When more than 50 qualifying emails arrived between two daily
+    runs, the previous checkpoint fell *outside* that 50-message window, the scan
+    loop never reached it (``stopped_at_checkpoint`` stayed False), yet the
+    checkpoint still jumped forward to the newest message. Every email sitting
+    between the 50th-newest and the old checkpoint was therefore never scanned
+    and was permanently leapfrogged — exactly what happened to the 31 early-July
+    claims.
+
+    We now keep paginating (using the ``page_token`` returned by ``+triage``)
+    until the previous ``checkpoint`` message id appears in the fetched set, or
+    until we hit ``TRIAGE_HARD_CAP`` / run out of pages. This guarantees the
+    fetch window always spans back to the checkpoint, so Phase 1 can reach it and
+    the checkpoint can never advance past unscanned mail. On the first run
+    (``checkpoint is None``) behaviour is unchanged: a single page is fetched.
+    """
+    all_messages = []
+    page_token = None
+    pages = 0
+
+    while len(all_messages) < TRIAGE_HARD_CAP:
+        remaining = TRIAGE_HARD_CAP - len(all_messages)
+        page_size = min(TRIAGE_MAX, remaining)
+        cmd = [
+            "lark-cli", "mail", "+triage",
+            "--mailbox", MAILBOX,
+            "--query", TRIAGE_QUERY,
+            "--max", str(page_size),
+            "--format", "json",
+        ]
+        if page_token:
+            cmd += ["--page-token", page_token]
+        if pages == 0:
+            log(f"Fetching inbox: query={TRIAGE_QUERY!r}, page_size={page_size}, "
+                f"hard_cap={TRIAGE_HARD_CAP}, mailbox={MAILBOX}, "
+                f"checkpoint={checkpoint or '(none)'}")
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        if res.returncode != 0:
+            log(f"  ✗ triage failed rc={res.returncode}: {(res.stdout + res.stderr)[:500]}")
+            break
+        parsed = parse_lark_json(res.stdout)
+        if not parsed:
+            log(f"  ✗ Failed to parse triage output. Raw (first 400): {res.stdout[:400]}")
+            break
+        data = parsed.get("data") or {}
+        messages = parsed.get("messages") or data.get("messages") or []
+        all_messages.extend(messages)
+        pages += 1
+
+        # Stop as soon as the previous checkpoint is inside the fetched window —
+        # everything older than it has already been processed on a prior run.
+        if checkpoint and any(m.get("message_id") == checkpoint for m in messages):
+            log(f"  ✓ Reached previous checkpoint within fetch window after "
+                f"{pages} page(s), {len(all_messages)} message(s).")
+            break
+
+        page_token = parsed.get("page_token") or data.get("page_token")
+        has_more = parsed.get("has_more")
+        if has_more is None:
+            has_more = data.get("has_more")
+        # First run (no checkpoint): keep the original single-page behaviour.
+        if checkpoint is None:
+            break
+        if not has_more or not page_token:
+            break
+
+    log(f"  Fetched {len(all_messages)} emails (newest-first) across {max(pages, 1)} page(s).")
+    return all_messages
 
 
 def _prefilter_skip_reason(subject, thread_id, seen_threads):
@@ -329,7 +393,10 @@ def _parse_candidate(msg_id, subject, date, thread_id, seen_threads, summary):
 # ── PART 1A — incremental scan + post ────────────────────────────────────────
 def run_scan():
     section("PART 1A — Incremental inbox scan + post cards")
-    messages = fetch_messages_raw()
+    # Load the checkpoint BEFORE fetching so the fetch can paginate back to it and
+    # never leave a gap (root-cause fix for the 31 leapfrogged early-July cases).
+    checkpoint = load_checkpoint()
+    messages = fetch_messages_raw(checkpoint=checkpoint)
     summary = {
         "fetched": len(messages),
         "examined": 0,
@@ -346,7 +413,8 @@ def run_scan():
         "stopped_at_checkpoint": False,
     }
 
-    checkpoint = load_checkpoint()
+    # `checkpoint` was already loaded above (before the fetch) and reused here so
+    # the fetch window and the Phase-1 stop condition agree on the same value.
     prev_failed = load_failed_message_ids()
     # G2: map message_id → prior attempt count so we can increment per run and
     # drop entries that have exhausted their retry budget.
@@ -491,11 +559,11 @@ def run_scan():
             log("     ✗ Card posting failed for this candidate — will retry next run")
             failed_entries[msg_id] = {"message_id": msg_id, "subject": subject, "date": c.get("date", "")}
 
-    if checkpoint and not summary["stopped_at_checkpoint"] and len(messages) >= TRIAGE_MAX:
-        log(f"  🚨 WARNING: previous checkpoint {checkpoint} was NOT reached within the "
-            f"{TRIAGE_MAX}-message fetch window. More than {TRIAGE_MAX} new messages may have "
-            f"arrived since the last run; messages older than this window will be permanently "
-            f"skipped once the checkpoint advances. Consider raising TRIAGE_MAX or paginating.")
+    if checkpoint and not summary["stopped_at_checkpoint"] and len(messages) >= TRIAGE_HARD_CAP:
+        log(f"  🚨 WARNING: previous checkpoint {checkpoint} was NOT reached even after "
+            f"paginating up to the {TRIAGE_HARD_CAP}-message hard cap. An unusually large "
+            f"backlog has accumulated; emails older than this window may still be skipped once "
+            f"the checkpoint advances. Raise TRIAGE_HARD_CAP or run a manual backfill.")
 
     # G2: Attach/increment attempt counters and drop entries that have exhausted
     # their retry budget so a permanently-failing message is not retried forever.
@@ -920,6 +988,8 @@ def dm_action_cards(values):
         "title": _header_index(headers, TITLE_HEADER),
         "artist": _header_index(headers, ARTIST_HEADER),
         "claimant": _header_index(headers, CLAIMANT_HEADER),
+        "dsp": _header_index(headers, DSP_HEADER),
+        "spotify_ref": _header_index(headers, SPOTIFY_REF_HEADER),
         "status": _header_index(headers, STATUS_HEADER),
         "date": _header_index(headers, DATE_RECEIVED_HEADER),
         "lark_msg": _header_index(headers, LARK_MSG_ID_HEADER),
@@ -976,6 +1046,13 @@ def dm_action_cards(values):
             "artist": _cell(row, idx["artist"]) or "N/A",
             "claimant_name": _cell(row, idx["claimant"]) or extra.get("claimant_name", "N/A"),
             "claimant_email": extra.get("claimant_email", "N/A"),
+            # DSP shown on the private action card (tracker column I), falling
+            # back to the posted_claims record when the tracker cell is blank.
+            "dsp": _cell(row, idx["dsp"]) or extra.get("dsp", "N/A"),
+            # Spotify ref code read back from the tracker column (populated at
+            # ingest time), falling back to the posted_claims record. Used as the
+            # button payload ref_id so replies thread to the right claim.
+            "ref_id": _cell(row, idx["spotify_ref"]) or extra.get("ref_id", ""),
             "source_email_message_id": source_email_message_id,
             "lark_card_message_id": card_msg_id,
             "detected_at": detected_raw,
@@ -1095,6 +1172,7 @@ def _reconstruct_card_from_row(row, idx, message_id="", region=""):
         "claimant_message": "N/A",
         "dsp": cell("dsp") or "N/A",
         "date_received": cell("date") or "N/A",
+        "ref_id": cell("spotify_ref") or "N/A",
     }
     ar = {
         "album_title": cell("title") or "N/A",
@@ -1200,6 +1278,7 @@ def countdown_refresh(values):
         "claimant": _header_index(headers, CLAIMANT_HEADER),
         "email_source": _header_index(headers, "Email Source"),
         "dsp": _header_index(headers, "DSP"),
+        "spotify_ref": _header_index(headers, SPOTIFY_REF_HEADER),
         "uid": _header_index(headers, "UID"),
         "admin_action": _header_index(headers, ADMIN_ACTION_HEADER),
     }

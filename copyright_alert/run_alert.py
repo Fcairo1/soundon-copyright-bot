@@ -576,6 +576,29 @@ def extract_fields(body, subject, meta):
     if claimant_email == "N/A":
         claimant_email = first(body, r"([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})")
 
+    # Spotify Content Protection "Takedown Notification" / "Possibly Infringing"
+    # emails carry no labeled "Claimant"/"Email" fields: the claimant identity is
+    # only a closing signature ("Best regards, Spotify Content Protection
+    # ref:...") and the address lives solely in the From header. Without these
+    # fallbacks such emails are stored with claimant_name/claimant_email = N/A
+    # (root cause for UPC 5063965113869 being ingested without a claimant).
+    if claimant_name == "N/A":
+        sig = first(
+            body,
+            r"(Spotify Content Protection)",
+            r"Best regards,\s*(.+?)\s*(?=ref:_|$)",
+        )
+        if sig != "N/A":
+            claimant_name = sig.strip()
+    if claimant_email == "N/A":
+        head_from = meta.get("head_from") if isinstance(meta.get("head_from"), dict) else {}
+        from_addr = str((head_from or {}).get("mail_address", "")).strip()
+        if not from_addr:
+            from_addr = str(meta.get("from", "") or meta.get("sender", "")).strip()
+        from_match = re.search(r"([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})", from_addr)
+        if from_match:
+            claimant_email = from_match.group(1)
+
     fields["claimant_name"] = _clean_email_value(claimant_name)
     fields["claimant_email"] = _clean_email_value(claimant_email)
 
@@ -1363,21 +1386,27 @@ def _tracker_physical_row_count(default=2000):
 
 
 def _tracker_next_row():
-    """Return the next writable row after the last real tracker case row.
+    """Return the FIRST empty row after the header, so appends stay contiguous.
 
-    This intentionally ignores rows that only contain follow-up metadata such as
-    Email Status (column T). Those can appear if an old callback carried a stale
-    tracker_row value, and counting them would create a large phantom gap before
-    the next append.
+    Previously this returned ``max(occupied_rows) + 1`` (append at the very
+    bottom). That is unsafe: if any earlier run mis-placed rows below a gap
+    (e.g. a backfill that landed at rows 147-177 while the last real case was at
+    row 62), ``max + 1`` keeps appending *below* the stray block (row 178, 179,
+    ...), permanently widening the 63-146 gap. Every subsequent append then
+    inherits and grows the hole.
+
+    The tracker must have NO gaps: a new row must always land on the first empty
+    row immediately after the last contiguously-filled row. We therefore scan the
+    full physical sheet, collect every occupied row (a real case row *or* any
+    otherwise non-empty row), and return the smallest row number >= 2 that is not
+    occupied. When the sheet is already contiguous this equals last-filled + 1;
+    when a gap exists this fills the gap instead of extending past it.
 
     The scan covers the full physical sheet in chunks instead of assuming the
-    first 500 rows are enough. That guarantees new rows are appended to the true
-    bottom of the tracker, never written back near the top because of a partial
-    pre-read.
+    first 500 rows are enough, so a very tall sheet is still fully inspected.
     """
     physical_rows = max(_tracker_physical_row_count(), 2)
-    case_rows = []
-    nonempty_rows = []
+    occupied_rows = set()
     chunk_size = 500
 
     for start_row in range(1, physical_rows + 1, chunk_size):
@@ -1399,19 +1428,21 @@ def _tracker_next_row():
                 row_number = int(row_number or 0)
             except (TypeError, ValueError):
                 continue
+            if row_number < 1:
+                continue
+            # A row is "occupied" if it has ANY content (a real case row, or a
+            # stray follow-up note). We fill the first gap regardless, so even a
+            # partially-written stray row is skipped rather than overwritten.
             if any(str(value or "").strip() for value in values):
-                nonempty_rows.append(row_number)
-            row_map = {chr(ord("A") + col_idx): value for col_idx, value in enumerate(values)}
-            if _tracker_row_has_case_identity(row_map):
-                case_rows.append(row_number)
+                occupied_rows.add(row_number)
 
-    # Append after the last existing/non-empty row, not just after the last row
-    # that looks like a case. This avoids writing near the top when the sheet has
-    # formulas, notes, or manual content below the last case row.
-    occupied_rows = case_rows + nonempty_rows
-    if occupied_rows:
-        return max(occupied_rows) + 1
-    return 2
+    # Row 1 is the header; the first data row is 2. Walk upward from row 2 and
+    # return the first row that is not occupied. This guarantees a contiguous,
+    # gap-free tracker and self-heals any pre-existing gap on the next append.
+    row = 2
+    while row in occupied_rows:
+        row += 1
+    return row
 
 
 def _tracker_cell(value, *, text=False):
@@ -1430,7 +1461,7 @@ def append_tracker_row(ef, ar, message_id, status=""):
     snapshot only when a brand-new tracker row is appended. Existing rows are
     never refreshed or overwritten by daily jobs.
 
-    Columns A:T (20):
+    Columns A:U (21):
       A UPC, B ISRC, C Title, D UID, E Source (Aeolus source_type_name, e.g.
       "AP", "A&R", "UG-Paid ads"), F tt_30d_vv, G sptf_30d_str, H Artist(s),
       I DSP, J Claimant, K Email Source, L BD, M Label Manager, N Status,
@@ -1438,7 +1469,9 @@ def append_tracker_row(ef, ar, message_id, status=""):
       reply countdown), P Lark Message ID, Q Notes, R Admin Action Taken,
       S Card Message ID (alias of P — same group-card message_id, written to
       both so the daily countdown refresh can find it easily),
-      T Email Status (filled in later once a Spotify reply is sent).
+      T Email Status (filled in later once a Spotify reply is sent),
+      U Spotify Ref Code (the "ref:_...:ref" claim code parsed from the Spotify
+      email; blank for non-Spotify claims).
 
     Returns the appended tracker row number on success, else None.
     """
@@ -1471,13 +1504,14 @@ def append_tracker_row(ef, ar, message_id, status=""):
         _tracker_cell(""),          # R Admin Action Taken (filled later by daily workflow)
         _tracker_cell(msg_id_str, text=True),  # S Card Message ID (alias of P / Lark Message ID)
         _tracker_cell(""),          # T Email Status (filled after a Spotify reply is sent)
+        _tracker_cell(ef.get("ref_id") if ef.get("ref_id") not in (None, "", "N/A") else "", text=True),  # U Spotify Ref Code
     ]]
-    assert len(row[0]) == 20, f"Tracker row schema drift: expected 20 cells, got {len(row[0])}"
+    assert len(row[0]) == 21, f"Tracker row schema drift: expected 21 cells, got {len(row[0])}"
 
     next_row = _tracker_next_row()
     if not next_row:
         return None
-    target_range = f"A{next_row}:T{next_row}"
+    target_range = f"A{next_row}:U{next_row}"
     cmd = [
         "lark-cli", "sheets", "+cells-set", "--url", TRACKER_SHEET_URL,
         "--sheet-id", TRACKER_SHEET_ID, "--range", target_range,

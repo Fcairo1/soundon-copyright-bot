@@ -349,8 +349,9 @@ def read_tracker_rows(region: str) -> Tuple[List[str], List[Dict[str, str]]]:
         "--range",
         # B11: uncap the read range so trackers with more than ~200 rows are
         # fully read (the old A1:Q200 both truncated rows and stopped before
-        # columns R/S/T).
-        "A1:T2000",
+        # columns R/S/T). Extended to U so the appended "Spotify Ref Code"
+        # column is included in header-keyed records.
+        "A1:U2000",
     ]
     res = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True, timeout=90)
     if res.returncode != 0:
