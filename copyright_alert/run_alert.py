@@ -576,6 +576,29 @@ def extract_fields(body, subject, meta):
     if claimant_email == "N/A":
         claimant_email = first(body, r"([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})")
 
+    # Spotify Content Protection "Takedown Notification" / "Possibly Infringing"
+    # emails carry no labeled "Claimant"/"Email" fields: the claimant identity is
+    # only a closing signature ("Best regards, Spotify Content Protection
+    # ref:...") and the address lives solely in the From header. Without these
+    # fallbacks such emails are stored with claimant_name/claimant_email = N/A
+    # (root cause for UPC 5063965113869 being ingested without a claimant).
+    if claimant_name == "N/A":
+        sig = first(
+            body,
+            r"(Spotify Content Protection)",
+            r"Best regards,\s*(.+?)\s*(?=ref:_|$)",
+        )
+        if sig != "N/A":
+            claimant_name = sig.strip()
+    if claimant_email == "N/A":
+        head_from = meta.get("head_from") if isinstance(meta.get("head_from"), dict) else {}
+        from_addr = str((head_from or {}).get("mail_address", "")).strip()
+        if not from_addr:
+            from_addr = str(meta.get("from", "") or meta.get("sender", "")).strip()
+        from_match = re.search(r"([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})", from_addr)
+        if from_match:
+            claimant_email = from_match.group(1)
+
     fields["claimant_name"] = _clean_email_value(claimant_name)
     fields["claimant_email"] = _clean_email_value(claimant_email)
 
@@ -1430,7 +1453,7 @@ def append_tracker_row(ef, ar, message_id, status=""):
     snapshot only when a brand-new tracker row is appended. Existing rows are
     never refreshed or overwritten by daily jobs.
 
-    Columns A:T (20):
+    Columns A:U (21):
       A UPC, B ISRC, C Title, D UID, E Source (Aeolus source_type_name, e.g.
       "AP", "A&R", "UG-Paid ads"), F tt_30d_vv, G sptf_30d_str, H Artist(s),
       I DSP, J Claimant, K Email Source, L BD, M Label Manager, N Status,
@@ -1438,7 +1461,9 @@ def append_tracker_row(ef, ar, message_id, status=""):
       reply countdown), P Lark Message ID, Q Notes, R Admin Action Taken,
       S Card Message ID (alias of P — same group-card message_id, written to
       both so the daily countdown refresh can find it easily),
-      T Email Status (filled in later once a Spotify reply is sent).
+      T Email Status (filled in later once a Spotify reply is sent),
+      U Spotify Ref Code (the "ref:_...:ref" claim code parsed from the Spotify
+      email; blank for non-Spotify claims).
 
     Returns the appended tracker row number on success, else None.
     """
@@ -1471,13 +1496,14 @@ def append_tracker_row(ef, ar, message_id, status=""):
         _tracker_cell(""),          # R Admin Action Taken (filled later by daily workflow)
         _tracker_cell(msg_id_str, text=True),  # S Card Message ID (alias of P / Lark Message ID)
         _tracker_cell(""),          # T Email Status (filled after a Spotify reply is sent)
+        _tracker_cell(ef.get("ref_id") if ef.get("ref_id") not in (None, "", "N/A") else "", text=True),  # U Spotify Ref Code
     ]]
-    assert len(row[0]) == 20, f"Tracker row schema drift: expected 20 cells, got {len(row[0])}"
+    assert len(row[0]) == 21, f"Tracker row schema drift: expected 21 cells, got {len(row[0])}"
 
     next_row = _tracker_next_row()
     if not next_row:
         return None
-    target_range = f"A{next_row}:T{next_row}"
+    target_range = f"A{next_row}:U{next_row}"
     cmd = [
         "lark-cli", "sheets", "+cells-set", "--url", TRACKER_SHEET_URL,
         "--sheet-id", TRACKER_SHEET_ID, "--range", target_range,

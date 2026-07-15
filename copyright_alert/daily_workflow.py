@@ -103,6 +103,10 @@ TITLE_HEADER = "Title"
 ARTIST_HEADER = "Artist(s)"
 CLAIMANT_HEADER = "Claimant"
 STATUS_HEADER = "Status"
+DSP_HEADER = "DSP"
+# New tracker column (appended after the last existing column) that stores the
+# Spotify claim reference code (e.g. "ref:_00D0992XChO._500QvfHqBc:ref").
+SPOTIFY_REF_HEADER = "Spotify Ref Code"
 POSTED_CLAIMS_FILES = [
     "copyright_alert/posted_claims.json",
     "copyright_alert/posted_claims_ap_direitos_br.json",
@@ -920,6 +924,8 @@ def dm_action_cards(values):
         "title": _header_index(headers, TITLE_HEADER),
         "artist": _header_index(headers, ARTIST_HEADER),
         "claimant": _header_index(headers, CLAIMANT_HEADER),
+        "dsp": _header_index(headers, DSP_HEADER),
+        "spotify_ref": _header_index(headers, SPOTIFY_REF_HEADER),
         "status": _header_index(headers, STATUS_HEADER),
         "date": _header_index(headers, DATE_RECEIVED_HEADER),
         "lark_msg": _header_index(headers, LARK_MSG_ID_HEADER),
@@ -976,6 +982,13 @@ def dm_action_cards(values):
             "artist": _cell(row, idx["artist"]) or "N/A",
             "claimant_name": _cell(row, idx["claimant"]) or extra.get("claimant_name", "N/A"),
             "claimant_email": extra.get("claimant_email", "N/A"),
+            # DSP shown on the private action card (tracker column I), falling
+            # back to the posted_claims record when the tracker cell is blank.
+            "dsp": _cell(row, idx["dsp"]) or extra.get("dsp", "N/A"),
+            # Spotify ref code read back from the tracker column (populated at
+            # ingest time), falling back to the posted_claims record. Used as the
+            # button payload ref_id so replies thread to the right claim.
+            "ref_id": _cell(row, idx["spotify_ref"]) or extra.get("ref_id", ""),
             "source_email_message_id": source_email_message_id,
             "lark_card_message_id": card_msg_id,
             "detected_at": detected_raw,
@@ -1095,6 +1108,7 @@ def _reconstruct_card_from_row(row, idx, message_id="", region=""):
         "claimant_message": "N/A",
         "dsp": cell("dsp") or "N/A",
         "date_received": cell("date") or "N/A",
+        "ref_id": cell("spotify_ref") or "N/A",
     }
     ar = {
         "album_title": cell("title") or "N/A",
@@ -1200,6 +1214,7 @@ def countdown_refresh(values):
         "claimant": _header_index(headers, CLAIMANT_HEADER),
         "email_source": _header_index(headers, "Email Source"),
         "dsp": _header_index(headers, "DSP"),
+        "spotify_ref": _header_index(headers, SPOTIFY_REF_HEADER),
         "uid": _header_index(headers, "UID"),
         "admin_action": _header_index(headers, ADMIN_ACTION_HEADER),
     }
