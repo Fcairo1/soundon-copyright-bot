@@ -38,6 +38,14 @@ UPC_COL_NAME = "UPC"
 ISRC_COL_NAME = "ISRC"
 EMAIL_STATUS_COL_NAME = "Email Status"
 EMAIL_STATUS_COL = "T"
+# J4: Additional headers used by the row-matching priority hierarchy in
+# _find_tracker_row. The group-card message id is mirrored into both the
+# "Lark Message ID" (column P) and "Card Message ID" (column S) columns, and the
+# Spotify claim reference code lives in the "ref_code" column (U). "Date Received"
+# (column O) is used to disambiguate multiple rows that share a UPC.
+CARD_MSG_ID_COL_NAME = "Card Message ID"
+REF_CODE_COL_NAME = "ref_code"
+DATE_RECEIVED_COL_NAME = "Date Received"
 # F1: The bot ONLY writes to column N ("Status") via update_sheet_status().
 # Column R ("Admin Action Taken") is filled MANUALLY by ops and must NEVER be
 # written by the bot. The old dead admin-action machinery
@@ -202,10 +210,16 @@ _TRACKER_RECONSTRUCT_HEADER_KEYS = {
     "email_source": "Email Source",
     "dsp": "DSP",
     "uid": "UID",
+    # J2: Map the short key used by daily_workflow._reconstruct_card_from_row
+    # (cell("spotify_ref")) to the live tracker header "ref_code" (column U), so
+    # the callback rebuild path can read the Spotify ref code and populate
+    # ef["ref_id"]. Without this entry the header index was never resolved and
+    # rebuilt cards always fell back to "N/A".
+    "spotify_ref": "ref_code",
 }
 
 
-def reconstruct_card_from_tracker(message_id, region=None, upc=None, isrc=None, tracker_row=None):
+def reconstruct_card_from_tracker(message_id, region=None, upc=None, isrc=None, tracker_row=None, ref_id=None, date=None):
     """Rebuild a patchable card from the tracker row for a given claim.
 
     Used as a fallback when posted_cards.json has no persisted copy of the
@@ -230,7 +244,7 @@ def reconstruct_card_from_tracker(message_id, region=None, upc=None, isrc=None, 
         )
         return None
     row_num, _match_reason, header_index = _find_tracker_row(
-        values, message_id=message_id, upc=upc, isrc=isrc, tracker_row=tracker_row,
+        values, message_id=message_id, upc=upc, isrc=isrc, ref_id=ref_id, date=date, tracker_row=tracker_row,
     )
     if not row_num:
         print(f"reconstruct_card_from_tracker: no tracker row for message_id={message_id}", flush=True)
@@ -249,7 +263,7 @@ def reconstruct_card_from_tracker(message_id, region=None, upc=None, isrc=None, 
         return None
 
 
-def load_card_for_message(message_id, region=None, upc=None, isrc=None, tracker_row=None):
+def load_card_for_message(message_id, region=None, upc=None, isrc=None, tracker_row=None, ref_id=None, date=None):
     """Load the exact persisted card for a message, or rebuild it from the tracker.
 
     Never falls back to last_card.json: that is a different claim's card and
@@ -261,7 +275,7 @@ def load_card_for_message(message_id, region=None, upc=None, isrc=None, tracker_
     if card:
         return card
     card = reconstruct_card_from_tracker(
-        message_id, region=region, upc=upc, isrc=isrc, tracker_row=tracker_row
+        message_id, region=region, upc=upc, isrc=isrc, tracker_row=tracker_row, ref_id=ref_id, date=date
     )
     if card:
         return card
@@ -379,30 +393,73 @@ def read_sheet_values(region=None):
         return []
 
 
-def _find_tracker_row(values, *, message_id=None, upc=None, isrc=None, tracker_row=None):
-    """Locate the tracker row for a claim using row hint, message id, UPC, or ISRC."""
+def _find_tracker_row(values, *, message_id=None, upc=None, isrc=None, ref_id=None, date=None, tracker_row=None):
+    """Locate the tracker row for a claim using a strict match-priority hierarchy.
+
+    J4 — rows are matched by claim identity in this order, strongest first:
+
+      1. ``message_id`` — card message id, matched against column P
+         (Lark Message ID) OR column S (Card Message ID). Strongest key.
+      2. ``ref_code``   — column U, when the callback carries a ``ref_id``
+         (Spotify claims only; column U is blank for non-Spotify claims).
+      3. ``date + upc`` — columns O (Date Received, date-part only) + A (UPC),
+         when no ref_code is available and a ``date`` was supplied.
+      4. most-recent UPC — if several rows still match on UPC alone, pick the one
+         with the latest Date Received, tie-broken by the highest row number.
+         Never silently defaults to the first/topmost row.
+
+    An explicit ``tracker_row`` hint still wins when it matches a supplied stable
+    id. A plain ISRC lookup is kept as a last-resort fallback for legacy
+    non-UPC claims. Every successful match logs ``matched_by: <tier>`` so the
+    chosen tier is auditable. Returns ``(row_num, match_reason, header_index)``.
+    """
     if not values:
         return None, None, {}
 
     headers = [_norm(v) for v in values[0]]
     header_index = {name: idx for idx, name in enumerate(headers) if name}
-    message_idx = header_index.get(MESSAGE_ID_COL)
-    upc_idx = header_index.get(UPC_COL_NAME)
+    message_idx = header_index.get(MESSAGE_ID_COL)          # column P
+    card_msg_idx = header_index.get(CARD_MSG_ID_COL_NAME)   # column S
+    upc_idx = header_index.get(UPC_COL_NAME)                # column A
     isrc_idx = header_index.get(ISRC_COL_NAME)
+    ref_idx = header_index.get(REF_CODE_COL_NAME)           # column U
+    date_idx = header_index.get(DATE_RECEIVED_COL_NAME)     # column O
+
+    def _get(row, idx):
+        return _norm(row[idx]) if idx is not None and len(row) > idx else ""
+
+    def _msg_cell(row):
+        # The group-card message id is written to both column P and column S, so
+        # a click may match on either.
+        return _get(row, message_idx) or _get(row, card_msg_idx)
+
+    def _date_only(raw):
+        raw = _norm(raw)
+        if not raw:
+            return ""
+        # Keep only the date part (before any space or 'T' time separator).
+        return raw.split(" ")[0].split("T")[0]
+
+    def _date_sort_key(raw):
+        d = _date_only(raw)
+        for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%m/%d/%Y", "%d/%m/%Y"):
+            try:
+                return datetime.strptime(d, fmt)
+            except ValueError:
+                continue
+        # Unparseable/blank dates sort oldest so a parseable, more-recent row wins.
+        return datetime.min
 
     def row_identity(row):
-        msg_cell = _norm(row[message_idx]) if message_idx is not None and len(row) > message_idx else ""
-        upc_cell = _norm(row[upc_idx]) if upc_idx is not None and len(row) > upc_idx else ""
-        isrc_cell = _norm(row[isrc_idx]) if isrc_idx is not None and len(row) > isrc_idx else ""
-        return msg_cell, upc_cell, isrc_cell
+        return _msg_cell(row), _get(row, upc_idx), _get(row, isrc_idx)
 
     def row_matches_supplied_identity(row):
         """Return True when the hinted row matches at least one supplied stable id.
 
         Older cards can carry stale tracker_row values. Trusting the row hint
         blindly can write a callback to the wrong row, especially after a row was
-        manually inserted near the top. The hint is now only authoritative when
-        it matches the message_id, UPC, or ISRC present in the callback payload.
+        manually inserted near the top. The hint is only authoritative when it
+        matches the message_id, UPC, or ISRC present in the callback payload.
         """
         msg_cell, upc_cell, isrc_cell = row_identity(row)
         expected = [
@@ -417,6 +474,9 @@ def _find_tracker_row(values, *, message_id=None, upc=None, isrc=None, tracker_r
 
     row_num = None
     match_reason = None
+
+    # Explicit tracker_row hint — honoured only when it still matches a supplied
+    # stable id (older cards can carry a stale row number).
     if tracker_row not in (None, ""):
         try:
             candidate_row = int(tracker_row)
@@ -434,29 +494,75 @@ def _find_tracker_row(values, *, message_id=None, upc=None, isrc=None, tracker_r
         except (TypeError, ValueError):
             print(f"Invalid tracker_row hint: {tracker_row!r}")
 
-    for idx, row in enumerate(values[1:], start=2):
-        if row_num:
-            break
-        msg_cell, upc_cell, isrc_cell = row_identity(row)
+    # Tier 1 — card message_id (column P or S). Strongest key.
+    if not row_num and message_id:
+        want = _norm(message_id)
+        if want:
+            for idx, row in enumerate(values[1:], start=2):
+                if _msg_cell(row) == want:
+                    row_num, match_reason = idx, "message_id"
+                    break
 
-        if message_id and msg_cell and msg_cell == _norm(message_id):
-            row_num = idx
-            match_reason = "message_id"
-            break
-        if upc and upc_cell and upc_cell == _norm(upc):
-            row_num = idx
-            match_reason = "upc"
-            break
-        if isrc and isrc_cell and isrc_cell == _norm(isrc):
-            row_num = idx
+    # Tier 2 — ref_code (column U). Spotify claims only; column U is blank for
+    # non-Spotify claims, so this never matches a non-Spotify row.
+    if not row_num and ref_id and ref_idx is not None:
+        want = _norm(ref_id)
+        if want:
+            for idx, row in enumerate(values[1:], start=2):
+                if _get(row, ref_idx) == want:
+                    row_num, match_reason = idx, "ref_code"
+                    break
+
+    # Tiers 3 & 4 — UPC-based matching. Collect every row sharing the UPC, then
+    # narrow by Date Received (tier 3) or fall back to the most-recent row
+    # (tier 4). Never default to the first/topmost row.
+    if not row_num and upc and upc_idx is not None:
+        want_upc = _norm(upc)
+        upc_rows = (
+            [idx for idx, row in enumerate(values[1:], start=2) if _get(row, upc_idx) == want_upc]
+            if want_upc else []
+        )
+        if upc_rows:
+            want_date = _date_only(date) if date else ""
+            date_rows = [
+                rn for rn in upc_rows
+                if want_date and _date_only(_get(values[rn - 1], date_idx)) == want_date
+            ]
+            if date_rows:
+                # Tier 3: exact Date Received + UPC. If still multiple, take the
+                # highest (latest-appended) row.
+                row_num = max(date_rows)
+                match_reason = "date+upc"
+            else:
+                # Tier 4: most-recent by Date Received, tie-break by highest row.
+                row_num = max(
+                    upc_rows,
+                    key=lambda rn: (_date_sort_key(_get(values[rn - 1], date_idx)), rn),
+                )
+                match_reason = "most_recent_upc"
+
+    # Last-resort fallback — ISRC (legacy non-UPC claims). Most-recent if several
+    # rows match, never the first/topmost.
+    if not row_num and isrc and isrc_idx is not None:
+        want_isrc = _norm(isrc)
+        isrc_rows = (
+            [idx for idx, row in enumerate(values[1:], start=2) if _get(row, isrc_idx) == want_isrc]
+            if want_isrc else []
+        )
+        if isrc_rows:
+            row_num = max(
+                isrc_rows,
+                key=lambda rn: (_date_sort_key(_get(values[rn - 1], date_idx)), rn),
+            )
             match_reason = "isrc"
-            break
 
+    if row_num:
+        print(f"matched_by: {match_reason} (row {row_num})", flush=True)
     return row_num, match_reason, header_index
 
 
 
-def update_sheet_status(message_id, status, upc=None, isrc=None, region=None, tracker_row=None):
+def update_sheet_status(message_id, status, upc=None, isrc=None, region=None, tracker_row=None, ref_id=None, date=None):
     sheet_url, sheet_id = _tracker_config(region)
     values = read_sheet_values(region=region)
     if not values:
@@ -468,6 +574,8 @@ def update_sheet_status(message_id, status, upc=None, isrc=None, region=None, tr
         message_id=message_id,
         upc=upc,
         isrc=isrc,
+        ref_id=ref_id,
+        date=date,
         tracker_row=tracker_row,
     )
     status_idx = header_index.get(STATUS_COL_NAME)
@@ -492,7 +600,12 @@ def update_sheet_status(message_id, status, upc=None, isrc=None, region=None, tr
     if message_idx is not None:
         current_msg = _norm(values[row_num - 1][message_idx]) if len(values[row_num - 1]) > message_idx else ""
         message_id_str = str(message_id if message_id is not None else "")
-        if current_msg != _norm(message_id_str):
+        # J1: Never blank column P (Lark Message ID). A DM-card Status write-back
+        # can arrive with an empty message_id (e.g. a `/card`-generated card that
+        # carried no group-card message id). Without the `message_id_str` guard the
+        # sync would write "" into column P and erase the real group-card message
+        # id, breaking every later button patch/lookup for that row.
+        if message_id_str and current_msg != _norm(message_id_str):
             updates.append((_col_letter(message_idx), message_id_str))
 
     ok = True
@@ -627,6 +740,8 @@ def main():
             upc=payload.get("upc"),
             isrc=payload.get("isrc"),
             tracker_row=payload.get("tracker_row"),
+            ref_id=payload.get("ref_id"),
+            date=payload.get("date") or payload.get("detected_at"),
         ),
         status,
         message_id,
@@ -634,7 +749,16 @@ def main():
     Path("copyright_alert/last_card_callback.json").write_text(json.dumps(card, ensure_ascii=False, indent=2))
 
     patched = patch_message(message_id, card)
-    sheet_ok = update_sheet_status(message_id, status, upc=payload.get("upc"), isrc=payload.get("isrc"), region=payload.get("region"), tracker_row=payload.get("tracker_row"))
+    sheet_ok = update_sheet_status(
+        message_id,
+        status,
+        upc=payload.get("upc"),
+        isrc=payload.get("isrc"),
+        region=payload.get("region"),
+        tracker_row=payload.get("tracker_row"),
+        ref_id=payload.get("ref_id"),
+        date=payload.get("date") or payload.get("detected_at"),
+    )
     print(json.dumps({"patched": patched, "sheet_updated": sheet_ok, "status": status, "message_id": message_id, "region": payload.get("region")}, ensure_ascii=False))
 
 

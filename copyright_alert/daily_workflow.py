@@ -112,7 +112,10 @@ STATUS_HEADER = "Status"
 DSP_HEADER = "DSP"
 # New tracker column (appended after the last existing column) that stores the
 # Spotify claim reference code (e.g. "ref:_00D0992XChO._500QvfHqBc:ref").
-SPOTIFY_REF_HEADER = "Spotify Ref Code"
+# J2: The live tracker header for this column is literally "ref_code" (not
+# "Spotify Ref Code"), so the readback lookup must match that exact header or
+# column U can never be resolved and `ef["ref_id"]` stays blank on rebuilds.
+SPOTIFY_REF_HEADER = "ref_code"
 POSTED_CLAIMS_FILES = [
     "copyright_alert/posted_claims.json",
     "copyright_alert/posted_claims_ap_direitos_br.json",
@@ -260,7 +263,7 @@ def save_checkpoint(message_id, failed_message_ids=None):
 
 # ── Mail fetching ────────────────────────────────────────────────────────────
 def fetch_messages_raw(checkpoint=None):
-    """Fetch inbox messages newest-first, paginating back to ``checkpoint``.
+    """Fetch inbox messages newest-first in a SINGLE triage call.
 
     ROOT-CAUSE FIX (the "31 missing early-July BR cases" incident):
 
@@ -275,65 +278,48 @@ def fetch_messages_raw(checkpoint=None):
     and was permanently leapfrogged — exactly what happened to the 31 early-July
     claims.
 
-    We now keep paginating (using the ``page_token`` returned by ``+triage``)
-    until the previous ``checkpoint`` message id appears in the fetched set, or
-    until we hit ``TRIAGE_HARD_CAP`` / run out of pages. This guarantees the
-    fetch window always spans back to the checkpoint, so Phase 1 can reach it and
-    the checkpoint can never advance past unscanned mail. On the first run
-    (``checkpoint is None``) behaviour is unchanged: a single page is fetched.
+    J3 — the earlier ``--page-token`` pagination loop was INERT: lark-cli
+    ``mail +triage`` has no next-page support, so it silently ended after page 1
+    anyway. We now issue a single triage call sized to the run type:
+
+    * Incremental runs (a ``checkpoint`` exists): fetch in ONE call using
+      ``--max TRIAGE_HARD_CAP`` (400), the practical maximum ``+triage`` allows.
+      This makes the fetch window span far enough back to reach the previous
+      checkpoint in all realistic backlogs.
+    * First run (``checkpoint is None``): fetch a single page of ``TRIAGE_MAX``
+      (50) to avoid scanning a huge historical backlog on cold start.
+
+    If the checkpoint is still not inside the fetched window, ``run_scan`` keeps
+    the checkpoint (does NOT advance it) and logs the 🚨 warning, so mail between
+    the fetch window and the old checkpoint is never permanently orphaned.
     """
-    all_messages = []
-    page_token = None
-    pages = 0
+    max_fetch = TRIAGE_MAX if checkpoint is None else TRIAGE_HARD_CAP
+    cmd = [
+        "lark-cli", "mail", "+triage",
+        "--mailbox", MAILBOX,
+        "--query", TRIAGE_QUERY,
+        "--max", str(max_fetch),
+        "--format", "json",
+    ]
+    log(f"Fetching inbox: query={TRIAGE_QUERY!r}, max={max_fetch}, "
+        f"mailbox={MAILBOX}, checkpoint={checkpoint or '(none — first run)'}")
+    res = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    if res.returncode != 0:
+        log(f"  ✗ triage failed rc={res.returncode}: {(res.stdout + res.stderr)[:500]}")
+        return []
+    parsed = parse_lark_json(res.stdout)
+    if not parsed:
+        log(f"  ✗ Failed to parse triage output. Raw (first 400): {res.stdout[:400]}")
+        return []
+    data = parsed.get("data") or {}
+    messages = parsed.get("messages") or data.get("messages") or []
 
-    while len(all_messages) < TRIAGE_HARD_CAP:
-        remaining = TRIAGE_HARD_CAP - len(all_messages)
-        page_size = min(TRIAGE_MAX, remaining)
-        cmd = [
-            "lark-cli", "mail", "+triage",
-            "--mailbox", MAILBOX,
-            "--query", TRIAGE_QUERY,
-            "--max", str(page_size),
-            "--format", "json",
-        ]
-        if page_token:
-            cmd += ["--page-token", page_token]
-        if pages == 0:
-            log(f"Fetching inbox: query={TRIAGE_QUERY!r}, page_size={page_size}, "
-                f"hard_cap={TRIAGE_HARD_CAP}, mailbox={MAILBOX}, "
-                f"checkpoint={checkpoint or '(none)'}")
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
-        if res.returncode != 0:
-            log(f"  ✗ triage failed rc={res.returncode}: {(res.stdout + res.stderr)[:500]}")
-            break
-        parsed = parse_lark_json(res.stdout)
-        if not parsed:
-            log(f"  ✗ Failed to parse triage output. Raw (first 400): {res.stdout[:400]}")
-            break
-        data = parsed.get("data") or {}
-        messages = parsed.get("messages") or data.get("messages") or []
-        all_messages.extend(messages)
-        pages += 1
+    if checkpoint and any(m.get("message_id") == checkpoint for m in messages):
+        log(f"  ✓ Reached previous checkpoint within fetch window "
+            f"({len(messages)} message(s) fetched).")
 
-        # Stop as soon as the previous checkpoint is inside the fetched window —
-        # everything older than it has already been processed on a prior run.
-        if checkpoint and any(m.get("message_id") == checkpoint for m in messages):
-            log(f"  ✓ Reached previous checkpoint within fetch window after "
-                f"{pages} page(s), {len(all_messages)} message(s).")
-            break
-
-        page_token = parsed.get("page_token") or data.get("page_token")
-        has_more = parsed.get("has_more")
-        if has_more is None:
-            has_more = data.get("has_more")
-        # First run (no checkpoint): keep the original single-page behaviour.
-        if checkpoint is None:
-            break
-        if not has_more or not page_token:
-            break
-
-    log(f"  Fetched {len(all_messages)} emails (newest-first) across {max(pages, 1)} page(s).")
-    return all_messages
+    log(f"  Fetched {len(messages)} emails (newest-first).")
+    return messages
 
 
 def _prefilter_skip_reason(subject, thread_id, seen_threads):
@@ -561,9 +547,17 @@ def run_scan():
 
     if checkpoint and not summary["stopped_at_checkpoint"] and len(messages) >= TRIAGE_HARD_CAP:
         log(f"  🚨 WARNING: previous checkpoint {checkpoint} was NOT reached even after "
-            f"paginating up to the {TRIAGE_HARD_CAP}-message hard cap. An unusually large "
-            f"backlog has accumulated; emails older than this window may still be skipped once "
-            f"the checkpoint advances. Raise TRIAGE_HARD_CAP or run a manual backfill.")
+            f"fetching the {TRIAGE_HARD_CAP}-message hard cap in a single triage call. An "
+            f"unusually large backlog has accumulated; emails older than this window may still "
+            f"be unscanned. Raise TRIAGE_HARD_CAP or run a manual backfill.")
+        # J3: Do NOT advance the checkpoint here — hold it at its previous value.
+        # We fetched the full hard cap and still never reached the old checkpoint,
+        # so mail between the fetch window and the old checkpoint has NOT been
+        # scanned yet. Advancing to messages[0] would leapfrog and permanently
+        # orphan those emails (the exact 31-case bug). Keeping the old checkpoint
+        # lets the next run try again to close the gap.
+        new_checkpoint = checkpoint
+        log(f"  ↩ Holding checkpoint at {checkpoint} (not advancing) so unscanned mail is not orphaned.")
 
     # G2: Attach/increment attempt counters and drop entries that have exhausted
     # their retry budget so a permanently-failing message is not retried forever.

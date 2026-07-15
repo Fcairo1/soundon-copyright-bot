@@ -233,7 +233,7 @@ def _region_local_timestamp(region):
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _process_status_update(status, message_id, operator_name=None, operator_id=None, timestamp=None, upc=None, isrc=None, chat_id=None, region=None, tracker_row=None):
+def _process_status_update(status, message_id, operator_name=None, operator_id=None, timestamp=None, upc=None, isrc=None, chat_id=None, region=None, tracker_row=None, ref_id=None, date=None):
     try:
         _refresh_callback_credentials("callback tracker status write-back")
         card = load_posted_card(message_id)
@@ -243,7 +243,7 @@ def _process_status_update(status, message_id, operator_name=None, operator_id=N
             # claim's card and would silently overwrite this card with wrong
             # data (B8).
             card = reconstruct_card_from_tracker(
-                message_id, region=region, upc=upc, isrc=isrc, tracker_row=tracker_row
+                message_id, region=region, upc=upc, isrc=isrc, tracker_row=tracker_row, ref_id=ref_id, date=date
             )
         if not card:
             msg = (
@@ -273,7 +273,7 @@ def _process_status_update(status, message_id, operator_name=None, operator_id=N
             print(f"_process_status_update: could not persist updated card {message_id}: {persist_exc!r}", flush=True)
         (ROOT / "copyright_alert/last_card_callback.json").write_text(json.dumps(card, ensure_ascii=False, indent=2))
         patched = patch_message(message_id, card)
-        sheet_ok = update_sheet_status(message_id, status, upc=upc, isrc=isrc, region=region, tracker_row=tracker_row)
+        sheet_ok = update_sheet_status(message_id, status, upc=upc, isrc=isrc, region=region, tracker_row=tracker_row, ref_id=ref_id, date=date)
         # NOTE: The button flow must ONLY write to column N (Status) via
         # update_sheet_status(). Column R ("Admin Action Taken") is manually
         # edited by ops and must NEVER be written by the bot, so we do not call
@@ -431,6 +431,8 @@ def _process_spotify_reply(value, custom_message="", notify_chat_id=None, event_
                             isrc=value.get("isrc"),
                             region=region,
                             tracker_row=tracker_row,
+                            ref_id=value.get("ref_id"),
+                            date=value.get("detected_at"),
                         )
                         print(
                             f"spotify_reply Status (col N) write-back "
@@ -831,10 +833,15 @@ def handle_card_action(data):
         # instead of the daemon host's naive (Shanghai) time.
         timestamp = _region_local_timestamp(region)
         tracker_row = value.get("tracker_row")
+        # J4: thread the callback's ref_id (Spotify claims) and detected date so
+        # the tracker row can be located by the ref_code / date+UPC tiers when no
+        # message_id match is available.
+        ref_id = value.get("ref_id")
+        detected_at = value.get("detected_at") or value.get("date")
 
         worker = threading.Thread(
             target=_process_status_update,
-            args=(status, message_id, operator_name, operator_id, timestamp, upc, isrc, chat_id, region, tracker_row),
+            args=(status, message_id, operator_name, operator_id, timestamp, upc, isrc, chat_id, region, tracker_row, ref_id, detected_at),
             daemon=True,
         )
         worker.start()
@@ -1049,6 +1056,13 @@ def _handle_card_command(command_text, message_id, target_chat_id="", target_ope
             "detected_at": cell(14) or "",
             "source_email_message_id": "",
             "ref_id": cell(20) or "",
+            # J1: Carry the real group-card message id so a `/card`-generated DM
+            # action card behaves like the daily-workflow path: button clicks can
+            # patch the group card and Status write-back targets the right row
+            # without blanking column P. Prefer column P (Lark Message ID, index
+            # 15); fall back to column S (Card Message ID, index 18) when P is
+            # blank. Both hold the same group-card message id.
+            "lark_card_message_id": cell(15) or cell(18),
             "region": region,
             "tracker_row": row_num,
             "ops_dm_email": cfg.get("ops_dm_email", ""),
