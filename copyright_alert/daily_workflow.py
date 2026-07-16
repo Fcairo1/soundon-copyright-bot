@@ -43,6 +43,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 os.chdir(ROOT)  # run_alert helpers use relative paths like "copyright_alert/..."
 
+from copyright_alert.state_io import update_json_state  # noqa: E402
 from copyright_alert.run_alert import (  # noqa: E402
     MAILBOX,
     TARGET_CHAT_ID,
@@ -958,7 +959,13 @@ def _load_dm_state():
 
 def _save_dm_state(state):
     try:
-        _atomic_write_json(ROOT / SPOTIFY_DM_STATE_FILE, state, ensure_ascii=False, indent=2)
+        def merge(current):
+            if not isinstance(current, dict):
+                current = {}
+            current.update(dict(state or {}))
+            return current
+
+        update_json_state(ROOT / SPOTIFY_DM_STATE_FILE, merge, default=dict, ensure_ascii=False, indent=2)
     except Exception as exc:
         log(f"  ⚠ Could not persist DM state: {exc!r}")
 
@@ -1195,14 +1202,15 @@ def _sync_replacement_message_id(old_message_id, new_message_id, card, *, row_nu
         log(f"  ⚠ Could not sync DM state for replacement {old_message_id} → {new_message_id}: {exc!r}")
 
     try:
-        posted = _load_posted_claims()
-        changed = False
-        for payload in posted.values():
-            if isinstance(payload, dict) and payload.get("message_id") == old_message_id:
-                payload["message_id"] = new_message_id
-                changed = True
-        if changed:
-            _atomic_write_json(POSTED_CLAIMS_FILE, posted, ensure_ascii=False, indent=2)
+        def mutate(posted):
+            if not isinstance(posted, dict):
+                posted = {}
+            for payload in posted.values():
+                if isinstance(payload, dict) and payload.get("message_id") == old_message_id:
+                    payload["message_id"] = new_message_id
+            return posted
+
+        update_json_state(POSTED_CLAIMS_FILE, mutate, default=dict, ensure_ascii=False, indent=2)
     except Exception as exc:
         log(f"  ⚠ Could not sync posted_claims for replacement {old_message_id} → {new_message_id}: {exc!r}")
 

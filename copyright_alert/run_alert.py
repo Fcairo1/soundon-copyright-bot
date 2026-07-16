@@ -18,11 +18,11 @@ import os
 import ast
 import csv
 import io
-import tempfile
 import urllib.request
 from datetime import datetime, timedelta, date
 from pathlib import Path
 
+from copyright_alert.state_io import atomic_write_json, update_json_state
 from copyright_alert.lark_auth import request_json_with_auth_retry
 from copyright_alert.manager_exclusions import is_manager_excluded
 from copyright_alert.upc_exclusions import is_upc_excluded
@@ -176,28 +176,8 @@ def parse_lark_annotated_csv(raw):
 
 
 def _atomic_write_json(path, data, *, ensure_ascii=False, indent=2):
-    """Write JSON to `path` atomically (temp file in same dir + os.replace).
-
-    Prevents truncated/corrupted state files if the process crashes mid-write
-    or if two writers race — readers always see either the old or the new file,
-    never a partial one. os.replace is atomic on the same filesystem.
-    """
-    path = os.fspath(path)
-    directory = os.path.dirname(path) or "."
-    os.makedirs(directory, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(prefix=".tmp-", dir=directory)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, ensure_ascii=ensure_ascii, indent=indent)
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp_path, path)
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    """Backward-compatible wrapper for atomic JSON writes."""
+    atomic_write_json(path, data, ensure_ascii=ensure_ascii, indent=indent)
 
 
 def _send_interactive_via_lark_cli(*, receive_id_type: str, receive_id: str, content: str, timeout: int = 60):
@@ -1045,7 +1025,6 @@ def _load_posted_claims():
 def _save_posted_claim(claim_key, record):
     if not claim_key:
         return
-    data = _load_posted_claims()
     if isinstance(record, dict):
         if "chat_id" not in record:
             record = {**record, "chat_id": TARGET_CHAT_ID}
@@ -1053,8 +1032,14 @@ def _save_posted_claim(claim_key, record):
             record = {**record, "region": CURRENT_REGION}
         if "tracker_row" not in record:
             record = {**record, "tracker_row": None}
-    data[claim_key] = record
-    _atomic_write_json(POSTED_CLAIMS_FILE, data, ensure_ascii=False, indent=2)
+
+    def mutate(data):
+        if not isinstance(data, dict):
+            data = {}
+        data[claim_key] = record
+        return data
+
+    update_json_state(POSTED_CLAIMS_FILE, mutate, default=dict, ensure_ascii=False, indent=2)
 
 
 def claim_key(ef, ar=None, subject=""):
@@ -1645,9 +1630,13 @@ def save_posted_card(message_id, card):
     if not message_id or not isinstance(card, dict):
         return
     try:
-        store = _load_posted_cards()
-        store[message_id] = card
-        _atomic_write_json(POSTED_CARDS_FILE, store, ensure_ascii=False, indent=None)
+        def mutate(store):
+            if not isinstance(store, dict):
+                store = {}
+            store[message_id] = card
+            return store
+
+        update_json_state(POSTED_CARDS_FILE, mutate, default=dict, ensure_ascii=False, indent=None)
     except Exception as e:
         print(f"  ⚠ Could not persist posted card {message_id}: {e}")
 

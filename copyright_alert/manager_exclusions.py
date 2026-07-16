@@ -8,6 +8,8 @@ import re
 from pathlib import Path
 from typing import Iterable, List, Sequence, Tuple
 
+from copyright_alert.state_io import update_json_state
+
 ROOT = Path(__file__).resolve().parents[1]
 EXCLUSIONS_FILE = ROOT / "copyright_alert" / "manager_exclusions.json"
 
@@ -76,8 +78,10 @@ def load_exclusions() -> dict:
 
 
 def save_exclusions(payload: dict) -> None:
-    EXCLUSIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    EXCLUSIONS_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    def replace(_current):
+        return payload if isinstance(payload, dict) else {}
+
+    update_json_state(EXCLUSIONS_FILE, replace, default=dict, ensure_ascii=False, indent=2)
 
 
 def ensure_file() -> None:
@@ -89,16 +93,22 @@ def add_exclusion(label_uid: str, managers: Sequence[str]) -> Tuple[bool, List[s
     uid = _norm_uid(label_uid)
     if not uid:
         return False, []
-    data = load_exclusions()
-    current = data.setdefault(uid, [])
     added = []
-    for manager in managers:
-        cleaned = _clean_identifier(manager)
-        if cleaned and cleaned not in current:
-            current.append(cleaned)
-            added.append(cleaned)
-    current.sort(key=lambda item: item.lower())
-    save_exclusions(data)
+
+    def mutate(data):
+        nonlocal added
+        if not isinstance(data, dict):
+            data = {}
+        current = data.setdefault(uid, [])
+        for manager in managers:
+            cleaned = _clean_identifier(manager)
+            if cleaned and cleaned not in current:
+                current.append(cleaned)
+                added.append(cleaned)
+        current.sort(key=lambda item: item.lower())
+        return data
+
+    update_json_state(EXCLUSIONS_FILE, mutate, default=dict, ensure_ascii=False, indent=2)
     return True, added
 
 
@@ -106,26 +116,32 @@ def remove_exclusion(label_uid: str, managers: Sequence[str]) -> Tuple[bool, Lis
     uid = _norm_uid(label_uid)
     if not uid:
         return False, []
-    data = load_exclusions()
-    current = data.get(uid, [])
-    if not current:
-        return True, []
     target_aliases = set()
     for manager in managers:
         target_aliases.update(_identifier_aliases(manager))
     removed = []
-    kept = []
-    for item in current:
-        aliases = _identifier_aliases(item)
-        if aliases & target_aliases:
-            removed.append(item)
+
+    def mutate(data):
+        nonlocal removed
+        if not isinstance(data, dict):
+            data = {}
+        current = data.get(uid, [])
+        if not current:
+            return data
+        kept = []
+        for item in current:
+            aliases = _identifier_aliases(item)
+            if aliases & target_aliases:
+                removed.append(item)
+            else:
+                kept.append(item)
+        if kept:
+            data[uid] = kept
         else:
-            kept.append(item)
-    if kept:
-        data[uid] = kept
-    else:
-        data.pop(uid, None)
-    save_exclusions(data)
+            data.pop(uid, None)
+        return data
+
+    update_json_state(EXCLUSIONS_FILE, mutate, default=dict, ensure_ascii=False, indent=2)
     return True, removed
 
 
