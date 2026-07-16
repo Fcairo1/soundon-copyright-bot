@@ -41,7 +41,6 @@ REGION_ALERT_CONFIGS: Dict[str, Dict[str, Any]] = {
         "digest_receive_id_type": "chat_id",
         "digest_receive_id": "oc_842a762dacdea52dd8cd4017da3a94d5",  # Ben Gordon-Pound confirmed DM chat
         "display_tracker_url_key": "tracker_url",
-        "post_group_alert": False,
     },
 }
 
@@ -129,11 +128,7 @@ def run_region_manager_alert(region: str) -> dict:
     print(f"Tracker read URL: {cfg['tracker_url']}", flush=True)
     if cfg.get("tracker_wiki_url"):
         print(f"Tracker wiki URL: {cfg['tracker_wiki_url']}", flush=True)
-    post_group_alert = alert_cfg.get("post_group_alert", True)
-    if post_group_alert:
-        print(f"Alert group: {cfg['chat_id']}", flush=True)
-    else:
-        print("Alert group: disabled for this region", flush=True)
+    print(f"Alert group: {cfg['chat_id']}", flush=True)
     print(f"Intended schedule: {alert_cfg['schedule_note']}", flush=True)
 
     values = tm.read_sheet_values("A:Z")
@@ -169,11 +164,11 @@ def run_region_manager_alert(region: str) -> dict:
     digest_card = _build_digest_card(region, cfg, alert_cfg, managers, pending_rows)
 
     if dry_run:
-        if post_group_alert:
+        if region == "US":
+            print("\n[DRY-RUN] US group tagging message is disabled.", flush=True)
+        else:
             print("\n[DRY-RUN] Tag card that WOULD be posted to group:", flush=True)
             print(json.dumps(tag_card, ensure_ascii=False, indent=2), flush=True)
-        else:
-            print("\n[DRY-RUN] Group tagging message is disabled for this region.", flush=True)
         if not skip_dm:
             print("\n[DRY-RUN] Digest card that WOULD be DM'd:", flush=True)
             print(json.dumps(digest_card, ensure_ascii=False, indent=2), flush=True)
@@ -181,11 +176,11 @@ def run_region_manager_alert(region: str) -> dict:
 
     group_ok = False
     group_msg_id = ""
-    if post_group_alert:
+    if region == "US":
+        print("\nUS group tagging message skipped; Ops digest DM remains enabled.", flush=True)
+    else:
         group_ok, group_msg_id = tm._post_card(tag_card, cfg["chat_id"], "chat_id")
         print(f"\n{'✅ Posted' if group_ok else '✗ Failed to post'} group tagging message. message_id={group_msg_id}", flush=True)
-    else:
-        print("\nGroup tagging message skipped for this region.", flush=True)
 
     dm_ok = False
     dm_msg_id = ""
