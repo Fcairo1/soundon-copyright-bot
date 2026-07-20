@@ -311,8 +311,43 @@ def reconstruct_card_from_tracker(message_id, region=None, upc=None, isrc=None, 
         return None
 
 
+def fetch_live_card_content(message_id):
+    """Fetch the current interactive-card JSON from Lark as a last-resort copy.
+
+    This covers freshly posted/manual-scan cards when the post succeeded but the
+    local checkpoint write did not complete.  We only accept real CardKit JSON
+    returned by the message API; compact text renderings are intentionally not
+    used because they cannot be patched safely.
+    """
+    if not message_id:
+        return None
+
+    def make_request():
+        token = _get_bot_access_token()
+        if not token:
+            raise RuntimeError("Could not get bot access token")
+        return urllib.request.Request(
+            f"https://open.larksuite.com/open-apis/im/v1/messages/{message_id}",
+            method="GET",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    try:
+        data = request_json_with_auth_retry(make_request, timeout=30, context=f"fetch_live_card_content:{message_id}")
+        items = (data.get("data") or {}).get("items") or []
+        if not items:
+            return None
+        content = ((items[0].get("body") or {}).get("content")) or ""
+        card = json.loads(content) if content else None
+        if isinstance(card, dict) and isinstance(card.get("elements"), list):
+            return card
+    except Exception as exc:
+        print(f"fetch_live_card_content: could not fetch {message_id}: {exc!r}", flush=True)
+    return None
+
+
 def load_card_for_message(message_id, region=None, upc=None, isrc=None, tracker_row=None, ref_id=None, date=None):
-    """Load the exact persisted card for a message, or rebuild it from the tracker.
+    """Load the exact persisted card for a message, fetch it live, or rebuild it from the tracker.
 
     Never falls back to last_card.json: that is a different claim's card and
     patching it corrupts the clicked card (B8). If neither the persisted card
@@ -321,6 +356,13 @@ def load_card_for_message(message_id, region=None, upc=None, isrc=None, tracker_
     """
     card = load_posted_card(message_id)
     if card:
+        return card
+    card = fetch_live_card_content(message_id)
+    if card:
+        try:
+            ra.save_posted_card(message_id, card)
+        except Exception as exc:
+            print(f"load_card_for_message: could not persist live card {message_id}: {exc!r}", flush=True)
         return card
     card = reconstruct_card_from_tracker(
         message_id, region=region, upc=upc, isrc=isrc, tracker_row=tracker_row, ref_id=ref_id, date=date

@@ -656,6 +656,10 @@ def manual_scan_region(region: str, max_messages: int = 80) -> dict:
 
             patched_card = ra.build_card(ef, ar, lark_message_id=posted_message_id)
             LAST_CARD_FILE.write_text(json.dumps(patched_card, ensure_ascii=False, indent=2), encoding="utf-8")
+            # Persist immediately after a successful post, before PATCHing the
+            # card or writing the tracker. Manual /scan used to skip this, so a
+            # later append/patch failure left fresh cards with no saved copy.
+            ra.save_posted_card(posted_message_id, patched_card)
             ra.patch_card_message(posted_message_id, patched_card)
             tracker_row = ra.append_tracker_row(ef, ar, posted_message_id, status="")
             ra._save_posted_claim(
