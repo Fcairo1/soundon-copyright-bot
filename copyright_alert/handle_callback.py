@@ -311,6 +311,25 @@ def reconstruct_card_from_tracker(message_id, region=None, upc=None, isrc=None, 
         return None
 
 
+def _is_patchable_card(card):
+    """Return True only for the CardKit JSON we can safely mutate and PATCH."""
+    if not isinstance(card, dict):
+        return False
+    elements = card.get("elements")
+    if not isinstance(elements, list):
+        return False
+    # Lark message GET may return a compact/rendered representation shaped like
+    # {"title": ..., "elements": [[{"tag":"text"}, ...]]}.  It is useful for
+    # display but it has no button values and is not the original patchable
+    # CardKit payload.  Reject nested-list elements so we fall through to tracker
+    # reconstruction instead of crashing on a list.get() or persisting bad state.
+    if any(isinstance(el, list) for el in elements):
+        return False
+    return bool(card.get("config") or card.get("header") or any(
+        isinstance(el, dict) and el.get("tag") == "action" for el in elements
+    ))
+
+
 def fetch_live_card_content(message_id):
     """Fetch the current interactive-card JSON from Lark as a last-resort copy.
 
@@ -339,8 +358,10 @@ def fetch_live_card_content(message_id):
             return None
         content = ((items[0].get("body") or {}).get("content")) or ""
         card = json.loads(content) if content else None
-        if isinstance(card, dict) and isinstance(card.get("elements"), list):
+        if _is_patchable_card(card):
             return card
+        if card is not None:
+            print(f"fetch_live_card_content: {message_id} returned compact non-patchable card; using tracker fallback", flush=True)
     except Exception as exc:
         print(f"fetch_live_card_content: could not fetch {message_id}: {exc!r}", flush=True)
     return None
@@ -355,8 +376,10 @@ def load_card_for_message(message_id, region=None, upc=None, isrc=None, tracker_
     caller can surface a toast instead of silently patching wrong data.
     """
     card = load_posted_card(message_id)
-    if card:
+    if _is_patchable_card(card):
         return card
+    if card is not None:
+        print(f"load_card_for_message: stored card for {message_id} is compact/non-patchable; using fallback", flush=True)
     card = fetch_live_card_content(message_id)
     if card:
         try:
@@ -368,6 +391,10 @@ def load_card_for_message(message_id, region=None, upc=None, isrc=None, tracker_
         message_id, region=region, upc=upc, isrc=isrc, tracker_row=tracker_row, ref_id=ref_id, date=date
     )
     if card:
+        try:
+            ra.save_posted_card(message_id, card)
+        except Exception as exc:
+            print(f"load_card_for_message: could not persist reconstructed card {message_id}: {exc!r}", flush=True)
         return card
     raise RuntimeError(
         f"No persisted card for message {message_id} and tracker reconstruction failed; "
@@ -423,7 +450,7 @@ def update_card_state(card, status, message_id, operator_name=None, operator_id=
 
     selected_type = _button_type_for_status(effective_status)
     for el in card.get("elements", []):
-        if el.get("tag") != "action":
+        if not isinstance(el, dict) or el.get("tag") != "action":
             continue
         for btn in el.get("actions", []):
             value = btn.setdefault("value", {})
