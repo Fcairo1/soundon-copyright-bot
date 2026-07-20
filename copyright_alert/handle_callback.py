@@ -219,6 +219,30 @@ _TRACKER_RECONSTRUCT_HEADER_KEYS = {
 }
 
 
+def _posted_claim_record_for_message(message_id):
+    """Return checkpoint metadata for a card message id, including legacy files.
+
+    This is a safe, read-only aid for legacy cards whose button value or tracker
+    row is incomplete.  The live tracker remains the source for rebuilt card
+    content; checkpoint metadata only supplies missing lookup keys such as UPC,
+    ISRC, ref_code, Date Received, and tracker_row.
+    """
+    want = _norm(message_id)
+    if not want:
+        return {}
+    try:
+        posted = ra._load_posted_claims()
+    except Exception as exc:
+        print(f"posted_claim lookup failed for message_id={message_id}: {exc!r}", flush=True)
+        return {}
+    if not isinstance(posted, dict):
+        return {}
+    for record in posted.values():
+        if isinstance(record, dict) and _norm(record.get("message_id")) == want:
+            return record
+    return {}
+
+
 def reconstruct_card_from_tracker(message_id, region=None, upc=None, isrc=None, tracker_row=None, ref_id=None, date=None):
     """Rebuild a patchable card from the tracker row for a given claim.
 
@@ -230,6 +254,30 @@ def reconstruct_card_from_tracker(message_id, region=None, upc=None, isrc=None, 
     Returns the reconstructed card dict, or None if the row cannot be located
     or reconstruction fails.
     """
+    claim_record = _posted_claim_record_for_message(message_id)
+    if claim_record:
+        region = region or claim_record.get("region")
+        upc = upc or claim_record.get("upc")
+        isrc = isrc or claim_record.get("isrc")
+        tracker_row = tracker_row or claim_record.get("tracker_row")
+        ref_id = ref_id or claim_record.get("ref_id")
+        date = date or claim_record.get("date") or claim_record.get("date_received")
+        print(
+            "reconstruct_card_from_tracker: enriched lookup from posted_claims "
+            + json.dumps(
+                {
+                    "message_id": message_id,
+                    "region": region,
+                    "upc": upc,
+                    "isrc": isrc,
+                    "tracker_row": tracker_row,
+                    "ref_id": ref_id,
+                    "date": date,
+                },
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
     try:
         values = read_sheet_values(region=region)
     except Exception as exc:
