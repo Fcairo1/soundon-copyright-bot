@@ -36,6 +36,7 @@ REDIRECT_URI = "http://localhost:9876/oauth/callback"
 SCOPE_KEYS = (
     "sheets:spreadsheet:read",
     "sheets:spreadsheet:write_only",
+    "mail:user_mailbox.message:readonly",
     "mail:user_mailbox.message:modify",
 )
 SCOPE = " ".join(SCOPE_KEYS)

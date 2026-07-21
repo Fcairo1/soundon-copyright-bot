@@ -560,6 +560,47 @@ def _extract_result(data: Dict[str, Any]) -> Dict[str, Any]:
     return {"draft_id": draft_id or "", "draft_link": link or "", "raw": data}
 
 
+def _create_draft(mailbox: str, payload: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:
+    encoded_mailbox = urllib.parse.quote(mailbox, safe="")
+    drafts_url = f"{MAIL_API_BASE}/user_mailboxes/{encoded_mailbox}/drafts"
+    response = _post_json(drafts_url, payload, headers=headers)
+    result = _extract_result(response)
+    if not result["draft_id"] and not result["draft_link"]:
+        raise LarkMailDraftError(
+            f"Draft created but response did not include a draft ID/link: {json.dumps(response, ensure_ascii=False)}"
+        )
+    if result["draft_id"] and not result["draft_link"]:
+        result["draft_link"] = (
+            "https://www.larkoffice.com/mail?draftId="
+            f"{result['draft_id']}&scene=send-preview&mailbox={encoded_mailbox}"
+        )
+    return result
+
+
+def _build_raw_new_eml(
+    mailbox: str,
+    recipients: List[Dict[str, str]],
+    subject: str,
+    body_html: str,
+    cc_recipients: Optional[List[Dict[str, str]]] = None,
+) -> str:
+    message = EmailMessage()
+    message["From"] = mailbox
+    message["To"] = ", ".join(
+        formataddr((str(item.get("name") or ""), str(item.get("mail_address") or "")))
+        for item in recipients
+    )
+    if cc_recipients:
+        message["Cc"] = ", ".join(
+            formataddr((str(item.get("name") or ""), str(item.get("mail_address") or "")))
+            for item in cc_recipients
+        )
+    message["Subject"] = subject
+    message.set_content(_html_to_plain_text(body_html), subtype="plain", charset="utf-8")
+    message.add_alternative(body_html, subtype="html", charset="utf-8")
+    return base64.urlsafe_b64encode(message.as_bytes()).decode("utf-8").rstrip("=")
+
+
 def create_reply_draft(
     mailbox: str,
     thread_message_id: str,
@@ -636,23 +677,15 @@ def create_reply_draft(
     elif _looks_like_im_message_id(message_id):
         message_id = ""
 
-    if not message_id:
-        raise LarkMailDraftError(
-            "Could not locate the original inbound email to reply to "
-            f"(upc={upc!r}, ref_id={ref_id!r})."
-        )
+    original: Dict[str, Any] = {}
+    if message_id:
+        original = _fetch_original_message(mailbox, message_id, headers=headers)
+        if not _has_threading_metadata(original):
+            fallback_message_id = _find_original_message_id(mailbox, upc=upc, ref_id=ref_id) if (upc or ref_id) else ""
+            if fallback_message_id and fallback_message_id != message_id:
+                message_id = fallback_message_id
+                original = _fetch_original_message(mailbox, message_id, headers=headers)
 
-    original = _fetch_original_message(mailbox, message_id, headers=headers)
-    if not _has_threading_metadata(original):
-        fallback_message_id = _find_original_message_id(mailbox, upc=upc, ref_id=ref_id) if (upc or ref_id) else ""
-        if fallback_message_id and fallback_message_id != message_id:
-            message_id = fallback_message_id
-            original = _fetch_original_message(mailbox, message_id, headers=headers)
-    if not original:
-        raise LarkMailDraftError(
-            "Could not read the original inbound email metadata needed to create a threaded reply draft "
-            f"(message_id={message_id!r}, upc={upc!r}, ref_id={ref_id!r})."
-        )
     smtp_message_id = str(original.get("smtp_message_id") or "").strip()
     thread_id = str(original.get("thread_id") or "").strip()
     original_refs = original.get("references")
@@ -665,12 +698,6 @@ def create_reply_draft(
     sender_name = str(sender.get("name") or "").strip()
     original_subject = str(original.get("subject") or "").strip()
     original_body = str(original.get("body_plain_text") or "")
-
-    if not smtp_message_id:
-        raise LarkMailDraftError(
-            "Original claim email is missing smtp_message_id; refusing to create an unthreaded draft. "
-            f"message_id={message_id!r}, thread_id={thread_id!r}"
-        )
 
     # ── Recipients: reply to the ORIGINAL SENDER (claimant), not a new address ─
     if sender_email and _is_valid_email(sender_email):
@@ -695,34 +722,52 @@ def create_reply_draft(
     # ── Preserve the ref:...:ref tracking code from the original body ─────────
     body_html = _ensure_ref_preserved(body_html, original_body, ref_id=ref_id)
 
-    encoded_mailbox = urllib.parse.quote(mailbox, safe="")
-    drafts_url = f"{MAIL_API_BASE}/user_mailboxes/{encoded_mailbox}/drafts"
-    drafts_payload: Dict[str, Any] = {
-        "raw": _build_raw_reply_eml(
-            mailbox,
-            recipients,
-            reply_subject,
-            body_html,
-            in_reply_to=smtp_message_id,
-            references_list=original_refs,
-            cc_recipients=cc_recipients or None,
-        ),
-        # Threading anchors: message_id ties the draft to the inbound email;
-        # thread_id keeps it in the same conversation.
-        "message_id": message_id,
-    }
-    if thread_id:
-        drafts_payload["thread_id"] = thread_id
+    if smtp_message_id:
+        drafts_payload: Dict[str, Any] = {
+            "raw": _build_raw_reply_eml(
+                mailbox,
+                recipients,
+                reply_subject,
+                body_html,
+                in_reply_to=smtp_message_id,
+                references_list=original_refs,
+                cc_recipients=cc_recipients or None,
+            ),
+            # Threading anchors: message_id ties the draft to the inbound email;
+            # thread_id keeps it in the same conversation.
+            "message_id": message_id,
+        }
+        if thread_id:
+            drafts_payload["thread_id"] = thread_id
+        result = _create_draft(mailbox, drafts_payload, headers)
+        result["threaded"] = True
+        return result
 
-    response = _post_json(drafts_url, drafts_payload, headers=headers)
-    result = _extract_result(response)
-    if not result["draft_id"] and not result["draft_link"]:
-        raise LarkMailDraftError(f"Draft created but response did not include a draft ID/link: {json.dumps(response, ensure_ascii=False)}")
-    if result["draft_id"] and not result["draft_link"]:
-        result["draft_link"] = (
-            "https://www.larkoffice.com/mail?draftId="
-            f"{result['draft_id']}&scene=send-preview&mailbox={encoded_mailbox}"
-        )
+    fallback_reason = (
+        "original message metadata was unavailable"
+        if not original
+        else "original message was missing smtp_message_id"
+    )
+    print(
+        "  ⚠ Falling back to standalone draft because "
+        f"{fallback_reason} (message_id={message_id!r}, upc={upc!r}, ref_id={ref_id!r}).",
+        flush=True,
+    )
+    result = _create_draft(
+        mailbox,
+        {
+            "raw": _build_raw_new_eml(
+                mailbox,
+                recipients,
+                reply_subject,
+                body_html,
+                cc_recipients=cc_recipients or None,
+            )
+        },
+        headers,
+    )
+    result["threaded"] = False
+    result["warning"] = fallback_reason
     return result
 
 
