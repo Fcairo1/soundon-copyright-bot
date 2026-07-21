@@ -59,11 +59,11 @@ from copyright_alert.handle_callback import (
     update_card_state,
     update_sheet_status,
     update_sheet_email_status,
-    reconstruct_card_from_tracker,
+    load_card_for_message,
     _parse_lark_annotated_csv,
 )
 from copyright_alert import lark_auth, spotify_reply
-from copyright_alert.run_alert import BOT_APP_ID, BOT_SECRET, load_posted_card
+from copyright_alert.run_alert import BOT_APP_ID, BOT_SECRET
 
 
 COMMAND_PREFIXES = ("/status", "/scan", "/pending", "/claims", "/restart", "/help", "/exclude", "/unexclude", "/exclusions", "/include", "/exceptions", "/unassigned", "/health", "/healthcheck", "/fix", "/refresh", "/card")
@@ -236,15 +236,9 @@ def _region_local_timestamp(region):
 def _process_status_update(status, message_id, operator_name=None, operator_id=None, timestamp=None, upc=None, isrc=None, chat_id=None, region=None, tracker_row=None, ref_id=None, date=None):
     try:
         _refresh_callback_credentials("callback tracker status write-back")
-        card = load_posted_card(message_id)
-        if not card:
-            # No persisted copy of the clicked card. Rebuild it from the tracker
-            # row rather than patching last_card.json, which is a *different*
-            # claim's card and would silently overwrite this card with wrong
-            # data (B8).
-            card = reconstruct_card_from_tracker(
-                message_id, region=region, upc=upc, isrc=isrc, tracker_row=tracker_row, ref_id=ref_id, date=date
-            )
+        card = load_card_for_message(
+            message_id, region=region, upc=upc, isrc=isrc, tracker_row=tracker_row, ref_id=ref_id, date=date
+        )
         if not card:
             msg = (
                 "⚠️ Could not update this card: no saved copy exists and it could "

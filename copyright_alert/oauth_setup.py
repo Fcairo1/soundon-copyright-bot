@@ -36,9 +36,11 @@ REDIRECT_URI = "http://localhost:9876/oauth/callback"
 SCOPE_KEYS = (
     "sheets:spreadsheet:read",
     "sheets:spreadsheet:write_only",
+    "mail:user_mailbox.message:readonly",
     "mail:user_mailbox.message:modify",
 )
 SCOPE = " ".join(SCOPE_KEYS)
+APP_ACCESS_TOKEN_URL = "https://open.larksuite.com/open-apis/auth/v3/app_access_token/internal"
 TOKEN_URL = "https://open.larksuite.com/open-apis/authen/v1/oidc/access_token"
 OAUTH_URL = "https://accounts.larksuite.com/open-apis/authen/v1/authorize"
 TOKEN_FILE = ROOT / "runtime" / "lark_oauth_secret.json"
@@ -89,12 +91,20 @@ def load_app_credentials() -> Tuple[str, str, str]:
     raise RuntimeError("Could not load Lark app credentials. Tried: " + "; ".join(errors))
 
 
-def post_json(url: str, payload: Dict[str, Any], timeout: int = 30) -> Dict[str, Any]:
+def post_json(
+    url: str,
+    payload: Dict[str, Any],
+    headers: Optional[Dict[str, str]] = None,
+    timeout: int = 30,
+) -> Dict[str, Any]:
     body = json.dumps(payload).encode("utf-8")
+    request_headers = {"Content-Type": "application/json; charset=utf-8"}
+    if headers:
+        request_headers.update(headers)
     req = urllib.request.Request(
         url,
         data=body,
-        headers={"Content-Type": "application/json; charset=utf-8"},
+        headers=request_headers,
         method="POST",
     )
     try:
@@ -186,15 +196,32 @@ def capture_code(expected_state: str) -> str:
     return getattr(server, "oauth_code")
 
 
+def get_app_access_token(app_id: str, app_secret: str) -> str:
+    payload = {
+        "app_id": app_id,
+        "app_secret": app_secret,
+    }
+    response = post_json(APP_ACCESS_TOKEN_URL, payload)
+    app_access_token = response.get("app_access_token") or (response.get("data") or {}).get("app_access_token")
+    if not app_access_token:
+        raise RuntimeError(
+            "App access token response did not contain app_access_token: "
+            f"{json.dumps(response, ensure_ascii=False)}"
+        )
+    return str(app_access_token)
+
+
 def exchange_code(app_id: str, app_secret: str, code: str) -> Dict[str, Any]:
+    app_access_token = get_app_access_token(app_id, app_secret)
     payload = {
         "grant_type": "authorization_code",
-        "client_id": app_id,
-        "client_secret": app_secret,
         "code": code,
-        "redirect_uri": REDIRECT_URI,
     }
-    return post_json(TOKEN_URL, payload)
+    return post_json(
+        TOKEN_URL,
+        payload,
+        headers={"Authorization": f"Bearer {app_access_token}"},
+    )
 
 
 def save_refresh_token(token_response: Dict[str, Any], source_module: str) -> Dict[str, Any]:

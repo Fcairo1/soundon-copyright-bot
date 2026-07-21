@@ -219,6 +219,30 @@ _TRACKER_RECONSTRUCT_HEADER_KEYS = {
 }
 
 
+def _posted_claim_record_for_message(message_id):
+    """Return checkpoint metadata for a card message id, including legacy files.
+
+    This is a safe, read-only aid for legacy cards whose button value or tracker
+    row is incomplete.  The live tracker remains the source for rebuilt card
+    content; checkpoint metadata only supplies missing lookup keys such as UPC,
+    ISRC, ref_code, Date Received, and tracker_row.
+    """
+    want = _norm(message_id)
+    if not want:
+        return {}
+    try:
+        posted = ra._load_posted_claims()
+    except Exception as exc:
+        print(f"posted_claim lookup failed for message_id={message_id}: {exc!r}", flush=True)
+        return {}
+    if not isinstance(posted, dict):
+        return {}
+    for record in posted.values():
+        if isinstance(record, dict) and _norm(record.get("message_id")) == want:
+            return record
+    return {}
+
+
 def reconstruct_card_from_tracker(message_id, region=None, upc=None, isrc=None, tracker_row=None, ref_id=None, date=None):
     """Rebuild a patchable card from the tracker row for a given claim.
 
@@ -230,6 +254,30 @@ def reconstruct_card_from_tracker(message_id, region=None, upc=None, isrc=None, 
     Returns the reconstructed card dict, or None if the row cannot be located
     or reconstruction fails.
     """
+    claim_record = _posted_claim_record_for_message(message_id)
+    if claim_record:
+        region = region or claim_record.get("region")
+        upc = upc or claim_record.get("upc")
+        isrc = isrc or claim_record.get("isrc")
+        tracker_row = tracker_row or claim_record.get("tracker_row")
+        ref_id = ref_id or claim_record.get("ref_id")
+        date = date or claim_record.get("date") or claim_record.get("date_received")
+        print(
+            "reconstruct_card_from_tracker: enriched lookup from posted_claims "
+            + json.dumps(
+                {
+                    "message_id": message_id,
+                    "region": region,
+                    "upc": upc,
+                    "isrc": isrc,
+                    "tracker_row": tracker_row,
+                    "ref_id": ref_id,
+                    "date": date,
+                },
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
     try:
         values = read_sheet_values(region=region)
     except Exception as exc:
@@ -263,8 +311,64 @@ def reconstruct_card_from_tracker(message_id, region=None, upc=None, isrc=None, 
         return None
 
 
+def _is_patchable_card(card):
+    """Return True only for the CardKit JSON we can safely mutate and PATCH."""
+    if not isinstance(card, dict):
+        return False
+    elements = card.get("elements")
+    if not isinstance(elements, list):
+        return False
+    # Lark message GET may return a compact/rendered representation shaped like
+    # {"title": ..., "elements": [[{"tag":"text"}, ...]]}.  It is useful for
+    # display but it has no button values and is not the original patchable
+    # CardKit payload.  Reject nested-list elements so we fall through to tracker
+    # reconstruction instead of crashing on a list.get() or persisting bad state.
+    if any(isinstance(el, list) for el in elements):
+        return False
+    return bool(card.get("config") or card.get("header") or any(
+        isinstance(el, dict) and el.get("tag") == "action" for el in elements
+    ))
+
+
+def fetch_live_card_content(message_id):
+    """Fetch the current interactive-card JSON from Lark as a last-resort copy.
+
+    This covers freshly posted/manual-scan cards when the post succeeded but the
+    local checkpoint write did not complete.  We only accept real CardKit JSON
+    returned by the message API; compact text renderings are intentionally not
+    used because they cannot be patched safely.
+    """
+    if not message_id:
+        return None
+
+    def make_request():
+        token = _get_bot_access_token()
+        if not token:
+            raise RuntimeError("Could not get bot access token")
+        return urllib.request.Request(
+            f"https://open.larksuite.com/open-apis/im/v1/messages/{message_id}",
+            method="GET",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    try:
+        data = request_json_with_auth_retry(make_request, timeout=30, context=f"fetch_live_card_content:{message_id}")
+        items = (data.get("data") or {}).get("items") or []
+        if not items:
+            return None
+        content = ((items[0].get("body") or {}).get("content")) or ""
+        card = json.loads(content) if content else None
+        if _is_patchable_card(card):
+            return card
+        if card is not None:
+            print(f"fetch_live_card_content: {message_id} returned compact non-patchable card; using tracker fallback", flush=True)
+    except Exception as exc:
+        print(f"fetch_live_card_content: could not fetch {message_id}: {exc!r}", flush=True)
+    return None
+
+
 def load_card_for_message(message_id, region=None, upc=None, isrc=None, tracker_row=None, ref_id=None, date=None):
-    """Load the exact persisted card for a message, or rebuild it from the tracker.
+    """Load the exact persisted card for a message, fetch it live, or rebuild it from the tracker.
 
     Never falls back to last_card.json: that is a different claim's card and
     patching it corrupts the clicked card (B8). If neither the persisted card
@@ -272,12 +376,25 @@ def load_card_for_message(message_id, region=None, upc=None, isrc=None, tracker_
     caller can surface a toast instead of silently patching wrong data.
     """
     card = load_posted_card(message_id)
+    if _is_patchable_card(card):
+        return card
+    if card is not None:
+        print(f"load_card_for_message: stored card for {message_id} is compact/non-patchable; using fallback", flush=True)
+    card = fetch_live_card_content(message_id)
     if card:
+        try:
+            ra.save_posted_card(message_id, card)
+        except Exception as exc:
+            print(f"load_card_for_message: could not persist live card {message_id}: {exc!r}", flush=True)
         return card
     card = reconstruct_card_from_tracker(
         message_id, region=region, upc=upc, isrc=isrc, tracker_row=tracker_row, ref_id=ref_id, date=date
     )
     if card:
+        try:
+            ra.save_posted_card(message_id, card)
+        except Exception as exc:
+            print(f"load_card_for_message: could not persist reconstructed card {message_id}: {exc!r}", flush=True)
         return card
     raise RuntimeError(
         f"No persisted card for message {message_id} and tracker reconstruction failed; "
@@ -333,7 +450,7 @@ def update_card_state(card, status, message_id, operator_name=None, operator_id=
 
     selected_type = _button_type_for_status(effective_status)
     for el in card.get("elements", []):
-        if el.get("tag") != "action":
+        if not isinstance(el, dict) or el.get("tag") != "action":
             continue
         for btn in el.get("actions", []):
             value = btn.setdefault("value", {})

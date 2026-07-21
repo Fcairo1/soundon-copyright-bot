@@ -30,6 +30,7 @@ _OAUTH_REDIRECT_URI = "http://localhost:9876/oauth/callback"
 _OAUTH_REQUIRED_SCOPE_KEYS = (
     "sheets:spreadsheet:read",
     "sheets:spreadsheet:write_only",
+    "mail:user_mailbox.message:readonly",
     "mail:user_mailbox.message:modify",
 )
 _OAUTH_REQUIRED_SCOPES = " ".join(_OAUTH_REQUIRED_SCOPE_KEYS)

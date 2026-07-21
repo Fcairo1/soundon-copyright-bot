@@ -111,8 +111,8 @@ The operator should approve consent with the `filipe.cairo` account. The setup
 script prints the authorization URL for app `cli_aa94690b12b81cde`, captures the
 returned code on `http://localhost:9876/oauth/callback`, exchanges it for tokens,
 and writes the refresh token to `runtime/lark_oauth_secret.json`. Required scopes
-are `sheets:spreadsheet:readonly`, `sheets:spreadsheet`, and
-`mail:user_mailbox.message:modify`.
+are `sheets:spreadsheet:read`, `sheets:spreadsheet:write_only`,
+`mail:user_mailbox.message:readonly`, and `mail:user_mailbox.message:modify`.
 
 ## Running
 

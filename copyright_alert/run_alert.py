@@ -85,7 +85,9 @@ ENGAGEMENT_DATASET = "1576005"
 ENGAGEMENT_TABLE = "[[AOP] dm_distribution_song_country_df]"
 # Per-process cache so a single run resolves the partition only once.
 _ENGAGEMENT_PARTITION_CACHE = None
-POSTED_CLAIMS_FILE = "copyright_alert/posted_claims.json"
+STATE_DIR = Path(__file__).resolve().parent
+RUNTIME_DIR = STATE_DIR.parent / "runtime"
+POSTED_CLAIMS_FILE = str(STATE_DIR / "posted_claims.json")
 TRIAGE_QUERY = "Infringement Claim"
 TRIAGE_MAX = 50
 # B3: BASE_EXCLUDED_MENTIONS is the permanent, region-independent baseline of
@@ -1011,15 +1013,33 @@ def query_aeolus(identifier, id_type="upc"):
     )
     return row
 
-def _load_posted_claims():
-    if not os.path.exists(POSTED_CLAIMS_FILE):
-        return {}
+def _json_file_dict(path):
     try:
-        with open(POSTED_CLAIMS_FILE, encoding="utf-8") as fh:
+        with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}
+
+
+def _load_posted_claims():
+    """Load posted-claim checkpoint records from the canonical state file.
+
+    Older/manual runs sometimes wrote BR checkpoint records under runtime/ while
+    the daemon now writes under copyright_alert/.  Merge the legacy runtime copy
+    as read-only fallback data so callback lookups can still recover metadata for
+    cards that predate the current checkpoint location.
+    """
+    data = {}
+    for candidate in (
+        RUNTIME_DIR / "posted_claims_ap_direitos_br.json",
+        RUNTIME_DIR / "posted_claims.json",
+        Path(POSTED_CLAIMS_FILE),
+    ):
+        loaded = _json_file_dict(candidate)
+        if loaded:
+            data.update(loaded)
+    return data
 
 
 def _save_posted_claim(claim_key, record):
@@ -1614,15 +1634,21 @@ def _get_bot_access_token():
 # fed back into PATCH (doing so → HTTP 400 Bad Request). To refresh an existing
 # card we therefore keep a copy of the exact card JSON we sent, keyed by the
 # message_id, and patch THAT (with the countdown badge merged in) instead.
-POSTED_CARDS_FILE = "copyright_alert/posted_cards.json"
+POSTED_CARDS_FILE = str(STATE_DIR / "posted_cards.json")
+
+
+def _posted_cards_candidates():
+    """Canonical card-state file first, then read-only legacy runtime fallback."""
+    return (Path(POSTED_CARDS_FILE), RUNTIME_DIR / "posted_cards.json")
 
 
 def _load_posted_cards():
-    try:
-        with open(POSTED_CARDS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f) or {}
-    except Exception:
-        return {}
+    data = {}
+    for candidate in reversed(_posted_cards_candidates()):
+        loaded = _json_file_dict(candidate)
+        if loaded:
+            data.update(loaded)
+    return data
 
 
 def save_posted_card(message_id, card):
