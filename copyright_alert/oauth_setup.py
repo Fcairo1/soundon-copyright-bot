@@ -40,6 +40,7 @@ SCOPE_KEYS = (
     "mail:user_mailbox.message:modify",
 )
 SCOPE = " ".join(SCOPE_KEYS)
+APP_ACCESS_TOKEN_URL = "https://open.larksuite.com/open-apis/auth/v3/app_access_token/internal"
 TOKEN_URL = "https://open.larksuite.com/open-apis/authen/v1/oidc/access_token"
 OAUTH_URL = "https://accounts.larksuite.com/open-apis/authen/v1/authorize"
 TOKEN_FILE = ROOT / "runtime" / "lark_oauth_secret.json"
@@ -187,11 +188,26 @@ def capture_code(expected_state: str) -> str:
     return getattr(server, "oauth_code")
 
 
+def get_app_access_token(app_id: str, app_secret: str) -> str:
+    payload = {
+        "app_id": app_id,
+        "app_secret": app_secret,
+    }
+    response = post_json(APP_ACCESS_TOKEN_URL, payload)
+    app_access_token = response.get("app_access_token") or (response.get("data") or {}).get("app_access_token")
+    if not app_access_token:
+        raise RuntimeError(
+            "App access token response did not contain app_access_token: "
+            f"{json.dumps(response, ensure_ascii=False)}"
+        )
+    return str(app_access_token)
+
+
 def exchange_code(app_id: str, app_secret: str, code: str) -> Dict[str, Any]:
+    app_access_token = get_app_access_token(app_id, app_secret)
     payload = {
         "grant_type": "authorization_code",
-        "client_id": app_id,
-        "client_secret": app_secret,
+        "app_access_token": app_access_token,
         "code": code,
         "redirect_uri": REDIRECT_URI,
     }
