@@ -91,12 +91,20 @@ def load_app_credentials() -> Tuple[str, str, str]:
     raise RuntimeError("Could not load Lark app credentials. Tried: " + "; ".join(errors))
 
 
-def post_json(url: str, payload: Dict[str, Any], timeout: int = 30) -> Dict[str, Any]:
+def post_json(
+    url: str,
+    payload: Dict[str, Any],
+    headers: Optional[Dict[str, str]] = None,
+    timeout: int = 30,
+) -> Dict[str, Any]:
     body = json.dumps(payload).encode("utf-8")
+    request_headers = {"Content-Type": "application/json; charset=utf-8"}
+    if headers:
+        request_headers.update(headers)
     req = urllib.request.Request(
         url,
         data=body,
-        headers={"Content-Type": "application/json; charset=utf-8"},
+        headers=request_headers,
         method="POST",
     )
     try:
@@ -207,11 +215,13 @@ def exchange_code(app_id: str, app_secret: str, code: str) -> Dict[str, Any]:
     app_access_token = get_app_access_token(app_id, app_secret)
     payload = {
         "grant_type": "authorization_code",
-        "app_access_token": app_access_token,
         "code": code,
-        "redirect_uri": REDIRECT_URI,
     }
-    return post_json(TOKEN_URL, payload)
+    return post_json(
+        TOKEN_URL,
+        payload,
+        headers={"Authorization": f"Bearer {app_access_token}"},
+    )
 
 
 def save_refresh_token(token_response: Dict[str, Any], source_module: str) -> Dict[str, Any]:
