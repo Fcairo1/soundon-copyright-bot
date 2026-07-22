@@ -648,13 +648,13 @@ def manual_scan_region(region: str, max_messages: int = 80) -> dict:
                 summary["skipped_duplicate"] += 1
                 continue
 
-            card = ra.build_card(ef, ar)
+            card = ra.build_card(ef, ar, region=region)
             LAST_CARD_FILE.write_text(json.dumps(card, ensure_ascii=False, indent=2), encoding="utf-8")
             success, posted_message_id = ra.post_card(card, ar, upc=upc, context=f"{region} manual scan group post")
             if not (success and posted_message_id):
                 continue
 
-            patched_card = ra.build_card(ef, ar, lark_message_id=posted_message_id)
+            patched_card = ra.build_card(ef, ar, lark_message_id=posted_message_id, region=region)
             LAST_CARD_FILE.write_text(json.dumps(patched_card, ensure_ascii=False, indent=2), encoding="utf-8")
             # Persist immediately after a successful post, before PATCHing the
             # card or writing the tracker. Manual /scan used to skip this, so a

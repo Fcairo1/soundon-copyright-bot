@@ -1101,8 +1101,22 @@ def qualifies(row):
     print(f"  ✗ Filtered: source={source!r}, tier={tier!r} (need AP/A&R/High Quality)")
     return False
 
+def _canonical_alert_region(region: str = "", aeolus_row=None) -> str:
+    """Return the bot's tracker/card region for a raw region or Aeolus row."""
+    value = str(region or "").strip().upper()
+    if not value and aeolus_row is not None:
+        value = _region_from_aeolus_row(aeolus_row)
+    if value in {"US", "CA", "AU", "NZ"}:
+        return "US"
+    if value in {"MX", "CL", "CO", "AR", "ES", "PR", "PE"}:
+        return "SPLA"
+    if value == "BR":
+        return "BR"
+    return (CURRENT_REGION or "BR").upper()
+
+
 def _ops_context_for_region(region: str):
-    region = (region or CURRENT_REGION or "BR").upper()
+    region = _canonical_alert_region(region)
     configs = {
         "BR": {
             "ops_dm_email": "filipe.cairo@bytedance.com",
@@ -1159,7 +1173,7 @@ def build_card(
 
     display_title = ef.get("title") if ef.get("title") and ef.get("title") != "N/A" else ar.get("album_title")
     label_uid = ar.get("uid", "")
-    region_value = (region or _region_from_aeolus_row(ar) or CURRENT_REGION or "BR").upper()
+    region_value = _canonical_alert_region(region, ar)
     bd_mentions = _mention_people(ar.get("bd_manager_list"), label_uid=label_uid, region=region_value)
     label_manager_mentions = _mention_people(ar.get("operation_manager_list"), label_uid=label_uid, region=region_value)
     artist_names = _format_artist_names(ar.get("display_artist"))
@@ -1475,7 +1489,7 @@ def append_tracker_row(ef, ar, message_id, status=""):
       S Card Message ID (alias of P — same group-card message_id, written to
       both so the daily countdown refresh can find it easily),
       T Email Status (filled in later once a Spotify reply is sent),
-      U Spotify Ref Code (the "ref:_...:ref" claim code parsed from the Spotify
+      U ref_code (the "ref:_...:ref" claim code parsed from the Spotify
       email; blank for non-Spotify claims).
 
     Returns the appended tracker row number on success, else None.
@@ -1509,7 +1523,7 @@ def append_tracker_row(ef, ar, message_id, status=""):
         _tracker_cell(""),          # R Admin Action Taken (filled later by daily workflow)
         _tracker_cell(msg_id_str, text=True),  # S Card Message ID (alias of P / Lark Message ID)
         _tracker_cell(""),          # T Email Status (filled after a Spotify reply is sent)
-        _tracker_cell(ef.get("ref_id") if ef.get("ref_id") not in (None, "", "N/A") else "", text=True),  # U Spotify Ref Code
+        _tracker_cell(ef.get("ref_id") if ef.get("ref_id") not in (None, "", "N/A") else "", text=True),  # U ref_code
     ]]
     assert len(row[0]) == 21, f"Tracker row schema drift: expected 21 cells, got {len(row[0])}"
 

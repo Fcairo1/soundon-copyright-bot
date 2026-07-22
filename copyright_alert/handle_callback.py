@@ -45,6 +45,7 @@ EMAIL_STATUS_COL = "T"
 # (column O) is used to disambiguate multiple rows that share a UPC.
 CARD_MSG_ID_COL_NAME = "Card Message ID"
 REF_CODE_COL_NAME = "ref_code"
+REF_CODE_HEADER_ALIASES = (REF_CODE_COL_NAME, "Spotify Ref Code")
 DATE_RECEIVED_COL_NAME = "Date Received"
 # F1: The bot ONLY writes to column N ("Status") via update_sheet_status().
 # Column R ("Admin Action Taken") is filled MANUALLY by ops and must NEVER be
@@ -299,6 +300,12 @@ def reconstruct_card_from_tracker(message_id, region=None, upc=None, isrc=None, 
         return None
     row = values[row_num - 1]
     idx = {short: header_index.get(header) for short, header in _TRACKER_RECONSTRUCT_HEADER_KEYS.items()}
+    if idx.get("spotify_ref") is None:
+        for alias in REF_CODE_HEADER_ALIASES:
+            alias_idx = header_index.get(alias)
+            if alias_idx is not None:
+                idx["spotify_ref"] = alias_idx
+                break
     try:
         from copyright_alert.daily_workflow import _reconstruct_card_from_row
         # Thread the callback's region through so a rebuilt US/SPLA/BR card keeps
@@ -535,12 +542,20 @@ def _find_tracker_row(values, *, message_id=None, upc=None, isrc=None, ref_id=No
 
     headers = [_norm(v) for v in values[0]]
     header_index = {name: idx for idx, name in enumerate(headers) if name}
-    message_idx = header_index.get(MESSAGE_ID_COL)          # column P
-    card_msg_idx = header_index.get(CARD_MSG_ID_COL_NAME)   # column S
-    upc_idx = header_index.get(UPC_COL_NAME)                # column A
-    isrc_idx = header_index.get(ISRC_COL_NAME)
-    ref_idx = header_index.get(REF_CODE_COL_NAME)           # column U
-    date_idx = header_index.get(DATE_RECEIVED_COL_NAME)     # column O
+
+    def _header_idx(*names):
+        for name in names:
+            idx = header_index.get(name)
+            if idx is not None:
+                return idx
+        return None
+
+    message_idx = _header_idx(MESSAGE_ID_COL)          # column P
+    card_msg_idx = _header_idx(CARD_MSG_ID_COL_NAME)   # column S
+    upc_idx = _header_idx(UPC_COL_NAME)                # column A
+    isrc_idx = _header_idx(ISRC_COL_NAME)
+    ref_idx = _header_idx(*REF_CODE_HEADER_ALIASES)    # column U
+    date_idx = _header_idx(DATE_RECEIVED_COL_NAME)     # column O
 
     def _get(row, idx):
         return _norm(row[idx]) if idx is not None and len(row) > idx else ""
