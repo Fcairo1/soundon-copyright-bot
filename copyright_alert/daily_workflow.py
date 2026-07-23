@@ -125,6 +125,7 @@ SPOTIFY_DM_STATE_FILE = "copyright_alert/spotify_dm_sent.json"
 # C1: the reply deadline is unified to 5 BUSINESS days in BRT. The single source
 # of truth lives in tag_managers; do not reintroduce a local calendar-day value.
 from copyright_alert.tag_managers import business_days_remaining_brt, REPLY_DEADLINE_WORKDAYS  # noqa: E402
+from copyright_alert import metadata_notice  # noqa: E402
 
 
 # ── Region configuration ─────────────────────────────────────────────────────
@@ -358,6 +359,19 @@ def _parse_candidate(msg_id, subject, date, thread_id, seen_threads, summary):
     if not body:
         log("     ✗ Could not fetch body — will retry next run")
         return ("failed", "fetch body failed")
+
+    # Spotify Metadata / Misrepresentation notices are handled COMPLETELY
+    # differently from infringement claims: no group card, no tracker row — just a
+    # private DM to the regional Ops owner (re-sent daily until Actioned). Route
+    # them out of the infringement flow before any UPC/qualification logic.
+    try:
+        if metadata_notice.is_metadata_notice(body, subject, meta):
+            log("     ⚠️ Spotify metadata/misrepresentation notice — routing to DM handler")
+            result = metadata_notice.handle_metadata_notice(body, subject, meta, msg_id=msg_id)
+            log(f"     metadata notice: {result}")
+            return ("skip", "metadata notice")
+    except Exception as exc:
+        log(f"     ⚠ metadata-notice routing error (continuing as normal claim): {exc!r}")
 
     ef = extract_fields(body, subject, meta)
     upc = str(ef.get("upc", "") or "").strip()
@@ -1397,6 +1411,17 @@ def main(region=None):
     except Exception as e:
         log(f"  ✗ Countdown-refresh section error: {e!r}")
         results["countdown_refresh"] = {"error": repr(e)}
+
+    # G) Spotify metadata/misrepresentation notices — daily re-send of the DM for
+    # any notice still not Actioned. Region-agnostic and idempotent per day, so it
+    # is safe to run from every region's workflow (only the first run of the day
+    # re-sends a given notice).
+    try:
+        section("PART G — Spotify metadata notices (daily re-send)")
+        results["metadata_notices"] = metadata_notice.resend_unresolved_notices()
+    except Exception as e:
+        log(f"  ✗ Metadata-notice section error: {e!r}")
+        results["metadata_notices"] = {"error": repr(e)}
 
     section("RUN COMPLETE")
     log(json.dumps(results, ensure_ascii=False, indent=2))

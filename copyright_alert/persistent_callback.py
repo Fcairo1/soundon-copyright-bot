@@ -63,6 +63,7 @@ from copyright_alert.handle_callback import (
     _parse_lark_annotated_csv,
 )
 from copyright_alert import lark_auth, spotify_reply
+from copyright_alert import metadata_notice
 from copyright_alert.run_alert import BOT_APP_ID, BOT_SECRET
 
 
@@ -793,6 +794,36 @@ def handle_card_action(data):
             )
             worker.start()
             return _toast(f"Creating '{reply_type}' draft... check your DMs.", "success")
+
+        # ── Spotify metadata/misrepresentation notice: "✅ Actioned" ──────────
+        if isinstance(value, dict) and value.get("action") == metadata_notice.CALLBACK_ACTION:
+            if event_id and not _acquire_event_lock(event_id):
+                print(f"Skipping duplicate metadata-notice action for event_id: {event_id}", flush=True)
+                return _toast("This button click was already processed.", "warn")
+            try:
+                md_message_id = (
+                    value.get("message_id")
+                    or (getattr(context, "open_message_id", None) if context else None)
+                    or ctx_payload.get("open_message_id")
+                    or ""
+                )
+                operator_payload = ((payload.get("event") or {}).get("operator") or {})
+                operator_obj = getattr(event, "operator", None) if event else None
+                operator_name = (
+                    operator_payload.get("name")
+                    or (getattr(operator_obj, "open_id", None) if operator_obj else None)
+                    or operator_payload.get("open_id")
+                    or operator_payload.get("user_id")
+                    or ""
+                )
+                status = metadata_notice.handle_actioned_callback(
+                    value, message_id=md_message_id, operator=operator_name
+                )
+                print(f"metadata_notice actioned: {status}", flush=True)
+                return _toast("Marked as Actioned — daily reminders stopped.")
+            except Exception as exc:
+                print(f"metadata_notice callback error: {exc!r}", flush=True)
+                return _toast(f"Failed to mark Actioned: {exc}", "error")
 
         clicked_status = value.get("status")
         current_status = (value.get("current_status") or "").strip()
