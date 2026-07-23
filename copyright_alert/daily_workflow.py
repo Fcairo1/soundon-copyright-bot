@@ -366,8 +366,8 @@ def fetch_messages_raw(checkpoint=None):
 def _prefilter_skip_reason(subject, thread_id, seen_threads):
     if re.match(r"(?i)^(re:|fw:)", subject or ""):
         return "reply/forward subject"
-    if "claim release" in (subject or "").lower():
-        return "claim release subject"
+    # Content ID / claim-release requests must stay in the normal alert flow;
+    # extract_fields() tags likely release requests with a visible warning.
     if thread_id and thread_id in seen_threads:
         return f"duplicate thread {thread_id}"
     return None
@@ -588,6 +588,7 @@ def run_scan():
                 "ref_id": ef.get("ref_id", "N/A"),
                 "claimant_name": ef.get("claimant_name", "N/A"),
                 "claimant_email": ef.get("claimant_email", "N/A"),
+                "possible_content_id_release_request": bool(ef.get("possible_content_id_release_request")),
                 "region": ACTIVE_REGION,
                 "tracker_row": tracker_row,
                 "chat_id": TARGET_CHAT_ID,

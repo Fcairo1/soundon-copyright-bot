@@ -247,9 +247,8 @@ def fetch_recent_candidates():
         if re.match(r"(?i)^(re:|fw:)", subject):
             print("  SKIP FETCHED EMAIL: reply/forward subject")
             continue
-        if "claim release" in subject.lower():
-            print("  SKIP FETCHED EMAIL: claim release subject")
-            continue
+        # Content ID / claim-release requests must stay in the normal alert flow;
+        # extract_fields() tags likely release requests with a visible warning.
         if thread_id in seen_threads:
             print(f"  SKIP FETCHED EMAIL: duplicate thread {thread_id}")
             continue
@@ -517,10 +516,42 @@ def detect_dsp(email):
     return {"dsp": "Unknown", "confidence": "low"}
 
 
+CONTENT_ID_DISPUTE_WARNING = "⚠️ Possible Content ID Dispute — verify before actioning"
+
+
+def is_possible_content_id_release_request(text):
+    """Detect emails asking SoundOn to release its own Content ID claim.
+
+    These should not be skipped: they stay in the normal group-card/tracker flow,
+    but the card gets a warning so ops verifies before taking infringement action.
+    """
+    haystack = re.sub(r"\s+", " ", text or "").strip().lower()
+    if not haystack:
+        return False
+
+    # Hard guard: language below usually means a real claim against SoundOn
+    # content, not a third-party request to release SoundOn's claim.
+    if re.search(r"\b(dmca|rights? holder|infringing|infringement|takedown notification|counter[- ]notice)\b", haystack):
+        return False
+
+    has_release = re.search(r"\breleas(?:e|ed|ing)\b", haystack) is not None
+    has_claim_context = re.search(r"\b(your claims?|mcn|content id)\b", haystack) is not None
+    if has_release and has_claim_context:
+        return True
+
+    # Examples often say "release it" after describing a claim/MCN in the same
+    # sentence or nearby clause. Keep this bounded to avoid broad false positives.
+    if re.search(r"\brelease it\b.{0,120}\b(claim|mcn)\b|\b(claim|mcn)\b.{0,120}\brelease it\b", haystack):
+        return True
+
+    return False
+
+
 def extract_fields(body, subject, meta):
     """Extract all needed fields from email body + subject."""
     fields = {}
     fields["email_source"] = detect_email_source(body, subject, meta)
+    fields["possible_content_id_release_request"] = is_possible_content_id_release_request(body)
 
     # UPC — from subject first, then body
     fields["upc"] = first(subject, r"UPC\s*[:\-]?\s*(\d{10,13})")
@@ -1188,6 +1219,12 @@ def build_card(
     ops_dm_email_value = ops_dm_email or ef.get("ops_dm_email", "") or ops_ctx.get("ops_dm_email", "")
     ops_dm_open_id_value = ops_dm_open_id or ef.get("ops_dm_open_id", "") or ops_ctx.get("ops_dm_open_id", "")
     ops_dm_chat_id_value = ops_dm_chat_id or ef.get("ops_dm_chat_id", "") or ops_ctx.get("ops_dm_chat_id", "")
+    warning_elements = []
+    if ef.get("possible_content_id_release_request"):
+        warning_elements = [
+            {"tag": "div", "text": {"tag": "lark_md", "content": f"**Note:** {CONTENT_ID_DISPUTE_WARNING}"}},
+            {"tag": "hr"},
+        ]
 
     status_buttons = []
     for status in ["🔴 Confirm Takedown", "🔍 Investigating", "⚖️ Disputing", "✅ Resolved"]:
@@ -1215,6 +1252,7 @@ def build_card(
         },
         "elements": [
             {"tag": "div", "text": {"tag": "lark_md", "content": f"**{v(display_title)}**\nArtist(s): {v(artist_names)}\n**Status: —**"}},
+            *warning_elements,
             {"tag": "hr"},
             {"tag": "div", "text": {"tag": "lark_md", "content": "**📧 Claim Details**"}},
             {
@@ -1835,6 +1873,7 @@ def main():
                 "dsp_confidence": ef.get("dsp_confidence", "low"),
                 "claimant_name": ef.get("claimant_name", "N/A"),
                 "claimant_email": ef.get("claimant_email", "N/A"),
+                "possible_content_id_release_request": bool(ef.get("possible_content_id_release_request")),
                 "region": CURRENT_REGION,
                 "tracker_row": tracker_row,
                 "chat_id": TARGET_CHAT_ID,
