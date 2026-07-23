@@ -86,6 +86,17 @@ TRIAGE_MAX = 50            # messages fetched per triage page (page size)
 # any realistic backlog between two daily runs. The +triage CLI caps --max at
 # 400, so this is also the practical maximum reach of one scan.
 TRIAGE_HARD_CAP = 400
+# Dedicated secondary inbox fetch for Spotify metadata / misrepresentation
+# notices. These emails do not consistently use the standard "Infringement
+# Claim" subject, so the daily scan must search additional keywords and merge the
+# resulting messages before routing.
+METADATA_NOTICE_QUERIES = [
+    "misrepresent",
+    "Content Protection",
+    "metadata",
+    "Spotify Content Protection",
+    "misleading",
+]
 # G2: A failed message is retried at most this many times before it is dropped
 # from the retry list, so a message that will never succeed is not re-processed
 # on every run forever.
@@ -296,32 +307,60 @@ def fetch_messages_raw(checkpoint=None):
     the fetch window and the old checkpoint is never permanently orphaned.
     """
     max_fetch = TRIAGE_MAX if checkpoint is None else TRIAGE_HARD_CAP
-    cmd = [
-        "lark-cli", "mail", "+triage",
-        "--mailbox", MAILBOX,
-        "--query", TRIAGE_QUERY,
-        "--max", str(max_fetch),
-        "--format", "json",
-    ]
-    log(f"Fetching inbox: query={TRIAGE_QUERY!r}, max={max_fetch}, "
-        f"mailbox={MAILBOX}, checkpoint={checkpoint or '(none — first run)'}")
-    res = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
-    if res.returncode != 0:
-        log(f"  ✗ triage failed rc={res.returncode}: {(res.stdout + res.stderr)[:500]}")
-        return []
-    parsed = parse_lark_json(res.stdout)
-    if not parsed:
-        log(f"  ✗ Failed to parse triage output. Raw (first 400): {res.stdout[:400]}")
-        return []
-    data = parsed.get("data") or {}
-    messages = parsed.get("messages") or data.get("messages") or []
+    all_messages = []
+    seen_ids = set()
 
-    if checkpoint and any(m.get("message_id") == checkpoint for m in messages):
-        log(f"  ✓ Reached previous checkpoint within fetch window "
-            f"({len(messages)} message(s) fetched).")
+    def _fetch_messages(query, is_main=False):
+        cmd = [
+            "lark-cli", "mail", "+triage",
+            "--mailbox", MAILBOX,
+            "--query", query,
+            "--max", str(max_fetch),
+            "--format", "json",
+        ]
+        label = "main" if is_main else "metadata"
+        checkpoint_hint = f", checkpoint={checkpoint or '(none)'}" if is_main else ""
+        log(f"Fetching inbox ({label}): query={query!r}, max={max_fetch}, mailbox={MAILBOX}{checkpoint_hint}")
 
-    log(f"  Fetched {len(messages)} emails (newest-first).")
-    return messages
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        if res.returncode != 0:
+            log(f"  ✗ {label} triage failed rc={res.returncode}: {(res.stdout + res.stderr)[:200]}")
+            return []
+
+        parsed = parse_lark_json(res.stdout)
+        if not parsed:
+            log(f"  ✗ Failed to parse {label} triage output.")
+            return []
+
+        data = parsed.get("data") or {}
+        return parsed.get("messages") or data.get("messages") or []
+
+    # 1. Main fetch (Infringement Claim)
+    for m in _fetch_messages(TRIAGE_QUERY, is_main=True):
+        mid = m.get("message_id")
+        if mid and mid not in seen_ids:
+            all_messages.append(m)
+            seen_ids.add(mid)
+
+    # 2. Dedicated Metadata Notice fetch. Lark's triage query is a generic
+    # keyword search across message text, so issue one fetch per keyword and merge
+    # them as an OR-set.
+    for metadata_query in METADATA_NOTICE_QUERIES:
+        for m in _fetch_messages(metadata_query, is_main=False):
+            mid = m.get("message_id")
+            if mid and mid not in seen_ids:
+                all_messages.append(m)
+                seen_ids.add(mid)
+
+    # Sort merged results by date descending so messages[0] is the newest (high-water mark)
+    all_messages.sort(key=lambda x: x.get("date", ""), reverse=True)
+
+    if checkpoint and any(m.get("message_id") == checkpoint for m in all_messages):
+        log(f"  ✓ Reached previous checkpoint within merged fetch window "
+            f"({len(all_messages)} unique message(s) fetched).")
+
+    log(f"  Fetched {len(all_messages)} total unique emails (merged).")
+    return all_messages
 
 
 def _prefilter_skip_reason(subject, thread_id, seen_threads):
