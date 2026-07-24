@@ -5,7 +5,7 @@ copyright_alert/tag_managers.py
 PART 2 — every-2-workdays AM tagging script.
 
 Reads the copyright tracker sheet, finds rows that are still pending
-  (Status == "🔍 Investigating" OR Status empty)  AND  "Admin Action Taken" empty
+  (Status empty / "🔍 Investigating" / "⚖️ Disputing")
 and posts ONE message to the alert group (oc_fd2e43d6451f8d87adb4cd4ceefa7816)
 that @-mentions each responsible manager (Label Manager + BD) with the UPCs they
 are accountable for, grouped per person, e.g.:
@@ -214,11 +214,8 @@ def _admin_action_has_real_value(value: str) -> bool:
 
 
 def _is_pending_row(status: str, admin_action: str) -> bool:
+    _ = admin_action  # kept for signature compatibility; manager alerts ignore column R
     normalized = _normalized_status(status).casefold()
-    if normalized == "resolved":
-        return False
-    if normalized == "confirm takedown":
-        return not _admin_action_has_real_value(admin_action)
     return normalized in {s.casefold() for s in PENDING_STATUSES}
 
 

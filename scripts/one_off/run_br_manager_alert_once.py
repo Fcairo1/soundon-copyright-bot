@@ -32,7 +32,7 @@ def main():
             continue
         status = tm._cell(row, idx.get("Status"))
         admin = tm._cell(row, idx.get(tm.ADMIN_ACTION_HEADER))
-        if status not in tm.PENDING_STATUSES or admin:
+        if not tm._is_pending_row(status, admin):
             continue
 
         upc = tm._cell(row, idx.get("UPC")) or "N/A"
