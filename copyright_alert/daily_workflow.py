@@ -132,6 +132,9 @@ POSTED_CLAIMS_FILES = [
     "copyright_alert/posted_claims.json",
     "copyright_alert/posted_claims_ap_direitos_br.json",
 ]
+POSTED_CLAIMS_FALLBACK_FILES = [
+    "runtime/posted_claims.json",
+]
 SPOTIFY_DM_STATE_FILE = "copyright_alert/spotify_dm_sent.json"
 # C1: the reply deadline is unified to 5 BUSINESS days in BRT. The single source
 # of truth lives in tag_managers; do not reintroduce a local calendar-day value.
@@ -976,9 +979,12 @@ def _load_posted_claims_map():
     Handles both posted-claims schemas:
       - message_id / source_email_message_id (live + AP backfill)
       - posted_message_id / source_message_id (older US backfill)
+
+    Loads runtime fallback files first, then canonical files, so canonical files
+    take precedence when the same group-card message_id appears in both places.
     """
     out = {}
-    for path in POSTED_CLAIMS_FILES:
+    for path in [*POSTED_CLAIMS_FALLBACK_FILES, *POSTED_CLAIMS_FILES]:
         p = ROOT / path
         if not p.exists():
             continue
