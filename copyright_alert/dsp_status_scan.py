@@ -24,6 +24,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from copyright_alert.lark_auth import extract_sheet_values, sheet_values_api  # noqa: E402
+from copyright_alert.paths import inner_skill  # noqa: E402
 
 DSP_STATUS_SHEET_URL = "https://bytedance.sg.larkoffice.com/sheets/HMJ2sV9q5h8BPIti79AlYyn5gNe"
 DSP_STATUS_SHEET_ID = "2026"
@@ -46,7 +47,7 @@ DSP_STATUS_COLUMNS: Dict[str, str] = {
 DSP_STATUS_COLUMN_LETTERS: Tuple[str, ...] = tuple(DSP_STATUS_COLUMNS.values())
 
 AEOLUS_BASE_URL = "https://aeolus-va.tiktok-row.net"
-AEOLUS_SCRIPT = ROOT / "inner_skills" / "aeolus-platform-analysis" / "scripts" / "url_query.py"
+AEOLUS_SCRIPT = inner_skill("aeolus-platform-analysis", "scripts", "url_query.py")
 ISRC_UPC_LOOKUP_URL = "https://aeolus-va.tiktok-row.net/pages/dataQuery?appId=1301&id=2469688856&sid=374690"
 AUDIOSALAD_STATUS_URL = "https://aeolus-va.tiktok-row.net/pages/dataQuery?appId=5049&rid=5023707&sid=2935090"
 ISRC_FILTER_FIELD = "isrc"

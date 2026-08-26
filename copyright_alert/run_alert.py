@@ -27,6 +27,7 @@ from copyright_alert.lark_auth import request_json_with_auth_retry
 from copyright_alert.manager_exclusions import is_manager_excluded
 from copyright_alert.upc_exclusions import is_upc_excluded
 from copyright_alert.region_guard import assert_region_allowed, assert_chat_matches_region
+from copyright_alert.paths import inner_skill
 
 # ── Config ──────────────────────────────────────────────────────────────────
 
@@ -76,7 +77,7 @@ CURRENT_REGION = "BR"
 QUALIFY_COUNTRIES = {"BR"}
 AEOLUS_DATASET = "374690"
 AEOLUS_BASE    = "https://aeolus-va.tiktok-row.net"
-AEOLUS_SCRIPT  = "inner_skills/aeolus-platform-analysis/scripts/dataset_sql_query.py"
+AEOLUS_SCRIPT  = str(inner_skill("aeolus-platform-analysis", "scripts", "dataset_sql_query.py"))
 # Engagement dataset: [AOP] dm_distribution_song_country_df (sid=1576005)
 # Source: https://aeolus-va.tiktok-row.net/pages/dataQuery?appId=1301&id=2414694441&isDefault=1&rid=5377337&sid=1576005
 ENGAGEMENT_DATASET = "1576005"
@@ -684,9 +685,17 @@ def _aeolus_rows_to_dict(parsed):
 
     def _arrays_to_dicts(columns, rows):
         out = []
+        # columns may be plain strings or {"label": "..."} dicts depending on
+        # the dataset_sql_query.py version. Normalise to label strings.
+        col_names = []
+        for c in columns:
+            if isinstance(c, dict):
+                col_names.append(str(c.get("label") or c.get("uniqueId") or ""))
+            else:
+                col_names.append(str(c))
         for row in rows:
             if isinstance(row, list):
-                out.append(dict(zip(columns, row)))
+                out.append(dict(zip(col_names, row)))
             elif isinstance(row, dict):
                 out.append(row)
         return out
@@ -694,15 +703,44 @@ def _aeolus_rows_to_dict(parsed):
     if total is not None:
         if total == 0:
             return []
-        # Always prefer the full result file when present. sampleRows is only a
-        # preview for truncated responses and can silently drop valid rows.
+        # Newer dataset_sql_query.py (≥ Aug 2026) includes the full result set
+        # directly under "rows" for both small and large responses (for large
+        # results it ALSO writes a file, but "rows" already contains everything).
+        # Check this FIRST to avoid the self-referential file wrapper causing
+        # infinite recursion (the file contains the same JSON with a "file" key
+        # pointing back to itself).
+        direct_rows = parsed.get("rows")
+        if isinstance(direct_rows, list) and direct_rows:
+            if isinstance(direct_rows[0], dict):
+                return direct_rows
+            if isinstance(direct_rows[0], list) and columns_hint:
+                return _arrays_to_dicts(columns_hint, direct_rows)
+        # If "rows" is absent/empty but a result file was written, read it.
+        # Guard against the self-referential wrapper by only recursing when the
+        # file content is structurally different (i.e. lacks its own "file" key
+        # pointing back to the same path).
         if result_file and os.path.exists(result_file):
-            with open(result_file) as fh:
-                raw = json.load(fh)
-            rows = _aeolus_rows_to_dict(raw)  # recurse into shape B/full payload
-            if rows:
-                return rows
-        # Fallback only when no result file is available.
+            try:
+                with open(result_file) as fh:
+                    raw = json.load(fh)
+                if isinstance(raw, dict):
+                    nested_file = raw.get("file", "")
+                    # If the nested content points to the same file OR already
+                    # has its own "rows", handle it directly without recursing.
+                    if nested_file and os.path.abspath(str(nested_file)) == os.path.abspath(str(result_file)):
+                        nested_rows = raw.get("rows")
+                        if isinstance(nested_rows, list) and nested_rows:
+                            if isinstance(nested_rows[0], dict):
+                                return nested_rows
+                            if isinstance(nested_rows[0], list) and raw.get("columns"):
+                                return _arrays_to_dicts(raw.get("columns"), nested_rows)
+                    else:
+                        rows = _aeolus_rows_to_dict(raw)
+                        if rows:
+                            return rows
+            except (json.JSONDecodeError, OSError):
+                pass
+        # Fallback only when no result file / direct rows are available.
         sample = parsed.get("sampleRows", [])
         if isinstance(sample, list) and sample:
             if isinstance(sample[0], dict):
@@ -728,7 +766,7 @@ def _aeolus_rows_to_dict(parsed):
 
     if isinstance(data_any, dict):
         cols_raw = data_any.get("columns", [])
-        columns = [str(c) for c in cols_raw] if isinstance(cols_raw, list) else []
+        columns = cols_raw if isinstance(cols_raw, list) else []
         rows_raw = data_any.get("data", [])
         if isinstance(rows_raw, list):
             if rows_raw and isinstance(rows_raw[0], dict):

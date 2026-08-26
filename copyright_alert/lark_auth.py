@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -16,6 +17,11 @@ from pathlib import Path
 from typing import Any, Callable, Optional, Tuple
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from copyright_alert.paths import inner_skill  # noqa: E402
+
 _APP_ID_EXPECTED = "cli_aa94690b12b81cde"
 _ENV_REFRESH_FILE = ROOT / "copyright_alert" / "aime_env_refresh.json"
 _LEGACY_OAUTH_FILE = ROOT / "copyright_alert" / "lark_mail_oauth.json"
@@ -36,7 +42,7 @@ _OAUTH_REQUIRED_SCOPE_KEYS = (
 _OAUTH_REQUIRED_SCOPES = " ".join(_OAUTH_REQUIRED_SCOPE_KEYS)
 _TOKEN_REFRESH_SKEW_SECONDS = 120
 _OAUTH_LOCK = threading.Lock()
-_FEISHU_IM_DIR = ROOT / "inner_skills" / "feishu-im-send"
+_FEISHU_IM_DIR = inner_skill("feishu-im-send")
 _ALERT_EMAIL = "filipe.cairo@bytedance.com"
 _ALERT_CHAT_ID = "oc_6e157309d8d7145ba5ce7f0ba67354cb"
 _AUTH_ERROR_CODES = {99991663, 99991664}

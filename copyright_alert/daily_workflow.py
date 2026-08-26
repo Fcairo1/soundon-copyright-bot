@@ -37,6 +37,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 from copyright_alert.lark_auth import extract_sheet_values, request_json_with_auth_retry, sheet_values_api
+from copyright_alert.paths import inner_skill
 
 # ── Make the copyright_alert package importable & anchor relative paths ───────
 ROOT = Path(__file__).resolve().parents[1]
@@ -105,7 +106,7 @@ ACTIVE_REGION = "BR"  # region this workflow run is configured for
 RECIPIENT_EMAIL = "filipe.cairo@bytedance.com"  # filipe.cairo — personal alert DM target (BR default)
 RECIPIENT_OPEN_ID = ""  # when set, ops DMs go to this open_id via the copyright bot
 RECIPIENT_CHAT_ID = ""  # optional confirmed DM chat_id for the ops owner
-FEISHU_IM_DIR = ROOT / "inner_skills" / "feishu-im-send"
+FEISHU_IM_DIR = inner_skill("feishu-im-send")
 ADMIN_ACTION_HEADER = "Admin Action Taken"
 STATUS_TAKEDOWN = "🔴 Confirm Takedown"
 STATUS_RESOLVED = "✅ Resolved"
