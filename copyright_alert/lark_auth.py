@@ -395,6 +395,44 @@ def sheet_values_api(method: str, sheet_url: str, sheet_id: str, cell_range: str
     return payload
 
 
+def sheet_values_batch_update(
+    sheet_url: str,
+    value_ranges: list,
+    timeout: int = 120,
+) -> dict:
+    """Write multiple value ranges in a single API call.
+
+    ``value_ranges`` is a list of ``{"range": "sheetId!A1:B2", "values": [[...]]}``
+    dicts. Never raises on auth errors beyond the one-refresh retry in
+    ``request_json_with_auth_retry``.
+    """
+    if not value_ranges:
+        return {}
+    spreadsheet_token = _spreadsheet_token(sheet_url)
+    url = f"https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/{spreadsheet_token}/values_batch_update"
+    body = json.dumps({"valueRanges": value_ranges}, ensure_ascii=False).encode("utf-8")
+
+    force_refresh = False
+
+    def make_request():
+        token = get_user_access_token(force_refresh=force_refresh)
+        return urllib.request.Request(
+            url,
+            data=body,
+            method="POST",
+            headers={"Content-Type": "application/json; charset=utf-8", "Authorization": f"Bearer {token}"},
+        )
+
+    try:
+        payload = request_json_with_auth_retry(make_request, timeout=timeout, context="sheet_values_batch_update")
+    except RuntimeError:
+        force_refresh = True
+        payload = request_json_with_auth_retry(make_request, timeout=timeout, context="sheet_values_batch_update:forced")
+    if payload.get("code") not in (0, "0", None):
+        raise RuntimeError(f"Sheet batch update failed: {json.dumps(payload, ensure_ascii=False)[:1000]}")
+    return payload
+
+
 def extract_sheet_values(payload: dict) -> list:
     data_obj = payload.get("data") or {}
     value_range = data_obj.get("valueRange") or data_obj.get("value_range") or {}
@@ -534,7 +572,35 @@ def request_json_with_auth_retry(
                 }
             raise RuntimeError(f"HTTP {exc.code}: {text[:800]}") from exc
 
-    first = _perform_once()
+    def _with_transient_retry(call, *, what: str):
+        """Retry on genuine transient network/timeout errors with backoff.
+
+        ``_perform_once`` converts ``HTTPError`` (a ``URLError`` subclass) into
+        either an auth-failure dict or a ``RuntimeError``, so any
+        ``URLError``/``OSError``/``TimeoutError`` escaping it is a true
+        connection/timeout blip rather than an HTTP response. Long batch jobs
+        (e.g. the 200+ row DSP status scan) must survive such blips instead of
+        aborting and discarding all prior progress.
+        """
+        last_exc: Optional[Exception] = None
+        for attempt in range(4):  # initial attempt + up to 3 retries
+            try:
+                return call()
+            except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as exc:
+                last_exc = exc
+                if attempt < 3:
+                    wait = 2 ** attempt
+                    print(
+                        f"↻ {context}: transient network error on {what} "
+                        f"({exc!r}); retry {attempt + 1}/3 in {wait}s",
+                        flush=True,
+                    )
+                    time.sleep(wait)
+                    continue
+                raise
+        raise last_exc  # type: ignore[misc]
+
+    first = _with_transient_retry(_perform_once, what="initial request")
     if first["ok"]:
         return first["payload"] if isinstance(first["payload"], dict) else {}
 
@@ -552,7 +618,7 @@ def request_json_with_auth_retry(
     refreshed_detail = "OAuth user_access_token" if oauth_refreshed else f"{updated} legacy AIME key(s)"
     print(f"↻ {context}: auth failure detected; refreshed {refreshed_detail} and retrying once. {detail}", flush=True)
 
-    second = _perform_once()
+    second = _with_transient_retry(_perform_once, what="post-refresh request")
     if second["ok"]:
         return second["payload"] if isinstance(second["payload"], dict) else {}
 

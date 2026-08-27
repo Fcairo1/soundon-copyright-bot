@@ -23,12 +23,17 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from copyright_alert.lark_auth import extract_sheet_values, sheet_values_api  # noqa: E402
+from copyright_alert.lark_auth import extract_sheet_values, sheet_values_api, sheet_values_batch_update  # noqa: E402
 from copyright_alert.paths import inner_skill  # noqa: E402
 
 DSP_STATUS_SHEET_URL = "https://bytedance.sg.larkoffice.com/sheets/HMJ2sV9q5h8BPIti79AlYyn5gNe"
-DSP_STATUS_SHEET_ID = "2026"
+DSP_STATUS_SHEET_ID = "XFzPWy"
 DSP_STATUS_READ_RANGE = "A1:U5000"
+# The DSP status sheet has TWO frozen header rows: row 1 is a merged title
+# banner and row 2 holds the column labels (J2="UPC", K2="ISRC", P2="Spotify",
+# ...). Actual data begins at row 3.
+HEADER_ROW_COUNT = 2
+UPC_HEADER_LABEL = "UPC"
 DELIVERED_MARK = "✅"
 NOT_SENT_MARK = "Not Sent"
 
@@ -103,6 +108,10 @@ def read_rows_to_process(
 ) -> Tuple[List[object], List[Tuple[int, List[object]]], int]:
     """Read sheet rows and return rows that still need DSP status work.
 
+    The sheet has two frozen header rows (row 1 = merged title banner, row 2 =
+    column labels such as "UPC"/"ISRC"/"Spotify"). Data begins at row 3. We also
+    defensively skip any row whose UPC cell equals the header label.
+
     Returns ``(header, rows_to_process, skipped_fully_delivered_count)`` where
     each row item is ``(sheet_row_number, row_values)``.
     """
@@ -114,9 +123,13 @@ def read_rows_to_process(
     rows_to_process: List[Tuple[int, List[object]]] = []
     skipped_fully_delivered = 0
 
-    for row_num, raw_row in enumerate(values[1:], start=2):
+    for row_num, raw_row in enumerate(values[HEADER_ROW_COUNT:], start=HEADER_ROW_COUNT + 1):
         row = list(raw_row or [])
         if not any(str(cell or "").strip() for cell in row):
+            continue
+        # Defensive: never treat the column-label row (or a duplicate header) as
+        # data.
+        if _cell(row, UPC_COLUMN).strip().upper() == UPC_HEADER_LABEL.upper():
             continue
         if is_fully_delivered(row):
             skipped_fully_delivered += 1
@@ -157,17 +170,93 @@ def write_status_updates(
 
 
 def _parse_aeolus_json(stdout: str) -> Dict[str, object]:
+    """Parse url_query.py stdout into a dict.
+
+    url_query.py emits a single top-level JSON object on stdout (diagnostic logs
+    go to stderr). The previous ``rfind("\\n{")`` heuristic grabbed the *last*
+    nested object (e.g. the final row inside ``"rows": [...]``) instead of the
+    outer object, so ``json.loads`` failed and every result came back empty —
+    causing every DSP to be marked "Not Sent". Parse directly first, then fall
+    back to brace-scanning, then to the on-disk ``dataFile`` (which holds full
+    rows even when stdout truncates them).
+    """
     text = (stdout or "").strip()
+    if not text:
+        return {}
+
+    # 1) Fast path: stdout is the complete JSON object.
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return _augment_with_datafile(parsed)
+    except json.JSONDecodeError:
+        pass
+
+    # 2) Brace-scan for the first balanced top-level object (tolerates any
+    #    preamble/trailing text).
+    depth = 0
+    start = -1
+    in_str = False
+    esc = False
+    for i, ch in enumerate(text):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0 and start >= 0:
+                try:
+                    parsed = json.loads(text[start:i + 1])
+                    if isinstance(parsed, dict):
+                        return _augment_with_datafile(parsed)
+                except json.JSONDecodeError:
+                    start = -1
+
+    # 3) Legacy fallback (kept for safety).
     for marker in ("\n{", "{"):
         idx = text.rfind(marker)
         if idx >= 0:
             candidate = text[idx + (1 if marker.startswith("\n") else 0):]
             try:
                 parsed = json.loads(candidate)
-                return parsed if isinstance(parsed, dict) else {}
+                if isinstance(parsed, dict):
+                    return _augment_with_datafile(parsed)
             except json.JSONDecodeError:
                 continue
     return {}
+
+
+def _augment_with_datafile(parsed: Dict[str, object]) -> Dict[str, object]:
+    """If stdout rows were truncated, load the full row set from the dataFile."""
+    if not isinstance(parsed, dict):
+        return parsed
+    rows = parsed.get("rows")
+    total = parsed.get("total") or parsed.get("totalRows")
+    truncated = parsed.get("truncated") or parsed.get("data_truncated")
+    if (truncated or (isinstance(total, int) and isinstance(rows, list) and len(rows) < total)):
+        data_file = parsed.get("dataFile")
+        if isinstance(data_file, str) and data_file:
+            try:
+                with open(data_file, "r", encoding="utf-8") as fh:
+                    full = json.load(fh)
+                if isinstance(full, dict) and isinstance(full.get("rows"), list):
+                    parsed["rows"] = full["rows"]
+                elif isinstance(full, list):
+                    parsed["rows"] = full
+            except (OSError, json.JSONDecodeError):
+                pass
+    return parsed
 
 
 def _query_aeolus_url(url: str, filters: Sequence[str], top_n: int = 100, timeout: int = 240) -> Dict[str, object]:
@@ -212,8 +301,13 @@ def query_audiosalad_statuses_by_upc(upc: str) -> Dict[str, str]:
         [f"{AUDIOSALAD_UPC_FILTER_FIELD}={value}"],
         top_n=200,
     )
-    delivered_targets = set()
-    for row in payload.get("rows") or []:
+    return _map_audiosalad_rows_to_statuses(payload.get("rows") or [])
+
+
+def _map_audiosalad_rows_to_statuses(rows: Iterable[object]) -> Dict[str, str]:
+    """Map AudioSalad delivery rows to per-DSP ✅/Not Sent statuses."""
+    delivered_targets: set = set()
+    for row in rows:
         if not isinstance(row, dict) or not _is_ok_delivery(row.get(AUDIOSALAD_STATUS_FIELD)):
             continue
         target = str(row.get(AUDIOSALAD_TARGET_FIELD) or "").strip().lower()
@@ -225,6 +319,68 @@ def query_audiosalad_statuses_by_upc(upc: str) -> Dict[str, str]:
         matched = any(any(alias in target for alias in aliases) for target in delivered_targets)
         statuses[dsp_name] = DELIVERED_MARK if matched else NOT_SENT_MARK
     return statuses
+
+
+def query_audiosalad_statuses_batch(
+    upcs: Sequence[str],
+    chunk_size: int = 25,
+    top_n: int = 500,
+) -> Dict[str, Dict[str, str]]:
+    """Query AudioSalad delivery status for many UPCs in batched Aeolus calls.
+
+    The DataQuery report accepts a multi-value ``in`` filter (``upc=A,B,C``), so a
+    single call returns delivery rows for a chunk of UPCs. Each UPC maps to its
+    own status dict; UPCs absent from the response get all "Not Sent".
+    """
+    # Preserve order, deduplicate, and drop empties.
+    seen: set = set()
+    ordered: List[str] = []
+    for raw in upcs:
+        value = str(raw or "").strip()
+        if value and value not in seen:
+            seen.add(value)
+            ordered.append(value)
+
+    result: Dict[str, Dict[str, str]] = {u: {name: NOT_SENT_MARK for name in DSP_STATUS_COLUMNS} for u in ordered}
+
+    for start in range(0, len(ordered), chunk_size):
+        chunk = ordered[start:start + chunk_size]
+        filter_value = ",".join(chunk)
+        try:
+            payload = _query_aeolus_url(
+                AUDIOSALAD_STATUS_URL,
+                [f"{AUDIOSALAD_UPC_FILTER_FIELD}={filter_value}"],
+                top_n=top_n,
+            )
+        except Exception as exc:  # noqa: BLE001 — one failed chunk shouldn't kill the batch
+            print(
+                f"⚠ AudioSalad batch query failed for {len(chunk)} UPCs "
+                f"({type(exc).__name__}: {exc}); marking chunk Not Sent.",
+                flush=True,
+            )
+            continue
+
+        # Group returned delivery rows by UPC, then map each group.
+        grouped: Dict[str, List[object]] = {}
+        for row in payload.get("rows") or []:
+            if not isinstance(row, dict):
+                continue
+            row_upc = str(row.get(AUDIOSALAD_UPC_FILTER_FIELD) or "").strip()
+            if row_upc in result:
+                grouped.setdefault(row_upc, []).append(row)
+
+        for row_upc, group_rows in grouped.items():
+            result[row_upc] = _map_audiosalad_rows_to_statuses(group_rows)
+
+        total_rows = payload.get("total")
+        if isinstance(total_rows, int) and total_rows >= top_n:
+            print(
+                f"⚠ AudioSalad batch hit top_n={top_n} (total={total_rows}); "
+                f"some delivery rows may be missing. Consider reducing chunk_size.",
+                flush=True,
+            )
+
+    return result
 
 
 def query_dsp_statuses(row: Sequence[object]) -> Dict[str, str]:
@@ -257,41 +413,120 @@ def query_dsp_statuses(row: Sequence[object]) -> Dict[str, str]:
 
 def run(dry_run: bool = False) -> Dict[str, int]:
     _header, rows, skipped = read_rows_to_process()
+    total = len(rows)
+    upcs_filled = 0
     queried = 0
     written = 0
-    upcs_filled = 0
+    row_errors = 0
 
-    for row_num, row in rows:
-        original_upc = _cell(row, UPC_COLUMN)
-        updates: List[Tuple[str, str]] = []
+    if not rows:
+        summary = {
+            "rows_to_process": 0,
+            "skipped_fully_delivered": skipped,
+            "queried_rows": 0,
+            "upcs_filled": 0,
+            "written_cells": 0,
+            "row_errors": 0,
+        }
+        print(json.dumps(summary, ensure_ascii=False, indent=2), flush=True)
+        return summary
 
-        # If the row is ISRC-only, resolve UPC once, write it back to column J,
-        # and reuse the resolved value for the normal AudioSalad status lookup.
-        if not original_upc and _cell(row, ISRC_COLUMN):
-            resolved_upc = lookup_upc_by_isrc(_cell(row, ISRC_COLUMN))
-            if resolved_upc:
-                j_idx = _col_index(UPC_COLUMN)
-                if len(row) <= j_idx:
-                    row.extend([""] * (j_idx + 1 - len(row)))
-                row[j_idx] = resolved_upc
-                updates.append((f"{UPC_COLUMN}{row_num}", resolved_upc))
-                upcs_filled += 1
+    # ------------------------------------------------------------------
+    # Pass 1: resolve missing UPCs from ISRC (column K → column J).
+    # ------------------------------------------------------------------
+    # The UPC that will be queried for each row: existing J value, or the
+    # value resolved via the ISRC lookup dashboard.
+    row_upcs: List[str] = []
+    upc_fill_cells: List[Tuple[int, str]] = []  # (sheet_row_number, resolved_upc)
+    for idx, (row_num, row) in enumerate(rows, start=1):
+        upc = _cell(row, UPC_COLUMN)
+        if not upc:
+            isrc = _cell(row, ISRC_COLUMN)
+            if isrc:
+                try:
+                    upc = lookup_upc_by_isrc(isrc)
+                except Exception as exc:  # noqa: BLE001
+                    row_errors += 1
+                    print(
+                        f"[{idx}/{total}] row {row_num}: ISRC→UPC lookup failed "
+                        f"({type(exc).__name__}: {exc}); continuing without UPC.",
+                        flush=True,
+                    )
+                    upc = ""
+                if upc:
+                    j_idx = _col_index(UPC_COLUMN)
+                    if len(row) <= j_idx:
+                        row.extend([""] * (j_idx + 1 - len(row)))
+                    row[j_idx] = upc
+                    upc_fill_cells.append((row_num, upc))
+                    upcs_filled += 1
+        row_upcs.append(upc)
 
-        statuses = query_dsp_statuses(row)
-        queried += 1
-        updates.extend(build_status_updates(row_num, statuses))
+    # ------------------------------------------------------------------
+    # Pass 2: batch-query AudioSalad delivery status for all UPCs.
+    # ------------------------------------------------------------------
+    unique_upcs = [u for u in dict.fromkeys(row_upcs) if u]
+    print(
+        f"Querying AudioSalad delivery status for {len(unique_upcs)} unique UPCs "
+        f"({total} rows, {upcs_filled} UPCs filled from ISRC)...",
+        flush=True,
+    )
+    upc_statuses = query_audiosalad_statuses_batch(unique_upcs)
+    queried = sum(1 for u in row_upcs if u)
 
-        if dry_run:
-            written += len(updates)
-            continue
-        written += write_status_updates(updates)
+    # ------------------------------------------------------------------
+    # Pass 3: build all cell writes and batch them.
+    # ------------------------------------------------------------------
+    # Each row writes its six DSP statuses as one contiguous range P{row}:U{row}.
+    # UPC fills (column J) are separate single-cell ranges.  TikTok column O is
+    # never touched.
+    value_ranges: List[Dict[str, object]] = []
+    for (row_num, _row), upc in zip(rows, row_upcs):
+        statuses = upc_statuses.get(upc) if upc else None
+        if statuses is None:
+            statuses = {name: NOT_SENT_MARK for name in DSP_STATUS_COLUMNS}
+        dsp_order = tuple(DSP_STATUS_COLUMNS.keys())  # spotify, facebook, ...
+        dsp_values = [str(statuses.get(name, NOT_SENT_MARK)) for name in dsp_order]
+        value_ranges.append({
+            "range": f"{DSP_STATUS_SHEET_ID}!{DSP_STATUS_COLUMN_LETTERS[0]}{row_num}:{DSP_STATUS_COLUMN_LETTERS[-1]}{row_num}",
+            "values": [dsp_values],
+        })
+    for row_num, upc_value in upc_fill_cells:
+        value_ranges.append({
+            "range": f"{DSP_STATUS_SHEET_ID}!{UPC_COLUMN}{row_num}:{UPC_COLUMN}{row_num}",
+            "values": [[upc_value]],
+        })
+
+    if dry_run:
+        written = len(value_ranges)
+        print(f"(dry-run) would write {written} range(s).", flush=True)
+    else:
+        # Write each range individually via the working single-range PUT
+        # endpoint. Each row's six DSP statuses are one contiguous range
+        # P{row}:U{row}, so this is 1 API call per row (not 6). UPC fills are
+        # single-cell ranges. TikTok column O is never touched.
+        for idx, vr in enumerate(value_ranges, start=1):
+            a1_range = str(vr["range"]).split("!", 1)[1] if "!" in str(vr["range"]) else str(vr["range"])
+            try:
+                sheet_values_api("PUT", DSP_STATUS_SHEET_URL, DSP_STATUS_SHEET_ID, a1_range, values=vr["values"])
+                written += 1
+            except Exception as exc:  # noqa: BLE001
+                row_errors += 1
+                print(
+                    f"⚠ write failed for range {a1_range} "
+                    f"({type(exc).__name__}: {str(exc)[:200]}); continuing.",
+                    flush=True,
+                )
+            if idx % 50 == 0:
+                print(f"  wrote {idx}/{len(value_ranges)} ranges...", flush=True)
 
     summary = {
-        "rows_to_process": len(rows),
+        "rows_to_process": total,
         "skipped_fully_delivered": skipped,
         "queried_rows": queried,
         "upcs_filled": upcs_filled,
-        "written_cells": written,
+        "written_ranges": written,
+        "row_errors": row_errors,
     }
     print(json.dumps(summary, ensure_ascii=False, indent=2), flush=True)
     return summary
