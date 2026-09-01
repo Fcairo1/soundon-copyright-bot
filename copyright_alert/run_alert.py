@@ -38,7 +38,14 @@ def _load_local_lark_secret():
             return value
 
     here = Path(__file__).resolve().parent
-    for candidate in (here / ".env", here / "secrets.json"):
+    repo_root = here.parent
+    for candidate in (
+        here / ".env",
+        repo_root / ".env",
+        repo_root / "code" / "soundon-copyright-bot" / ".env",
+        here / "secrets.json",
+        repo_root / "secrets.json",
+    ):
         if not candidate.exists():
             continue
         try:

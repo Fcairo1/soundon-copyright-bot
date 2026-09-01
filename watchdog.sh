@@ -1,13 +1,21 @@
 #!/usr/bin/env bash
 set -u
 
-BOT_DIR="/workspace/iris_ddc11f6d-0341-45c3-a7d8-42c5bc34776c/soundon-copyright-bot"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BOT_DIR="$SCRIPT_DIR"
 DAEMON_SCRIPT="$BOT_DIR/copyright_alert/persistent_callback.py"
 RUNTIME_DIR="$BOT_DIR/runtime"
 LOG_DIR="$BOT_DIR/logs"
 DAEMON_OUT="$RUNTIME_DIR/persistent_callback.out"
 PID_FILE="$RUNTIME_DIR/persistent_callback.pid"
 LOCK_DIR="$RUNTIME_DIR/watchdog.lock"
+ENV_FILE=""
+for candidate in "$BOT_DIR/.env" "$BOT_DIR/code/soundon-copyright-bot/.env" "$BOT_DIR/copyright_alert/.env"; do
+  if [ -f "$candidate" ]; then
+    ENV_FILE="$candidate"
+    break
+  fi
+done
 
 BOT_APP_ID="cli_aa94690b12b81cde"
 FILIPE_OPEN_ID="ou_dec135cea21446b576b21d911df61f53"
@@ -24,7 +32,7 @@ fi
 trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
 
 is_daemon_alive() {
-  pgrep -f "persistent_callback\.py" >/dev/null 2>&1
+  pgrep -f "$DAEMON_SCRIPT" >/dev/null 2>&1
 }
 
 load_bot_secret() {
@@ -41,8 +49,8 @@ load_bot_secret() {
     return 0
   fi
 
-  for env_file in "$BOT_DIR/.env" "$BOT_DIR/copyright_alert/.env"; do
-    if [ -f "$env_file" ]; then
+  for env_file in "$ENV_FILE" "$BOT_DIR/.env" "$BOT_DIR/code/soundon-copyright-bot/.env" "$BOT_DIR/copyright_alert/.env"; do
+    if [ -n "$env_file" ] && [ -f "$env_file" ]; then
       secret_line=$(grep -E '^(BOT_SECRET|LARK_APP_SECRET|APP_SECRET|app_secret)=' "$env_file" | tail -n 1 || true)
       if [ -n "$secret_line" ]; then
         secret=${secret_line#*=}
@@ -105,6 +113,12 @@ if is_daemon_alive; then
 fi
 
 cd "$BOT_DIR" || exit 1
+if [ -n "$ENV_FILE" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$ENV_FILE"
+  set +a
+fi
 nohup python3 "$DAEMON_SCRIPT" >> "$DAEMON_OUT" 2>&1 &
 new_pid=$!
 printf '%s\n' "$new_pid" > "$PID_FILE"
