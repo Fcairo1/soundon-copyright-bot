@@ -791,6 +791,7 @@ AEOLUS_FRIENDLY_FIELDS = [
     "bd_manager_list",
     "operation_manager_list",
     "uid",
+    "user_name",
     "p_date",
 ]
 
@@ -867,7 +868,7 @@ def batch_query_aeolus_by_upc(upcs, chunk_size=40):
         sql = (
             "SELECT `[upc]`, `[isrc]`, `[album_title]`, `[user_region]`, "
             "`[source_type_name]`, `[User Tier]`, `[display_artist]`, "
-            "`[bd_manager_list]`, `[operation_manager_list]`, `[user_id]` AS uid, `[p_date]` "
+            "`[bd_manager_list]`, `[operation_manager_list]`, `[user_id]` AS uid, `[user_name]`, `[p_date]` "
             "FROM `[[AOP] Song Dimension]` "
             f"WHERE `[upc]` IN ({in_list}) AND `[p_date]` >= '{recent_cutoff}' "
             "ORDER BY `[p_date]` DESC"
@@ -941,7 +942,7 @@ def _resolve_engagement_partition(force=False):
 def batch_query_engagement_by_upc(upcs, chunk_size=40):
     """Batch query Aeolus engagement dataset by UPC.
 
-    Returns a dict keyed by UPC: {upc: {"uid", "tt_30d_vv", "sptf_30d_str"}}.
+    Returns a dict keyed by UPC: {upc: {"uid", "user_name", "tt_30d_vv", "sptf_30d_str"}}.
     Backward-compatible: any failure / timeout / parse error yields an empty
     mapping so callers fall back to "N/A" without breaking the workflow.
     """
@@ -967,13 +968,13 @@ def batch_query_engagement_by_upc(upcs, chunk_size=40):
             chunk_no = idx // chunk_size + 1
             in_list = ", ".join(f"'{_aeolus_sql_quote(v)}'" for v in chunk)
             sql = (
-                "SELECT `[album_upc]` AS upc, `[user_id]`, "
+                "SELECT `[album_upc]` AS upc, `[user_id]`, `[user_name]`, "
                 "SUM(`[tt_nonspam_item_vv_30d]`) AS tt_30d_vv, "
                 "SUM(`[api_sptf_play_cnt_30d]`) AS sptf_30d_str "
                 f"FROM `{ENGAGEMENT_TABLE}` "
                 f"WHERE `[album_upc]` IN ({in_list}) "
                 f"AND `[p_date]` = '{partition}' "
-                "GROUP BY `[album_upc]`, `[user_id]`"
+                "GROUP BY `[album_upc]`, `[user_id]`, `[user_name]`"
             )
             print(f"  Engagement batch chunk {chunk_no}/{total_chunks}: querying {len(chunk)} UPC(s)")
             try:
@@ -994,6 +995,7 @@ def batch_query_engagement_by_upc(upcs, chunk_size=40):
                     continue
                 results[upc] = {
                     "uid": row.get("user_id") if row.get("user_id") not in (None, "") else "N/A",
+                    "user_name": row.get("user_name") if row.get("user_name") not in (None, "") else "N/A",
                     "tt_30d_vv": row.get("tt_30d_vv") if row.get("tt_30d_vv") is not None else "N/A",
                     "sptf_30d_str": row.get("sptf_30d_str") if row.get("sptf_30d_str") is not None else "N/A",
                 }
@@ -1021,7 +1023,11 @@ def enrich_with_engagement_once(ar):
     """
     if not isinstance(ar, dict):
         return ar
-    if _has_engagement_value(ar.get("tt_30d_vv")) and _has_engagement_value(ar.get("sptf_30d_str")):
+    if (
+        _has_engagement_value(ar.get("tt_30d_vv"))
+        and _has_engagement_value(ar.get("sptf_30d_str"))
+        and _has_engagement_value(ar.get("user_name"))
+    ):
         return ar
     upc = str(ar.get("upc") or "").strip()
     if not upc or upc == "N/A":
@@ -1031,7 +1037,12 @@ def enrich_with_engagement_once(ar):
     except Exception as e:
         print(f"  ✗ Engagement lookup raised for UPC {upc}, falling back to N/A: {e}")
         eng = {}
-    return {**ar, **eng} if eng else ar
+    if not eng:
+        return ar
+    merged = {**ar, **eng}
+    if _has_engagement_value(ar.get("user_name")) and not _has_engagement_value(eng.get("user_name")):
+        merged["user_name"] = ar.get("user_name")
+    return merged
 
 
 def query_aeolus(identifier, id_type="upc"):
@@ -1059,7 +1070,7 @@ def query_aeolus(identifier, id_type="upc"):
     sql = (
         "SELECT `[upc]`, `[isrc]`, `[album_title]`, `[user_region]`, "
         "`[source_type_name]`, `[User Tier]`, `[display_artist]`, "
-        "`[bd_manager_list]`, `[operation_manager_list]`, `[user_id]` AS uid, `[p_date]` "
+        "`[bd_manager_list]`, `[operation_manager_list]`, `[user_id]` AS uid, `[user_name]`, `[p_date]` "
         "FROM `[[AOP] Song Dimension]` "
         f"WHERE `[isrc]` = '{_aeolus_sql_quote(identifier)}' "
         f"AND `[p_date]` >= '{recent_cutoff}' "
@@ -1855,6 +1866,7 @@ def main():
 
         print(f"  Querying Aeolus for {lookup_type.upper()} {lookup_id}...")
         ar = query_aeolus(lookup_id, lookup_type)
+        ar = enrich_with_engagement_once(ar)
         if not ar:
             print("  ✗ No Aeolus data found, skipping")
             continue
@@ -1906,6 +1918,7 @@ def main():
                 "isrc": ef.get("isrc", "N/A"),
                 "title": ef.get("title") if ef.get("title") != "N/A" else ar.get("album_title", "N/A"),
                 "artist": _format_artist_names(ar.get("display_artist")),
+                "user_name": ar.get("user_name", "N/A"),
                 "ref_id": ef.get("ref_id", "N/A"),
                 "dsp": ef.get("dsp", "Unknown"),
                 "dsp_confidence": ef.get("dsp_confidence", "low"),

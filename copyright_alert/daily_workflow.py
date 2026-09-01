@@ -55,6 +55,7 @@ from copyright_alert.run_alert import (  # noqa: E402
     fetch_email,
     extract_fields,
     batch_query_aeolus_by_upc,
+    enrich_with_engagement_once,
     qualifies,
     claim_key,
     is_claim_already_posted,
@@ -532,6 +533,7 @@ def run_scan():
         ef = c["ef"]
         upc = str(ef.get("upc", "") or "").strip()
         ar = aeolus_by_upc.get(upc) or {}
+        ar = enrich_with_engagement_once(ar)
 
         if not ar:
             log(f"     ✗ No Aeolus data for UPC {upc} — will retry next run")
@@ -589,6 +591,7 @@ def run_scan():
                 "isrc": ef.get("isrc", "N/A"),
                 "title": ef.get("title") if ef.get("title") != "N/A" else ar.get("album_title", "N/A"),
                 "artist": _format_artist_names(ar.get("display_artist")),
+                "user_name": ar.get("user_name", "N/A"),
                 "ref_id": ef.get("ref_id", "N/A"),
                 "claimant_name": ef.get("claimant_name", "N/A"),
                 "claimant_email": ef.get("claimant_email", "N/A"),
