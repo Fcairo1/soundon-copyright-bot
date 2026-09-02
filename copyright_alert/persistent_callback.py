@@ -981,7 +981,7 @@ def _read_tracker_fresh(region: str):
         "lark-cli", "sheets", "+csv-get",
         "--url", tracker_url,
         "--sheet-id", sheet_id,
-        "--range", "A1:U2000",
+        "--range", "A1:V2000",
         "--max-chars", "200000",
     ]
     # Refresh AIME-injected credentials in-place before spawning lark-cli. The

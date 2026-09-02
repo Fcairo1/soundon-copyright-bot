@@ -1574,7 +1574,7 @@ def append_tracker_row(ef, ar, message_id, status=""):
     snapshot only when a brand-new tracker row is appended. Existing rows are
     never refreshed or overwritten by daily jobs.
 
-    Columns A:U (21):
+    Columns A:V (22):
       A UPC, B ISRC, C Title, D UID, E Source (Aeolus source_type_name, e.g.
       "AP", "A&R", "UG-Paid ads"), F tt_30d_vv, G sptf_30d_str, H Artist(s),
       I DSP, J Claimant, K Email Source, L BD, M Label Manager, N Status,
@@ -1584,7 +1584,11 @@ def append_tracker_row(ef, ar, message_id, status=""):
       both so the daily countdown refresh can find it easily),
       T Email Status (filled in later once a Spotify reply is sent),
       U ref_code (the "ref:_...:ref" claim code parsed from the Spotify
-      email; blank for non-Spotify claims).
+      email; blank for non-Spotify claims),
+      V User Name (Aeolus `user_name` enrichment — the uploader's SoundOn
+      username, when Aeolus has it; blank/"N/A" until that lands for a given
+      UPC. Only populated for rows appended after this column existed —
+      never backfilled onto older rows).
 
     Returns the appended tracker row number on success, else None.
     """
@@ -1618,13 +1622,14 @@ def append_tracker_row(ef, ar, message_id, status=""):
         _tracker_cell(msg_id_str, text=True),  # S Card Message ID (alias of P / Lark Message ID)
         _tracker_cell(""),          # T Email Status (filled after a Spotify reply is sent)
         _tracker_cell(ef.get("ref_id") if ef.get("ref_id") not in (None, "", "N/A") else "", text=True),  # U ref_code
+        _tracker_cell(ar.get("user_name") if ar.get("user_name") not in (None, "", "N/A") else ""),  # V User Name
     ]]
-    assert len(row[0]) == 21, f"Tracker row schema drift: expected 21 cells, got {len(row[0])}"
+    assert len(row[0]) == 22, f"Tracker row schema drift: expected 22 cells, got {len(row[0])}"
 
     next_row = _tracker_next_row()
     if not next_row:
         return None
-    target_range = f"A{next_row}:U{next_row}"
+    target_range = f"A{next_row}:V{next_row}"
     cmd = [
         "lark-cli", "sheets", "+cells-set", "--url", TRACKER_SHEET_URL,
         "--sheet-id", TRACKER_SHEET_ID, "--range", target_range,
