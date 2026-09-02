@@ -351,8 +351,8 @@ def read_tracker_rows(region: str) -> Tuple[List[str], List[Dict[str, str]]]:
         # fully read (the old A1:Q200 both truncated rows and stopped before
         # columns R/S/T). Extended to U so the appended "Spotify Ref Code"
         # column is included in header-keyed records, then to V for the
-        # appended "User Name" column.
-        "A1:V2000",
+        # appended "User Name" column, then to W for "Claimant Email".
+        "A1:W2000",
     ]
     res = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True, timeout=90)
     if res.returncode != 0:
