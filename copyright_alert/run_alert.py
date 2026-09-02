@@ -441,6 +441,13 @@ def detect_email_source(body, subject="", meta=None):
     ])
     if re.search(r"AudioSalad\s+Support|support@audiosalad\.com|AudioSalad", haystack, re.IGNORECASE):
         return "AudioSalad"
+    sender_text = _meta_sender_text(meta)
+    if (
+        re.search(r"ref:_[A-Za-z0-9._]+:ref", body or "")
+        or re.search(r"Spotify Content Protection", f"{subject or ''}\n{body or ''}", re.IGNORECASE)
+        or re.search(r"spotify\.com", sender_text, re.IGNORECASE)
+    ):
+        return "Spotify"
     if re.search(r"Infringement Claim Response", haystack, re.IGNORECASE):
         return "Infringement Claim Response"
     if re.search(r"Content Takedown", haystack, re.IGNORECASE):
