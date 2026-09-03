@@ -601,6 +601,11 @@ def extract_fields(body, subject, meta):
         if claimant_line:
             claimant_name = claimant_line
 
+    if claimant_email == "N/A" and fields["email_source"] == "AudioSalad":
+        match = re.search(r"Original claim details:.*?Claimant:\s*([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})", body, re.IGNORECASE | re.DOTALL)
+        if match:
+            claimant_email = match.group(1)
+
     if claimant_email == "N/A":
         claimant_email = first(body, r"([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})")
 
@@ -644,6 +649,17 @@ def extract_fields(body, subject, meta):
         msg = first(body,
             r"Additional info:\s*(.+?)(?:\n\s*\*--\*|\n\s*If you accept the claim|\n\s*-{2,}\s*Original Message|\Z)",
         )
+
+    if fields["email_source"] == "AudioSalad":
+        match = re.search(r"(?:Original claim details:|Additional info:)(.*?)\s*--\s*(?:If you accept|\Z)", body, re.IGNORECASE | re.DOTALL)
+        if match:
+            extracted = match.group(1)
+            extracted = re.sub(r"Claimant:\s*[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}\s*", "", extracted, flags=re.IGNORECASE)
+            extracted = re.sub(r"Infringing URLs:\s*(?:https?://\S+\s*)*", "", extracted, flags=re.IGNORECASE)
+            extracted = extracted.strip()
+            if extracted:
+                msg = extracted
+
     fields["claimant_message"] = _clean_email_value(msg) if msg != "N/A" else "no message"
 
     # Ref ID (ref:_ ... :ref)

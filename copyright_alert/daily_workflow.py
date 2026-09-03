@@ -422,8 +422,8 @@ def _parse_candidate(msg_id, subject, date, thread_id, seen_threads, summary):
     isrc = ef.get("isrc", "")
     log(f"     UPC={upc or 'N/A'} ISRC={isrc}")
 
-    if not upc or upc == "N/A":
-        log("     ✗ No UPC, skipping")
+    if (not upc or upc == "N/A") and (not isrc or isrc == "N/A"):
+        log("     ✗ No UPC or ISRC, skipping")
         summary["skipped_no_identifier"] += 1
         return ("skip", "no identifier")
 
@@ -527,12 +527,21 @@ def run_scan():
     summary["unique_upcs"] = len(aeolus_by_upc)
     summary["engagement_upcs"] = 0
 
+    from copyright_alert.run_alert import query_aeolus
     for c in candidates:
         msg_id = c["message_id"]
         subject = c["subject"]
         ef = c["ef"]
         upc = str(ef.get("upc", "") or "").strip()
+        isrc = str(ef.get("isrc", "") or "").strip()
         ar = aeolus_by_upc.get(upc) or {}
+
+        if not ar and (not upc or upc == "N/A") and isrc and isrc != "N/A":
+            ar = query_aeolus(isrc, "isrc")
+            if ar and ar.get("upc") and ar.get("upc") != "N/A":
+                upc = str(ar.get("upc")).strip()
+                ef["upc"] = upc
+
         ar = enrich_with_engagement_once(ar)
 
         if not ar:
