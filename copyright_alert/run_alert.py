@@ -42,7 +42,6 @@ def _load_local_lark_secret():
     for candidate in (
         here / ".env",
         repo_root / ".env",
-        repo_root / "code" / "soundon-copyright-bot" / ".env",
         here / "secrets.json",
         repo_root / "secrets.json",
     ):
