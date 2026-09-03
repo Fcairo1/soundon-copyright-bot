@@ -103,6 +103,11 @@ METADATA_NOTICE_QUERIES = [
 # from the retry list, so a message that will never succeed is not re-processed
 # on every run forever.
 MAX_RETRY_ATTEMPTS = 5
+# Lark only allows interactive-message PATCH within 14 days. Do not create
+# replacement group cards for older claims — that creates duplicate alerts for
+# already-notified UPCs. Expired cards are left in place and only newer cards
+# remain eligible for daily countdown PATCH refreshes.
+MAX_LARK_CARD_PATCH_AGE_DAYS = 14
 ACTIVE_REGION = "BR"  # region this workflow run is configured for
 RECIPIENT_EMAIL = "filipe.cairo@bytedance.com"  # filipe.cairo — personal alert DM target (BR default)
 RECIPIENT_OPEN_ID = ""  # when set, ops DMs go to this open_id via the copyright bot
@@ -1373,6 +1378,13 @@ def countdown_refresh(values):
         detected = parse_detected_date(_cell(row, idx["date"]))
         if detected is None:
             continue
+        card_age_days = (today - detected).days
+        if card_age_days >= MAX_LARK_CARD_PATCH_AGE_DAYS:
+            log(
+                f"  ℹ Skipping row {row_num}: card {card_msg_id} is {card_age_days} day(s) old; "
+                "Lark no longer allows PATCH after 14 days."
+            )
+            continue
         days_remaining = business_days_remaining_brt(detected)
         attempted += 1
         # Prefer the exact persisted card (lossless). The GET messages API only
@@ -1390,9 +1402,10 @@ def countdown_refresh(values):
             if ok:
                 refreshed += 1
                 continue
-            replacement_id = _replace_card_message_via_lark_cli(card_msg_id, patched, row_num=row_num, idx=idx)
-            log(f"  ✓ Countdown replacement posted for row {row_num}: {card_msg_id} → {replacement_id}")
-            refreshed += 1
+            log(
+                f"  ⚠ Countdown refresh skipped for row {row_num}: "
+                f"PATCH failed for {card_msg_id}; no replacement card will be posted."
+            )
         except Exception as exc:
             log(f"  ✗ Countdown patch error for {card_msg_id}: {exc!r}")
     log(f"  Countdown refresh: {refreshed} updated / {attempted} open cards.")
