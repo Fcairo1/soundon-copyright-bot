@@ -69,6 +69,12 @@ REGION_CONFIGS = {
         "scan_cron": "0 0 20 * * 1-5",
         "scan_local_tz": "America/Sao_Paulo",
         "scan_local_label": "09:00 BRT",
+        "ops_watcher_sheet_url": "https://bytedance.sg.larkoffice.com/sheets/Nha3skEx8hN9UxtZOV2lOUAEgEg?view_id=temp_XTsKsh4cl7",
+        "ops_watcher_sheet_id": "a48f2e",
+        "ops_watcher_sheet_range": "A:O",
+        "ops_watcher_cron": "0 0 20 * * 1-5",
+        "ops_watcher_local_tz": "America/Sao_Paulo",
+        "ops_watcher_local_label": "09:00 BRT",
     },
     "US": {
         "chat_id": "oc_e85373716ee746e3dc1bf999929cf1c4",
