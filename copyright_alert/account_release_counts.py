@@ -22,7 +22,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from copyright_alert import run_alert as ra  # noqa: E402
-from copyright_alert.lark_auth import extract_sheet_values, sheet_values_api, sheet_values_batch_update  # noqa: E402
+from copyright_alert.lark_auth import extract_sheet_values, sheet_values_api  # noqa: E402
 
 BRT = ZoneInfo("America/Sao_Paulo")
 RELEASE_COUNTS_SHEET_TOKEN_ENV = "RELEASE_COUNTS_SHEET_TOKEN"
@@ -214,8 +214,8 @@ def upsert_release_count_row(counts: Dict[str, object], *, dry_run: bool = True)
     inspected = inspect_release_count_rows(read_release_count_sheet(sheet_url, sheet_id, cell_range))
     existing = inspected["existing"]
     if uid in existing:
-        value_ranges = build_partial_update_ranges(sheet_id, existing[uid], row)
-        sheet_values_batch_update(sheet_url, value_ranges)
+        for value_range in build_partial_update_ranges(sheet_id, existing[uid], row):
+            sheet_values_api("PUT", sheet_url, sheet_id, value_range["range"].split("!", 1)[1], values=value_range["values"])
         return {"dry_run": False, "action": "update", "row_number": existing[uid], "row": row}
 
     next_row = inspected["first_empty_row"]
