@@ -1874,6 +1874,35 @@ def patch_card_message(message_id, card):
         print(f"  ⚠ Patch failed: {e}")
         return False
 
+def update_account_release_counts_for_claim(ar):
+    """Best-effort account release-count upsert for a newly posted claim.
+
+    The shared release-count sheet is intentionally disabled until its target is
+    configured via RELEASE_COUNTS_SHEET_TOKEN/URL and RELEASE_COUNTS_SHEET_ID.
+    """
+    uid = str((ar or {}).get("uid") or "").strip()
+    if not uid or uid == "N/A":
+        print("  ℹ Release-count update skipped: Aeolus row has no uid")
+        return None
+    has_sheet_target = (os.getenv("RELEASE_COUNTS_SHEET_TOKEN") or os.getenv("RELEASE_COUNTS_SHEET_URL")) and os.getenv("RELEASE_COUNTS_SHEET_ID")
+    if not has_sheet_target:
+        print("  ℹ Release-count update skipped: RELEASE_COUNTS_SHEET_TOKEN/URL and RELEASE_COUNTS_SHEET_ID are not configured")
+        return None
+    try:
+        from copyright_alert.account_release_counts import query_account_release_counts, upsert_release_count_row
+
+        counts = query_account_release_counts(uid)
+        if not counts:
+            print(f"  ⚠ Release-count update skipped: no counts returned for uid={uid}")
+            return None
+        result = upsert_release_count_row(counts, dry_run=False)
+        print(f"  ✓ Release-count sheet {result.get('action')} for uid={uid} row={result.get('row_number')}")
+        return result
+    except Exception as exc:
+        print(f"  ⚠ Release-count update failed for uid={uid}: {exc}")
+        return None
+
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
@@ -1953,6 +1982,7 @@ def main():
                 json.dump(card, f, indent=2)
             patch_card_message(posted_message_id, card)
             tracker_row = append_tracker_row(ef, ar, posted_message_id, status="")
+            update_account_release_counts_for_claim(ar)
             _save_posted_claim(duplicate_key, {
                 "message_id": posted_message_id,
                 "source_email_message_id": msg_id,
