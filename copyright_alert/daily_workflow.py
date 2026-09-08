@@ -610,6 +610,7 @@ def run_scan():
                 "claimant_name": ef.get("claimant_name", "N/A"),
                 "claimant_email": ef.get("claimant_email", "N/A"),
                 "possible_content_id_release_request": bool(ef.get("possible_content_id_release_request")),
+                "possible_non_claim_notice": bool(ef.get("possible_non_claim_notice")),
                 "region": ACTIVE_REGION,
                 "tracker_row": tracker_row,
                 "chat_id": TARGET_CHAT_ID,
