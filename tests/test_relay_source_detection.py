@@ -1,5 +1,6 @@
 from copyright_alert.run_alert import (
     NON_CLAIM_RELAY_NOTICE_WARNING,
+    _extract_copyright_infringement_submission,
     build_card,
     detect_email_source,
     extract_fields,
@@ -49,6 +50,25 @@ def test_audiosalad_detected_from_infringement_address_not_just_support():
     meta = {"from": "infringement@audiosalad.com"}
     source = detect_email_source("We have received an infringement claim for your content.", "Infringement Claim: SoundCloud - UPC 5063965208763 - SoundOn", meta)
     assert source == "AudioSalad"
+
+
+def test_audiosalad_domain_check_does_not_collide_with_lookalike_domain():
+    # "audiosalad.company.net" shares the "audiosalad.com" prefix but is a
+    # different domain entirely — must not be mistaken for the real relay.
+    meta = {"from": "someone@audiosalad.company.net"}
+    body = "This is an unrelated email with no relay signature."
+    source = detect_email_source(body, "Some other subject", meta)
+    assert source != "AudioSalad"
+
+
+def test_fuga_bare_word_ignores_body_text():
+    # A claim body/title could legitimately contain "FUGA" in caps (common in
+    # Brazilian funk track/artist naming); the bare-word fallback must not
+    # scan body text, only sender/subject.
+    meta = {"from": "infringement-claim-response@spotify.com"}
+    body = "Additional info: TRACK TITLE FUGA DO GUETO by MC EXAMPLE."
+    source = detect_email_source(body, "Possibly Infringing - Notification Warning No 1", meta)
+    assert source != "FUGA"
 
 
 # --- Non-claim relay notices (e.g. FUGA's streaming report) -----------------
@@ -134,6 +154,20 @@ def test_nested_submission_fills_company_from_glued_label_line():
 def test_nested_submission_fills_title_from_unrecognized_label():
     fields = extract_fields(AUDIOSALAD_NESTED_SUBMISSION_BODY, "Infringement Claim: YouTube - 5063970532365 - SoundOn", {})
     assert fields["title"] == "Example Track Name"
+
+
+def test_nested_submission_ignores_an_earlier_unrelated_from_email_pair():
+    # A forwarded chain can carry an earlier, unrelated "From:"/"Email:" pair
+    # (e.g. a quoted header block) before the actual sub-form. The parser
+    # must scope to the sub-form marker, not grab the first pair in the body.
+    body_with_earlier_header = (
+        "From: no-reply@some-other-system.com\n"
+        "Email: not-the-claimant@some-other-system.com\n"
+        "\n" + AUDIOSALAD_NESTED_SUBMISSION_BODY
+    )
+    overrides = _extract_copyright_infringement_submission(body_with_earlier_header)
+    assert overrides["claimant_email"] == "alyssa.defonte@example.com"
+    assert overrides["claimant_name"] == "Alyssa DeFonte"
 
 
 def test_nested_submission_does_not_overwrite_a_value_already_found():
