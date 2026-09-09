@@ -439,9 +439,37 @@ def detect_email_source(body, subject="", meta=None):
         meta.get("from", "") or meta.get("sender", ""),
         body or "",
     ])
-    if re.search(r"AudioSalad\s+Support|support@audiosalad\.com|AudioSalad", haystack, re.IGNORECASE):
-        return "AudioSalad"
     sender_text = _meta_sender_text(meta)
+    content_text = f"{subject or ''}\n{body or ''}"
+    # AudioSalad relays claims from more than one address at the same domain
+    # (support@, infringement@, and likely more as it takes on more DSPs —
+    # it's replacing FUGA as the primary relay). Match the domain generally
+    # rather than one specific local-part. The bare-word fallback below
+    # deliberately checks subject/body only (content_text), not the raw
+    # sender address: a lookalike domain like "audiosalad.company.net" still
+    # contains "audiosalad" as a substring, and haystack (which folds the raw
+    # "from" header in) would let that collide with the real relay.
+    if (
+        re.search(r"@audiosalad\.com\b", sender_text, re.IGNORECASE)
+        or re.search(r"AudioSalad\s+Support|AudioSalad", content_text, re.IGNORECASE)
+    ):
+        return "AudioSalad"
+    # FUGA relays claims (and non-claim notices — see
+    # is_possible_non_claim_relay_notice below) for DSPs including Apple and
+    # Amazon. Its volume is shrinking as AudioSalad takes over, but it still
+    # shows up occasionally, and without this check those claims fell through
+    # to "Other". Case-sensitive on purpose: lowercase "fuga" is an ordinary
+    # Portuguese/Spanish/Italian word ("flight/escape") that can legitimately
+    # appear in a claim description; the company name is always written caps.
+    # The bare-word fallback is scoped to sender/subject only (not the full
+    # body) — claim bodies here are full of ALL-CAPS Brazilian track/artist
+    # names, so scanning body text for a bare "FUGA" risks a false positive
+    # the sender-domain check above doesn't have.
+    if (
+        re.search(r"@fuga\.com\b", sender_text, re.IGNORECASE)
+        or re.search(r"\bFUGA\b", f"{subject or ''}\n{sender_text}")
+    ):
+        return "FUGA"
     if (
         re.search(r"ref:_[A-Za-z0-9._]+:ref", body or "")
         or re.search(r"Spotify Content Protection", f"{subject or ''}\n{body or ''}", re.IGNORECASE)
@@ -562,11 +590,104 @@ def is_possible_content_id_release_request(text):
     return False
 
 
+NON_CLAIM_RELAY_NOTICE_WARNING = (
+    "⚠️ This looks like an informational relay notice, not an infringement claim — verify before actioning"
+)
+
+
+def is_possible_non_claim_relay_notice(subject, body=""):
+    """Detect informational notices from a claims relay (FUGA, AudioSalad,
+    etc.) that are NOT actual infringement claims — e.g. FUGA's periodic
+    "Apple Music Artificial Streaming Report". These have no claimant and
+    nothing to dispute; forcing them through claim extraction produces a
+    blank/garbage card.
+
+    Matches on the subject line, which has been a reliable, distinct marker
+    on every non-claim relay notice observed so far ("... Streaming Report
+    [date range]"). Body text is deliberately NOT used as a signal here: the
+    streaming-report body still uses the word "infringement" in passing
+    ("...to mitigate illegitimate activity and copyright infringement..."),
+    so a body-keyword guard would misfire on the very case this is meant to
+    catch. As more DSPs move onto AudioSalad, watch for other relay-notice
+    subject patterns and add them here.
+    """
+    subject_text = subject or ""
+    if re.search(r"\b(artificial\s+)?streaming\s+report\b", subject_text, re.IGNORECASE):
+        return True
+    if re.search(r"\b(royalty|analytics)\s+report\b", subject_text, re.IGNORECASE):
+        return True
+    return False
+
+
+def _extract_copyright_infringement_submission(body):
+    """Parse the nested "Copyright Infringement Submission" sub-form seen in
+    some AudioSalad-relayed claims (observed on a real YouTube/Kobalt claim).
+    Its labels aren't in _FIELD_LABELS, and the "From :X Email: Y Company: Z"
+    run often arrives glued together with no whitespace between values —
+    which also defeats _normalized_body's "insert a newline before a known
+    label" pass, since that requires whitespace before the label. Rather than
+    loosen that shared normalization (risking regressions on every other
+    template), parse this specific sub-form directly and only fill in fields
+    the generic extraction still left as "N/A".
+
+    Returns a dict of overrides; empty when the sub-form marker isn't present.
+    """
+    overrides = {}
+    marker = "Copyright Infringement Submission"
+    marker_idx = body.find(marker) if body else -1
+    if marker_idx == -1:
+        return overrides
+    # Scope every regex below to text starting at the sub-form marker, not
+    # the whole body — a forwarded chain can carry an earlier, unrelated
+    # "From:"/"Email:" pair (e.g. a quoted header block) that the original
+    # whole-body search could match instead of the sub-form's own fields.
+    sub_body = body[marker_idx:]
+
+    stop_labels = r"Company|Name of track|Link to infringed|Name of copyright|More detail"
+
+    name_m = re.search(r"From\s*:\s*(.*?)Email\s*:", sub_body, re.IGNORECASE | re.DOTALL)
+    if name_m and name_m.group(1).strip():
+        overrides["claimant_name"] = name_m.group(1).strip()
+
+    # Bound the search to the text before the next known label FIRST, then
+    # look for an email shape inside that bounded chunk. Without this, the
+    # email's greedy TLD character class (`[a-zA-Z]{2,}`) has no letter-based
+    # reason to stop at ".com" when "Company" is glued directly onto it with
+    # no separator (a real observed case: "...example.comCompany: ...") — it
+    # would swallow "comCompany" as if it were part of the address.
+    email_chunk_m = re.search(rf"Email\s*:\s*(.*?)(?={stop_labels}|\Z)", sub_body, re.IGNORECASE | re.DOTALL)
+    if email_chunk_m:
+        email_m = re.search(r"([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})", email_chunk_m.group(1))
+        if email_m:
+            overrides["claimant_email"] = email_m.group(1)
+    company_m = re.search(rf"Company\s*:\s*(.*?)(?={stop_labels}|\Z)", sub_body, re.IGNORECASE | re.DOTALL)
+    if company_m and company_m.group(1).strip():
+        overrides["claimant_company"] = company_m.group(1).strip()
+    else:
+        owner_m = re.search(rf"Name of copyright owner\s*:\s*(.*?)(?={stop_labels}|\Z)", sub_body, re.IGNORECASE | re.DOTALL)
+        if owner_m and owner_m.group(1).strip():
+            overrides["claimant_company"] = owner_m.group(1).strip()
+
+    title_m = re.search(
+        rf"Name of track / video you would like us to take down\s*:\s*(.*?)(?={stop_labels}|\Z)",
+        sub_body, re.IGNORECASE | re.DOTALL,
+    )
+    if title_m and title_m.group(1).strip():
+        overrides["title"] = title_m.group(1).strip()
+
+    detail_m = re.search(r"More detail\s*:\s*(.*?)(?=Google Ad Fields|--\s*If you accept|\Z)", sub_body, re.IGNORECASE | re.DOTALL)
+    if detail_m and detail_m.group(1).strip():
+        overrides["claimant_message"] = detail_m.group(1).strip()
+
+    return overrides
+
+
 def extract_fields(body, subject, meta):
     """Extract all needed fields from email body + subject."""
     fields = {}
     fields["email_source"] = detect_email_source(body, subject, meta)
     fields["possible_content_id_release_request"] = is_possible_content_id_release_request(body)
+    fields["possible_non_claim_notice"] = is_possible_non_claim_relay_notice(subject, body)
 
     # UPC — from subject first, then body
     fields["upc"] = first(subject, r"UPC\s*[:\-]?\s*(\d{10,13})")
@@ -687,6 +808,15 @@ def extract_fields(body, subject, meta):
             fields["dsp"] = explicit_dsp.strip() or "Unknown"
             fields["dsp_confidence"] = "low"
     fields["date_received"] = meta.get("date_formatted", "N/A")
+
+    # Fill in anything the generic extraction still missed from the nested
+    # "Copyright Infringement Submission" sub-form (see docstring above).
+    # Never overwrite a value the generic pass already found.
+    sub_overrides = _extract_copyright_infringement_submission(body)
+    for key, value in sub_overrides.items():
+        current = fields.get(key, "N/A")
+        if current in ("N/A", "no message"):
+            fields[key] = _clean_email_value(value)
 
     return fields
 
@@ -1300,8 +1430,13 @@ def build_card(
     ops_dm_chat_id_value = ops_dm_chat_id or ef.get("ops_dm_chat_id", "") or ops_ctx.get("ops_dm_chat_id", "")
     warning_elements = []
     if ef.get("possible_content_id_release_request"):
-        warning_elements = [
+        warning_elements += [
             {"tag": "div", "text": {"tag": "lark_md", "content": f"**Note:** {CONTENT_ID_DISPUTE_WARNING}"}},
+            {"tag": "hr"},
+        ]
+    if ef.get("possible_non_claim_notice"):
+        warning_elements += [
+            {"tag": "div", "text": {"tag": "lark_md", "content": f"**Note:** {NON_CLAIM_RELAY_NOTICE_WARNING}"}},
             {"tag": "hr"},
         ]
 
@@ -1998,6 +2133,7 @@ def main():
                 "claimant_name": ef.get("claimant_name", "N/A"),
                 "claimant_email": ef.get("claimant_email", "N/A"),
                 "possible_content_id_release_request": bool(ef.get("possible_content_id_release_request")),
+                "possible_non_claim_notice": bool(ef.get("possible_non_claim_notice")),
                 "region": CURRENT_REGION,
                 "tracker_row": tracker_row,
                 "chat_id": TARGET_CHAT_ID,
