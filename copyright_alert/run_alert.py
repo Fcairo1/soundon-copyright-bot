@@ -338,6 +338,50 @@ def fetch_email(msg_id):
     body = inner.get("body_plain_text", "")
     return body, inner
 
+
+def _extract_bare_spotify_token(value):
+    if not value or value == "N/A":
+        return ""
+    m = re.search(r"(spotify:(?:track|album|artist):[A-Za-z0-9]+)", str(value), re.IGNORECASE)
+    if m:
+        return m.group(1)
+    m = re.search(r"(https?://open\.spotify\.com/\S+)", str(value), re.IGNORECASE)
+    if m:
+        return m.group(1).rstrip('.,;)]}')
+    return ""
+
+
+def _extract_spotify_blocks(body):
+    """Return per-content Spotify claim blocks keyed by UPC when the email contains multiple items."""
+    text = _normalized_body(body)
+    if not text:
+        return []
+    block_pattern = re.compile(
+        r"(?:^|\n)\s*(?:Title|Content Title|Release Title)\s*:(.*?)(?=(?:\n\s*(?:Title|Content Title|Release Title)\s*:)|\n\s*If you\b|\n\s*Best Regards\b|\n\s*ref:_|\Z)",
+        re.IGNORECASE | re.DOTALL,
+    )
+    blocks = []
+    for m in block_pattern.finditer(text):
+        block = m.group(0).strip()
+        upc = labeled_value(block, "UPC", "UPC(s)")
+        token = _extract_bare_spotify_token(labeled_value(block, "Spotify URI", "URI", "Spotify Link"))
+        if not token:
+            token = _extract_bare_spotify_token(block)
+        if upc != "N/A" and token:
+            blocks.append({"upc": str(upc).strip(), "spotify_uri": token})
+    return blocks
+
+
+def _spotify_uri_for_upc(body, upc):
+    upc = str(upc or "").strip()
+    if not upc or upc == "N/A":
+        return ""
+    for block in _extract_spotify_blocks(body):
+        if block.get("upc") == upc:
+            return block.get("spotify_uri", "")
+    return ""
+
+
 def _clean_email_value(value):
     """Normalize simple values extracted from quoted-printable forwarded emails."""
     if not value or value == "N/A":
@@ -846,16 +890,10 @@ def extract_fields(body, subject, meta):
     fields["content"]          = labeled_value(body, "Content Title", "Release Title")
 
     spotify_uri = labeled_value(body, "Spotify URI", "URI", "Spotify Link")
-    spotify_uri_clean = ""
-    if spotify_uri != "N/A":
-        spotify_uri_clean = first(spotify_uri, r"(spotify:(?:track|album|artist):[A-Za-z0-9]+)")
-        if spotify_uri_clean == "N/A":
-            spotify_uri_clean = first(spotify_uri, r"(https?://open\.spotify\.com/\S+)")
+    spotify_uri_clean = _extract_bare_spotify_token(spotify_uri)
     if not spotify_uri_clean:
-        spotify_uri_clean = first(body, r"(spotify:(?:track|album|artist):[A-Za-z0-9]+)")
-    if spotify_uri_clean == "N/A":
-        spotify_uri_clean = first(body, r"(https?://open\.spotify\.com/\S+)")
-    fields["spotify_uri"] = spotify_uri_clean.strip() if spotify_uri_clean != "N/A" else ""
+        spotify_uri_clean = _extract_bare_spotify_token(body)
+    fields["spotify_uri"] = spotify_uri_clean
 
     detected_dsp = detect_dsp({"subject": subject, "body": body, "meta": meta})
     fields["dsp"] = detected_dsp["dsp"]
@@ -2217,6 +2255,11 @@ def main():
         if (not ef.get("isrc") or ef.get("isrc") == "N/A") and ar.get("isrc"):
             ef["isrc"] = str(ar.get("isrc")).strip() or "N/A"
             print(f"  ISRC filled from Aeolus: {ef['isrc']}")
+
+        matched_spotify_uri = _spotify_uri_for_upc(body, ef.get("upc"))
+        if matched_spotify_uri:
+            ef["spotify_uri"] = matched_spotify_uri
+            print(f"  Spotify URI matched by UPC: {ef['spotify_uri']}")
 
         if not qualifies(ar):
             print("  ✗ Skipping not qualifying after Aeolus filters")
