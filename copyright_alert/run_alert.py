@@ -352,24 +352,36 @@ def _extract_bare_spotify_token(value):
 
 
 def _extract_spotify_blocks(body):
-    """Return per-content Spotify claim blocks keyed by UPC when the email contains multiple items."""
+    """Return Spotify URI pairs keyed by UPC without mixing across multi-claim emails."""
     text = _normalized_body(body)
     if not text:
         return []
-    block_pattern = re.compile(
-        r"(?:^|\n)\s*(?:Title|Content Title|Release Title)\s*:(.*?)(?=(?:\n\s*(?:Title|Content Title|Release Title)\s*:)|\n\s*If you\b|\n\s*Best Regards\b|\n\s*ref:_|\Z)",
-        re.IGNORECASE | re.DOTALL,
-    )
+
+    upc_pattern = re.compile(r"(?:^|\n)\s*(?:UPC|UPC\(s\))\s*:[ \t]*([0-9]{10,14})", re.IGNORECASE)
+    matches = list(upc_pattern.finditer(text))
     blocks = []
-    for m in block_pattern.finditer(text):
-        block = m.group(0).strip()
-        upc = labeled_value(block, "UPC", "UPC(s)")
+
+    for idx, match in enumerate(matches):
+        start = match.start()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
+        block = text[start:end].strip()
+        upc = str(match.group(1)).strip()
         token = _extract_bare_spotify_token(labeled_value(block, "Spotify URI", "URI", "Spotify Link"))
         if not token:
             token = _extract_bare_spotify_token(block)
-        if upc != "N/A" and token:
-            blocks.append({"upc": str(upc).strip(), "spotify_uri": token})
-    return blocks
+        if upc and token:
+            blocks.append({"upc": upc, "spotify_uri": token})
+
+    if blocks:
+        return blocks
+
+    upc = labeled_value(text, "UPC", "UPC(s)")
+    token = _extract_bare_spotify_token(labeled_value(text, "Spotify URI", "URI", "Spotify Link"))
+    if not token:
+        token = _extract_bare_spotify_token(text)
+    if upc != "N/A" and token:
+        return [{"upc": str(upc).strip(), "spotify_uri": token}]
+    return []
 
 
 def _spotify_uri_for_upc(body, upc):
