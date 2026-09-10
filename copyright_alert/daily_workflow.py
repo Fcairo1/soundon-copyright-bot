@@ -54,15 +54,23 @@ from copyright_alert.run_alert import (  # noqa: E402
     parse_lark_json,
     fetch_email,
     extract_fields,
+    extract_retraction_fields,
+    is_retraction_email,
+    is_retraction_already_processed,
+    _save_retracted_claim,
     batch_query_aeolus_by_upc,
     enrich_with_engagement_once,
     qualifies,
     claim_key,
     is_claim_already_posted,
     _save_posted_claim,
+    _delete_posted_claim,
+    _reserve_claim_before_post,
     _atomic_write_json,
     _load_posted_claims,
     POSTED_CLAIMS_FILE,
+    RETRACTION_SENDER,
+    RETRACTION_SIGNAL_PHRASE,
     save_posted_card,
     build_card,
     post_card,
@@ -114,6 +122,7 @@ RECIPIENT_OPEN_ID = ""  # when set, ops DMs go to this open_id via the copyright
 RECIPIENT_CHAT_ID = ""  # optional confirmed DM chat_id for the ops owner
 FEISHU_IM_DIR = inner_skill("feishu-im-send")
 ADMIN_ACTION_HEADER = "Admin Action Taken"
+RETRACTED_HEADER = "Retracted"
 STATUS_TAKEDOWN = "🔴 Confirm Takedown"
 STATUS_RESOLVED = "✅ Resolved"
 
@@ -218,16 +227,20 @@ def section(title):
 
 
 # ── Checkpoint ───────────────────────────────────────────────────────────────
-def load_checkpoint():
+def load_checkpoint_state():
     if not os.path.exists(CHECKPOINT_FILE):
-        return None
+        return {}
     try:
         with open(CHECKPOINT_FILE, encoding="utf-8") as fh:
             data = json.load(fh)
-        return (data or {}).get("last_message_id")
+        return data if isinstance(data, dict) else {}
     except Exception as e:
         log(f"  ⚠ Could not read checkpoint: {e!r}")
-        return None
+        return {}
+
+
+def load_checkpoint():
+    return load_checkpoint_state().get("last_message_id")
 
 
 def load_failed_message_ids():
@@ -285,6 +298,93 @@ def save_checkpoint(message_id, failed_message_ids=None):
 
 
 # ── Mail fetching ────────────────────────────────────────────────────────────
+def _parse_iso_datetime(value):
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+            try:
+                parsed = datetime.strptime(text, fmt)
+                break
+            except ValueError:
+                parsed = None
+        if parsed is None:
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _mail_search_timestamp(value):
+    parsed = _parse_iso_datetime(value)
+    return parsed.isoformat(timespec="seconds") if parsed is not None else None
+
+
+def search_inbox_messages(query, *, sender=None, start_time=None, end_time=None, limit=None):
+    query = str(query or "").strip()[:50]
+    if not query:
+        return []
+
+    items = []
+    page_token = ""
+    while True:
+        params = {"user_mailbox_id": "me", "page_size": 15}
+        if page_token:
+            params["page_token"] = page_token
+
+        filter_payload = {}
+        if sender:
+            filter_payload["from"] = [str(sender).strip()]
+        create_time = {}
+        start_iso = _mail_search_timestamp(start_time)
+        end_iso = _mail_search_timestamp(end_time)
+        if start_iso:
+            create_time["start_time"] = start_iso
+        if end_iso:
+            create_time["end_time"] = end_iso
+        if create_time:
+            filter_payload["create_time"] = create_time
+
+        data = {"query": query, "filter": filter_payload}
+        cmd = [
+            "lark-cli", "mail", "user_mailboxes", "search",
+            "--params", json.dumps(params, ensure_ascii=False),
+            "--data", json.dumps(data, ensure_ascii=False),
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if res.returncode != 0:
+            raise RuntimeError(f"mail search failed rc={res.returncode}: {(res.stdout + res.stderr)[:800]}")
+        parsed = parse_lark_json(res.stdout)
+        if not parsed:
+            raise RuntimeError(f"mail search returned unreadable output: {res.stdout[:500]}")
+
+        for item in parsed.get("items") or []:
+            meta = item.get("meta_data") if isinstance(item.get("meta_data"), dict) else {}
+            message_id = meta.get("message_biz_id") or item.get("id")
+            if not message_id:
+                continue
+            items.append({
+                "message_id": str(message_id).strip(),
+                "subject": str(meta.get("title") or "").strip(),
+                "date": str(meta.get("create_time") or "").strip(),
+                "thread_id": str(meta.get("thread_id") or message_id).strip(),
+            })
+            if limit and len(items) >= limit:
+                return items[:limit]
+
+        if not parsed.get("has_more"):
+            break
+        page_token = str(parsed.get("page_token") or "").strip()
+        if not page_token:
+            break
+    return items
+
+
 def fetch_messages_raw(checkpoint=None):
     """Fetch inbox messages newest-first in a SINGLE triage call.
 
@@ -575,6 +675,7 @@ def run_scan():
         with open(LAST_CARD_FILE, "w", encoding="utf-8") as fh:
             json.dump(card, fh, indent=2)
 
+        _reserve_claim_before_post(dup_key, ef, ar, subject, msg_id)
         success, posted_message_id = post_card(card, ar, upc=upc, context=f"{ACTIVE_REGION} daily scan group post")
         if success and posted_message_id:
             card = build_card(
@@ -619,6 +720,7 @@ def run_scan():
             failed_entries.pop(msg_id, None)
             log(f"     ✅ Posted card {posted_message_id} for UPC {upc}")
         else:
+            _delete_posted_claim(dup_key)
             log("     ✗ Card posting failed for this candidate — will retry next run")
             failed_entries[msg_id] = {"message_id": msg_id, "subject": subject, "date": c.get("date", "")}
 
@@ -706,7 +808,13 @@ def _admin_action_has_real_value(v):
     return bool(normalized) and normalized != "no"
 
 
-def _is_open_for_ops(status, admin_action=""):
+def _is_retracted_value(v):
+    return _norm(v).casefold() in {"yes", "y", "true", "1"}
+
+
+def _is_open_for_ops(status, admin_action="", retracted=""):
+    if _is_retracted_value(retracted):
+        return False
     normalized = _normalized_status(status)
     if normalized == "resolved":
         return False
@@ -715,7 +823,7 @@ def _is_open_for_ops(status, admin_action=""):
     return normalized in {"", "investigating", "disputing", "pending", "open"}
 
 
-def read_sheet_values(rng="A:Z"):
+def read_sheet_values(rng="A:AA"):
     """Read tracker rows as a 2D list using persisted Lark OAuth, with legacy CLI fallback."""
     try:
         return extract_sheet_values(sheet_values_api("GET", TRACKER_SHEET_URL, TRACKER_SHEET_ID, rng))
@@ -758,33 +866,39 @@ def write_cell(col_letter, row_num, value):
     return ok
 
 
-# ── PART 1D — ensure Admin Action Taken column ───────────────────────────────
-def ensure_admin_action_column(values):
-    """Ensure the tracker has an 'Admin Action Taken' header as the last column.
-
-    Returns (admin_col_index, created_bool). admin_col_index is zero-based.
-    """
-    section("PART 1D — Ensure 'Admin Action Taken' column")
+# ── PART 1D — ensure tracker columns ─────────────────────────────────────────
+def ensure_tracker_column(values, header_name, *, section_title=None):
+    if section_title:
+        section(section_title)
     if not values:
         log("  ✗ Sheet unreadable; cannot ensure column.")
         return None, False
 
     headers = [_norm(h) for h in values[0]]
-    if ADMIN_ACTION_HEADER in headers:
-        idx = headers.index(ADMIN_ACTION_HEADER)
+    if header_name in headers:
+        idx = headers.index(header_name)
         log(f"  ✓ Column already exists at {_col_letter(idx)} (index {idx}).")
         return idx, False
 
-    # Find last non-empty header to place the new header right after it.
     last_nonempty = -1
     for i, h in enumerate(headers):
         if h:
             last_nonempty = i
     target_idx = last_nonempty + 1
     col = _col_letter(target_idx)
-    log(f"  Column missing. Adding '{ADMIN_ACTION_HEADER}' header at {col}1 (index {target_idx}).")
-    write_cell(col, 1, ADMIN_ACTION_HEADER)
+    log(f"  Column missing. Adding '{header_name}' header at {col}1 (index {target_idx}).")
+    write_cell(col, 1, header_name)
     return target_idx, True
+
+
+def ensure_admin_action_column(values):
+    """Ensure the tracker has an 'Admin Action Taken' header as the last column."""
+    return ensure_tracker_column(values, ADMIN_ACTION_HEADER, section_title="PART 1D — Ensure 'Admin Action Taken' column")
+
+
+def ensure_retracted_column(values):
+    """Ensure the tracker has a 'Retracted' header available for claim retractions."""
+    return ensure_tracker_column(values, RETRACTED_HEADER, section_title="PART 1A.1 — Ensure 'Retracted' column")
 
 
 # ── DM sending (to the region's Ops owner) ───────────────────────────────────
@@ -858,6 +972,271 @@ def _cell(row, i):
     return _norm(row[i]) if i is not None and len(row) > i else ""
 
 
+def _format_retraction_date(value):
+    parsed = _parse_iso_datetime(value)
+    if parsed is not None:
+        return parsed.date().isoformat()
+    text = _norm(value)
+    return text.split("T", 1)[0] if "T" in text else (text or "Unknown date")
+
+
+def _set_row_value(values, row_num, col_index, value):
+    if row_num < 1 or col_index is None or row_num > len(values):
+        return
+    row = values[row_num - 1]
+    while len(row) <= col_index:
+        row.append("")
+    row[col_index] = value
+
+
+
+def match_tracker_row_for_retraction(values, retraction_fields):
+    if not values or len(values) < 2:
+        return None
+    headers = [_norm(h) for h in values[0]]
+    idx = _row_lookup(headers)
+    upc_target = _norm((retraction_fields or {}).get("upc"))
+    ref_target = _norm((retraction_fields or {}).get("ref_id"))
+    if not upc_target and not ref_target:
+        return None
+
+    matches = []
+    for row_num, row in enumerate(values[1:], start=2):
+        if not any(_norm(c) for c in row):
+            continue
+        row_upc = _cell(row, idx.get("UPC"))
+        row_ref = _cell(row, idx.get(SPOTIFY_REF_HEADER))
+        if ref_target and row_ref == ref_target:
+            matched = True
+            ref_match = True
+        else:
+            matched = bool(upc_target and row_upc == upc_target)
+            ref_match = False
+        if not matched:
+            continue
+        status = _cell(row, idx.get("Status"))
+        retracted = _cell(row, idx.get(RETRACTED_HEADER))
+        matches.append({
+            "row_num": row_num,
+            "upc": row_upc,
+            "title": _cell(row, idx.get("Title")),
+            "artist": _cell(row, idx.get("Artist")),
+            "status": status,
+            "retracted": retracted,
+            "ref_code": row_ref,
+            "ref_match": ref_match,
+            "unresolved": not _is_resolved_status(status),
+            "not_retracted": not _is_retracted_value(retracted),
+        })
+    if not matches:
+        return None
+    return max(
+        matches,
+        key=lambda item: (
+            1 if item["ref_match"] else 0,
+            1 if item["unresolved"] else 0,
+            1 if item["not_retracted"] else 0,
+            item["row_num"],
+        ),
+    )
+
+
+
+def build_retraction_summary_card(entries):
+    count = len(entries)
+    noun = "claim" if count == 1 else "claims"
+    verb = "was" if count == 1 else "were"
+    elements = [
+        {
+            "tag": "markdown",
+            "content": f"Good news — Spotify confirmed **{count} {noun}** {verb} retracted in the latest {ACTIVE_REGION} scan.",
+        },
+        {"tag": "hr"},
+    ]
+    for entry in entries:
+        title = entry.get("title") or "Unknown title"
+        artist = entry.get("artist") or "Unknown artist"
+        upc = entry.get("upc") or "N/A"
+        retracted_at = entry.get("retracted_at") or "Unknown date"
+        elements.append({
+            "tag": "markdown",
+            "content": f"• **{title}** — {artist}\nUPC: `{upc}`\nDate retracted: {retracted_at}",
+        })
+    elements.append({"tag": "hr"})
+    elements.append({"tag": "markdown", "content": f"Tracker updates applied automatically in the {ACTIVE_REGION} sheet."})
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "template": "green",
+            "title": {"tag": "plain_text", "content": f"✅ {ACTIVE_REGION}: {count} claim retraction{'s' if count != 1 else ''} detected"},
+        },
+        "elements": elements,
+    }
+
+
+
+def run_retraction_pass(values, *, since_timestamp=None, full_history=False, notify=False):
+    section_title = "PART 1A.2 — Backfill claim retractions" if full_history else "PART 1A.2 — Detect retracted claims"
+    section(section_title)
+    if not values or len(values) < 2:
+        log("  No tracker rows available; skipping retraction processing.")
+        return {
+            "searched": 0,
+            "candidates": 0,
+            "matched": 0,
+            "updated": 0,
+            "unmatched": 0,
+            "already_processed": 0,
+            "already_marked": 0,
+            "update_failures": 0,
+            "card_posted": False,
+        }
+
+    headers = [_norm(h) for h in values[0]]
+    idx = _row_lookup(headers)
+    status_i = idx.get("Status")
+    retracted_i = idx.get(RETRACTED_HEADER)
+    if status_i is None or retracted_i is None:
+        log("  ✗ Tracker headers missing Status or Retracted column; cannot process retractions.")
+        return {
+            "searched": 0,
+            "candidates": 0,
+            "matched": 0,
+            "updated": 0,
+            "unmatched": 0,
+            "already_processed": 0,
+            "already_marked": 0,
+            "update_failures": 0,
+            "card_posted": False,
+        }
+
+    search_kwargs = {"sender": RETRACTION_SENDER}
+    if since_timestamp and not full_history:
+        search_kwargs["start_time"] = since_timestamp
+    if not full_history:
+        search_kwargs["limit"] = 200
+
+    try:
+        candidates = search_inbox_messages("retracted", **search_kwargs)
+    except Exception as exc:
+        log(f"  ✗ Retraction mailbox search failed: {exc!r}")
+        return {
+            "searched": 0,
+            "candidates": 0,
+            "matched": 0,
+            "updated": 0,
+            "unmatched": 0,
+            "already_processed": 0,
+            "already_marked": 0,
+            "update_failures": 1,
+            "card_posted": False,
+        }
+
+    summary = {
+        "searched": len(candidates),
+        "candidates": 0,
+        "matched": 0,
+        "updated": 0,
+        "unmatched": 0,
+        "already_processed": 0,
+        "already_marked": 0,
+        "update_failures": 0,
+        "card_posted": False,
+    }
+    notifications = []
+
+    for candidate in candidates:
+        message_id = _norm(candidate.get("message_id"))
+        if not message_id:
+            continue
+        if is_retraction_already_processed(message_id):
+            summary["already_processed"] += 1
+            continue
+
+        subject = candidate.get("subject", "")
+        try:
+            body, meta = fetch_email(message_id)
+        except Exception as exc:
+            summary["update_failures"] += 1
+            log(f"  ⚠ Could not fetch retraction email {message_id}: {exc!r}")
+            continue
+
+        if not is_retraction_email(body, subject, meta):
+            continue
+
+        summary["candidates"] += 1
+        retraction = extract_retraction_fields(body, subject, meta)
+        match = match_tracker_row_for_retraction(values, retraction)
+        state_record = {
+            "region": ACTIVE_REGION,
+            "message_id": message_id,
+            "upc": _norm(retraction.get("upc")),
+            "title": _norm(retraction.get("title")),
+            "ref_code": _norm(retraction.get("ref_id")),
+            "retracted_at": _norm(retraction.get("retracted_at") or candidate.get("date")),
+            "matched": False,
+        }
+
+        if not match:
+            summary["unmatched"] += 1
+            log(f"  ↷ Retraction email {message_id} UPC {_norm(retraction.get('upc')) or 'N/A'} not found in tracker; skipping row creation.")
+            _save_retracted_claim(message_id, state_record)
+            continue
+
+        summary["matched"] += 1
+        row_num = match["row_num"]
+        state_record.update({"matched": True, "tracker_row": row_num})
+        wrote_ok = True
+        changed = False
+
+        if not _is_retracted_value(match["retracted"]):
+            wrote_ok = write_cell(_col_letter(retracted_i), row_num, "Yes") and wrote_ok
+            changed = True
+        if not _is_resolved_status(match["status"]):
+            wrote_ok = write_cell(_col_letter(status_i), row_num, STATUS_RESOLVED) and wrote_ok
+            changed = True
+
+        if not wrote_ok:
+            summary["update_failures"] += 1
+            log(f"  ⚠ Retraction update failed for tracker row {row_num}; leaving email uncheckpointed for retry.")
+            continue
+
+        if changed:
+            summary["updated"] += 1
+        else:
+            summary["already_marked"] += 1
+
+        _set_row_value(values, row_num, retracted_i, "Yes")
+        _set_row_value(values, row_num, status_i, STATUS_RESOLVED)
+        _save_retracted_claim(message_id, state_record)
+
+        if notify:
+            notifications.append({
+                "title": match.get("title") or _norm(retraction.get("title")) or "Unknown title",
+                "artist": match.get("artist") or "Unknown artist",
+                "upc": match.get("upc") or _norm(retraction.get("upc")) or "N/A",
+                "retracted_at": _format_retraction_date(retraction.get("retracted_at") or candidate.get("date")),
+            })
+
+    if notify and notifications:
+        ok, _ = post_card(
+            build_retraction_summary_card(notifications),
+            chat_id=TARGET_CHAT_ID,
+            expected_region=ACTIVE_REGION,
+            context=f"{ACTIVE_REGION} retraction summary",
+        )
+        summary["card_posted"] = bool(ok)
+        if ok:
+            log(f"  ✓ Posted batched retraction summary card with {len(notifications)} entries.")
+        else:
+            log(f"  ⚠ Failed to post retraction summary card with {len(notifications)} entries.")
+    elif notify:
+        log("  No new matched retractions in the scan window; no group card posted.")
+
+    log(f"  Retraction summary: {json.dumps(summary, ensure_ascii=False)}")
+    return summary
+
+
 # ── PART 1B — remind about unselected statuses ───────────────────────────────
 def remind_unselected_status(values):
     section("PART 1B — Remind about rows missing a Status")
@@ -870,11 +1249,14 @@ def remind_unselected_status(values):
     status_i = idx.get("Status")
     upc_i = idx.get("UPC")
     title_i = idx.get("Title")
+    retracted_i = idx.get(RETRACTED_HEADER)
 
     missing = []
     for r, row in enumerate(values[1:], start=2):
         # ignore fully empty trailing rows
         if not any(_norm(c) for c in row):
+            continue
+        if _is_retracted_value(_cell(row, retracted_i)):
             continue
         status = _cell(row, status_i)
         if status == "":
@@ -914,11 +1296,14 @@ def action_alert(values, admin_col_index):
     upc_i = idx.get("UPC")
     title_i = idx.get("Title")
     admin_i = admin_col_index if admin_col_index is not None else idx.get(ADMIN_ACTION_HEADER)
+    retracted_i = idx.get(RETRACTED_HEADER)
 
     need_takedown = []
     need_assert = []
     for r, row in enumerate(values[1:], start=2):
         if not any(_norm(c) for c in row):
+            continue
+        if _is_retracted_value(_cell(row, retracted_i)):
             continue
         status = _cell(row, status_i)
         admin_done = _cell(row, admin_i)
@@ -1076,6 +1461,7 @@ def dm_action_cards(values):
         "card_msg": _header_index(headers, CARD_MSG_ID_HEADER),
         "email_status": _header_index(headers, EMAIL_STATUS_HEADER),
         "admin_action": _header_index(headers, ADMIN_ACTION_HEADER),
+        "retracted": _header_index(headers, RETRACTED_HEADER),
     }
 
     posted_map = _load_posted_claims_map()
@@ -1089,8 +1475,9 @@ def dm_action_cards(values):
     for row_num, row in enumerate(values[1:], start=2):
         status = _cell(row, idx["status"])
         admin_action = _cell(row, idx["admin_action"])
-        if not _is_open_for_ops(status, admin_action):
-            log(f"  • Skipping row {row_num} ({_cell(row, idx['upc']) or 'N/A'}): status={status!r}, admin_action={admin_action!r}")
+        retracted = _cell(row, idx["retracted"])
+        if not _is_open_for_ops(status, admin_action, retracted):
+            log(f"  • Skipping row {row_num} ({_cell(row, idx['upc']) or 'N/A'}): status={status!r}, admin_action={admin_action!r}, retracted={retracted!r}")
             continue
         if _cell(row, idx["email_status"]):  # already replied
             continue
@@ -1362,6 +1749,7 @@ def countdown_refresh(values):
         "spotify_ref": _header_index(headers, SPOTIFY_REF_HEADER),
         "uid": _header_index(headers, "UID"),
         "admin_action": _header_index(headers, ADMIN_ACTION_HEADER),
+        "retracted": _header_index(headers, RETRACTED_HEADER),
     }
     today = date.today()
     refreshed = 0
@@ -1369,7 +1757,8 @@ def countdown_refresh(values):
     for row_num, row in enumerate(values[1:], start=2):
         status = _cell(row, idx["status"])
         admin_action = _cell(row, idx["admin_action"])
-        if not _is_open_for_ops(status, admin_action):
+        retracted = _cell(row, idx["retracted"])
+        if not _is_open_for_ops(status, admin_action, retracted):
             continue
         if _cell(row, idx["email_status"]):  # already handled
             continue
@@ -1428,6 +1817,8 @@ def main(region=None):
     log(f"Checkpoint: {CHECKPOINT_FILE}")
 
     results = {}
+    previous_checkpoint_state = load_checkpoint_state()
+    retraction_window_start = previous_checkpoint_state.get("updated_at")
 
     # A) Incremental scan
     try:
@@ -1436,18 +1827,49 @@ def main(region=None):
         log(f"  ✗ Scan section error: {e!r}")
         results["scan"] = {"error": repr(e)}
 
-    # Sheet sections — ensure column first so B/C reads are accurate (D).
-    values = read_sheet_values("A:Z")
+    # Sheet sections — ensure required columns first so later passes read accurate headers.
+    values = read_sheet_values("A:AA")
     try:
-        admin_idx, created = ensure_admin_action_column(values)
-        results["admin_column"] = {"index": admin_idx, "created": created}
-        if created:
-            # re-read so the header row reflects the new column for B/C
-            values = read_sheet_values("A:Z")
+        admin_idx, admin_created = ensure_admin_action_column(values)
+        results["admin_column"] = {"index": admin_idx, "created": admin_created}
     except Exception as e:
         log(f"  ✗ Admin column section error: {e!r}")
         results["admin_column"] = {"error": repr(e)}
         admin_idx = None
+        admin_created = False
+
+    try:
+        retracted_idx, retracted_created = ensure_retracted_column(values)
+        results["retracted_column"] = {"index": retracted_idx, "created": retracted_created}
+    except Exception as e:
+        log(f"  ✗ Retracted column section error: {e!r}")
+        results["retracted_column"] = {"error": repr(e)}
+        retracted_created = False
+
+    # Ensure the Spotify reply columns exist before retraction / E/F reads.
+    spotify_columns_ok = True
+    try:
+        ensure_spotify_columns(values)
+    except Exception as e:
+        spotify_columns_ok = False
+        log(f"  ✗ Spotify column section error: {e!r}")
+
+    if admin_created or retracted_created or spotify_columns_ok:
+        values = read_sheet_values("A:AA")
+
+    # A.2) Retraction detection runs after the normal new-claim pass and before
+    # later metrics/DM flows so resolved retractions disappear from open counts.
+    try:
+        results["retractions"] = run_retraction_pass(
+            values,
+            since_timestamp=retraction_window_start,
+            notify=True,
+        )
+        if results["retractions"].get("updated"):
+            values = read_sheet_values("A:AA")
+    except Exception as e:
+        log(f"  ✗ Retraction section error: {e!r}")
+        results["retractions"] = {"error": repr(e)}
 
     # B) Remind about unselected statuses
     try:
@@ -1462,14 +1884,6 @@ def main(region=None):
     except Exception as e:
         log(f"  ✗ Action-alert section error: {e!r}")
         results["action_alert"] = {"error": repr(e)}
-
-    # Ensure the Spotify reply columns exist before E/F read them.
-    try:
-        ensure_spotify_columns(values)
-        # re-read so any newly-created headers are reflected for E/F
-        values = read_sheet_values("A:Z")
-    except Exception as e:
-        log(f"  ✗ Spotify column section error: {e!r}")
 
     # E) DM action cards for day-1+ open cases
     try:

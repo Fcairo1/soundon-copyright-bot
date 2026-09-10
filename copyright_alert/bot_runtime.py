@@ -357,8 +357,9 @@ def read_tracker_rows(region: str) -> Tuple[List[str], List[Dict[str, str]]]:
         # fully read (the old A1:Q200 both truncated rows and stopped before
         # columns R/S/T). Extended to U so the appended "Spotify Ref Code"
         # column is included in header-keyed records, then to V for the
-        # appended "User Name" column, then to W for "Claimant Email".
-        "A1:W2000",
+        # Read through AA so tracker extensions like Retracted remain visible to
+        # bot commands that compute counts/status from the sheet.
+        "A1:AA2000",
     ]
     res = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True, timeout=90)
     if res.returncode != 0:
@@ -388,6 +389,8 @@ def read_tracker_rows(region: str) -> Tuple[List[str], List[Dict[str, str]]]:
         if any(v for v in record.values()):
             if is_upc_excluded(record.get("UPC", "")):
                 continue
+            if str(record.get("Retracted", "")).strip().lower() in {"yes", "y", "true", "1"}:
+                continue
             record["_row_number"] = row_numbers[idx] if idx < len(row_numbers) else idx + 1
             records.append(record)
     return headers, records
@@ -404,6 +407,10 @@ def _admin_action_has_real_value(value: str) -> bool:
     return bool(normalized) and normalized != "no"
 
 
+def _is_retracted_tracker_value(value: str) -> bool:
+    return str(value or "").strip().lower() in {"yes", "y", "true", "1"}
+
+
 def _is_open_status(row_or_status) -> bool:
     """Return True for rows that still need ops follow-up.
 
@@ -414,6 +421,8 @@ def _is_open_status(row_or_status) -> bool:
     if isinstance(row_or_status, dict):
         status = row_or_status.get("Status", "")
         admin_action = row_or_status.get("Admin Action Taken", "")
+        if _is_retracted_tracker_value(row_or_status.get("Retracted", "")):
+            return False
     else:
         status = row_or_status
         admin_action = ""

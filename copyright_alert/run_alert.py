@@ -96,6 +96,9 @@ _ENGAGEMENT_PARTITION_CACHE = None
 STATE_DIR = Path(__file__).resolve().parent
 RUNTIME_DIR = STATE_DIR.parent / "runtime"
 POSTED_CLAIMS_FILE = str(STATE_DIR / "posted_claims.json")
+RETRACTED_CLAIMS_FILE = str(RUNTIME_DIR / "retracted_claims.json")
+RETRACTION_SENDER = "infringement-claim-response@spotify.com"
+RETRACTION_SIGNAL_PHRASE = "The claimant has retracted the claim."
 TRIAGE_QUERY = "Infringement Claim"
 TRIAGE_MAX = 50
 # B3: BASE_EXCLUDED_MENTIONS is the permanent, region-independent baseline of
@@ -510,6 +513,55 @@ def _meta_sender_text(meta):
     return "\n".join(sender_bits)
 
 
+def _sender_email_from_meta(meta):
+    if not isinstance(meta, dict):
+        return ""
+    head_from = meta.get("head_from") if isinstance(meta.get("head_from"), dict) else {}
+    candidates = [
+        head_from.get("mail_address", "") if isinstance(head_from, dict) else "",
+        meta.get("from_email", ""),
+        meta.get("sender_email", ""),
+        meta.get("reply_to_email", ""),
+        meta.get("from", ""),
+        meta.get("sender", ""),
+        meta.get("reply_to", ""),
+        _meta_sender_text(meta),
+    ]
+    for candidate in candidates:
+        match = re.search(r"([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})", str(candidate or ""))
+        if match:
+            return match.group(1).strip().lower()
+    return ""
+
+
+def is_retraction_email(body, subject="", meta=None):
+    meta = meta or {}
+    sender = _sender_email_from_meta(meta)
+    if sender != RETRACTION_SENDER:
+        return False
+    return RETRACTION_SIGNAL_PHRASE in str(body or "")
+
+
+def extract_retraction_fields(body, subject="", meta=None):
+    meta = meta or {}
+    fields = extract_fields(body, subject, meta)
+    title = fields.get("title")
+    if not title or title == "N/A":
+        title = labeled_value(body, "Content Title", "Release Title", "Title", "Track Title")
+    spotify_uri = fields.get("spotify_uri") or ""
+    if not spotify_uri:
+        spotify_uri = labeled_value(body, "Spotify URI", "URI", "Spotify Link")
+        if spotify_uri == "N/A":
+            spotify_uri = ""
+    return {
+        **fields,
+        "title": title if title not in (None, "") else "N/A",
+        "spotify_uri": spotify_uri.strip(),
+        "retracted_at": meta.get("date_formatted") or meta.get("date") or "N/A",
+        "retraction_sender": _sender_email_from_meta(meta),
+    }
+
+
 def detect_dsp(email):
     """Detect the DSP/platform for an inbound claim email.
 
@@ -792,6 +844,18 @@ def extract_fields(body, subject, meta):
     fields["label_name"]       = labeled_value(body, "Label Name", "Label", "indie_label")
     fields["content_type"]     = labeled_value(body, "Content Type")
     fields["content"]          = labeled_value(body, "Content Title", "Release Title")
+
+    spotify_uri = labeled_value(body, "Spotify URI", "URI", "Spotify Link")
+    spotify_uri_clean = ""
+    if spotify_uri != "N/A":
+        spotify_uri_clean = first(spotify_uri, r"(spotify:(?:track|album|artist):[A-Za-z0-9]+)")
+        if spotify_uri_clean == "N/A":
+            spotify_uri_clean = first(spotify_uri, r"(https?://open\.spotify\.com/\S+)")
+    if not spotify_uri_clean:
+        spotify_uri_clean = first(body, r"(spotify:(?:track|album|artist):[A-Za-z0-9]+)")
+    if spotify_uri_clean == "N/A":
+        spotify_uri_clean = first(body, r"(https?://open\.spotify\.com/\S+)")
+    fields["spotify_uri"] = spotify_uri_clean.strip() if spotify_uri_clean != "N/A" else ""
 
     detected_dsp = detect_dsp({"subject": subject, "body": body, "meta": meta})
     fields["dsp"] = detected_dsp["dsp"]
@@ -1302,6 +1366,73 @@ def _save_posted_claim(claim_key, record):
     update_json_state(POSTED_CLAIMS_FILE, mutate, default=dict, ensure_ascii=False, indent=2)
 
 
+def _delete_posted_claim(claim_key):
+    if not claim_key:
+        return
+
+    def mutate(data):
+        if not isinstance(data, dict):
+            return {}
+        data.pop(claim_key, None)
+        return data
+
+    update_json_state(POSTED_CLAIMS_FILE, mutate, default=dict, ensure_ascii=False, indent=2)
+
+
+def _load_retracted_claims():
+    return _json_file_dict(RETRACTED_CLAIMS_FILE)
+
+
+def is_retraction_already_processed(message_id):
+    return bool(message_id and _load_retracted_claims().get(str(message_id).strip()))
+
+
+def _save_retracted_claim(message_id, record):
+    if not message_id:
+        return
+
+    def mutate(data):
+        if not isinstance(data, dict):
+            data = {}
+        payload = dict(record or {})
+        payload.setdefault("processed_at", datetime.utcnow().replace(microsecond=0).isoformat() + "Z")
+        data[str(message_id).strip()] = payload
+        return data
+
+    update_json_state(RETRACTED_CLAIMS_FILE, mutate, default=dict, ensure_ascii=False, indent=2)
+
+
+def _reserve_claim_before_post(claim_key, ef, ar, subject, source_email_message_id):
+    """Reserve the dedup key before sending the card.
+
+    This closes the crash window where Lark accepts a card post but the process
+    exits before it can persist the message_id. A later run will see the pending
+    reservation and avoid posting a second card for the same claim.
+    """
+    _save_posted_claim(claim_key, {
+        "message_id": "",
+        "source_email_message_id": source_email_message_id,
+        "subject": subject,
+        "upc": ef.get("upc", "N/A"),
+        "isrc": ef.get("isrc", "N/A"),
+        "title": ef.get("title") if ef.get("title") != "N/A" else ar.get("album_title", "N/A"),
+        "artist": _format_artist_names(ar.get("display_artist")),
+        "user_name": ar.get("user_name", "N/A"),
+        "ref_id": ef.get("ref_id", "N/A"),
+        "dsp": ef.get("dsp", "Unknown"),
+        "dsp_confidence": ef.get("dsp_confidence", "low"),
+        "claimant_name": ef.get("claimant_name", "N/A"),
+        "claimant_email": ef.get("claimant_email", "N/A"),
+        "possible_content_id_release_request": bool(ef.get("possible_content_id_release_request")),
+        "possible_non_claim_notice": bool(ef.get("possible_non_claim_notice")),
+        "region": CURRENT_REGION,
+        "tracker_row": None,
+        "chat_id": TARGET_CHAT_ID,
+        "posting_status": "pending",
+        "posting_started_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+    })
+
+
 def claim_key(ef, ar=None, subject=""):
     """Build a duplicate-prevention key. Same release can post again only for a different claim."""
     ar = ar or {}
@@ -1732,28 +1863,30 @@ def append_tracker_row(ef, ar, message_id, status=""):
     snapshot only when a brand-new tracker row is appended. Existing rows are
     never refreshed or overwritten by daily jobs.
 
-    Columns A:W (23):
+    Columns A:Y (25):
       A UPC, B ISRC, C Title, D UID, E Source (Aeolus source_type_name, e.g.
       "AP", "A&R", "UG-Paid ads"), F tt_30d_vv, G sptf_30d_str, H Artist(s),
-      I DSP, J Claimant, K Email Source (which platform/DSP the notification
+      I Spotify URI, J DSP, K Claimant, L Email Source (which platform/DSP the notification
       email came through, e.g. "Other"/"Spotify" — NOT the claimant's email
-      address, despite the header name; that's column W), L BD,
-      M Label Manager, N Status, O Date Received (reused as the "detected
-      at" timestamp for the Spotify reply countdown), P Lark Message ID,
-      Q Notes, R Admin Action Taken, S Card Message ID (alias of P — same
+      address, despite the header name; that's column X), M BD,
+      N Label Manager, O Status, P Date Received (reused as the "detected
+      at" timestamp for the Spotify reply countdown), Q Lark Message ID,
+      R Notes, S Admin Action Taken, T Card Message ID (alias of Q — same
       group-card message_id, written to both so the daily countdown refresh
-      can find it easily), T Email Status (filled in later once a Spotify
-      reply is sent), U ref_code (the "ref:_...:ref" claim code parsed from
+      can find it easily), U Email Status (filled in later once a Spotify
+      reply is sent), V ref_code (the "ref:_...:ref" claim code parsed from
       the Spotify email; blank for non-Spotify claims),
-      V User Name (Aeolus `user_name` enrichment — the uploader's SoundOn
+      W User Name (Aeolus `user_name` enrichment — the uploader's SoundOn
       username, when Aeolus has it; blank/"N/A" until that lands for a given
       UPC. Only populated for rows appended after this column existed —
       never backfilled onto older rows),
-      W Claimant Email (the rights holder's actual email address, parsed
+      X Claimant Email (the rights holder's actual email address, parsed
       from the claim email itself by extract_fields() — this is the field
       account managers actually want when they ask for "the claimant's
-      email"; column K is a different, unrelated field. Only populated for
-      rows appended after this column existed).
+      email"; column L is a different, unrelated field. Only populated for
+      rows appended after this column existed),
+      Y Retracted (blank for new claims; later set to "Yes" when Spotify sends
+      a claim-retraction notice).
 
     Returns the appended tracker row number on success, else None.
     """
@@ -1774,6 +1907,7 @@ def append_tracker_row(ef, ar, message_id, status=""):
         _tracker_cell(ar.get("tt_30d_vv", "N/A")),
         _tracker_cell(ar.get("sptf_30d_str", "N/A")),
         _tracker_cell(_format_artist_names(ar.get("display_artist"))),
+        _tracker_cell(ef.get("spotify_uri") if ef.get("spotify_uri") not in (None, "", "N/A") else "", text=True),  # I Spotify URI
         _tracker_cell(ef.get("dsp", "N/A")),
         _tracker_cell(ef.get("claimant_name", "N/A")),
         _tracker_cell(ef.get("email_source", "N/A")),
@@ -1783,19 +1917,20 @@ def append_tracker_row(ef, ar, message_id, status=""):
         _tracker_cell(ef.get("date_received", "N/A")),
         _tracker_cell(msg_id_str, text=True),
         _tracker_cell("Initial alert posted. Card contains reversible status buttons; sheet row logged at post time."),
-        _tracker_cell(""),          # R Admin Action Taken (filled later by daily workflow)
-        _tracker_cell(msg_id_str, text=True),  # S Card Message ID (alias of P / Lark Message ID)
-        _tracker_cell(""),          # T Email Status (filled after a Spotify reply is sent)
-        _tracker_cell(ef.get("ref_id") if ef.get("ref_id") not in (None, "", "N/A") else "", text=True),  # U ref_code
-        _tracker_cell(ar.get("user_name") if ar.get("user_name") not in (None, "", "N/A") else ""),  # V User Name
-        _tracker_cell(ef.get("claimant_email") if ef.get("claimant_email") not in (None, "", "N/A") else "", text=True),  # W Claimant Email
+        _tracker_cell(""),          # S Admin Action Taken (filled later by daily workflow)
+        _tracker_cell(msg_id_str, text=True),  # T Card Message ID (alias of Q / Lark Message ID)
+        _tracker_cell(""),          # U Email Status (filled after a Spotify reply is sent)
+        _tracker_cell(ef.get("ref_id") if ef.get("ref_id") not in (None, "", "N/A") else "", text=True),  # V ref_code
+        _tracker_cell(ar.get("user_name") if ar.get("user_name") not in (None, "", "N/A") else ""),  # W User Name
+        _tracker_cell(ef.get("claimant_email") if ef.get("claimant_email") not in (None, "", "N/A") else "", text=True),  # X Claimant Email
+        _tracker_cell(""),          # Y Retracted (filled later by retraction-detection flow)
     ]]
-    assert len(row[0]) == 23, f"Tracker row schema drift: expected 23 cells, got {len(row[0])}"
+    assert len(row[0]) == 25, f"Tracker row schema drift: expected 25 cells, got {len(row[0])}"
 
     next_row = _tracker_next_row()
     if not next_row:
         return None
-    target_range = f"A{next_row}:W{next_row}"
+    target_range = f"A{next_row}:Y{next_row}"
     cmd = [
         "lark-cli", "sheets", "+cells-set", "--url", TRACKER_SHEET_URL,
         "--sheet-id", TRACKER_SHEET_ID, "--range", target_range,
@@ -2100,6 +2235,7 @@ def main():
             json.dump(card, f, indent=2)
         print("  Card saved to copyright_alert/last_card.json")
 
+        _reserve_claim_before_post(duplicate_key, ef, ar, subject, msg_id)
         success, posted_message_id = post_card(card, ar, upc=ef.get("upc"), context=f"{CURRENT_REGION} run_alert group post")
         # C5: Record the claim whenever the post succeeded, even if the API did
         # not return a message_id. Previously this required a non-empty
@@ -2145,6 +2281,7 @@ def main():
             print(f"   Source: {ar.get('source_type_name')}, Tier: {ar.get('User Tier')}")
             sys.exit(0)
         else:
+            _delete_posted_claim(duplicate_key)
             print("  ✗ Card posting failed, trying next candidate")
 
     print("\n⚠️  No qualifying email found in the candidate list.")
