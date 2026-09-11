@@ -82,6 +82,7 @@ DOMAIN_TABLE: Dict[str, ClaimantMatch] = {
     "vmusicedigital.com": ClaimantMatch("V Music Digital", 3, "distribution", "Tier 3 distributor"),
     "altafonte.com": ClaimantMatch("Altafonte", 3, "distribution", "Tier 3 distributor"),
     "artistpg.com": ClaimantMatch("ArtistPG", 3, None, "Independent"),
+    "calmsound.com": ClaimantMatch("Calm Sound", 3, None, "Independent"),
     "cinqmusic.com": ClaimantMatch("Cinq Music", 3, "distribution", "Tier 3 distributor"),
     "disetti.com": ClaimantMatch("Disetti", 3, None, "Independent"),
     "empi.re": ClaimantMatch("Empire", 3, "distribution", "Tier 3 distributor"),

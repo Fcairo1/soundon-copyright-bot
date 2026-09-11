@@ -86,6 +86,12 @@ def test_new_tier_domains_classify_as_expected():
         "Claimant Category": "Internal self-claim",
     }
     assert tracker_values(classify_claimant("claim@thesignal.gg", ""))["Claimant Tier"] == "2"
+    assert tracker_values(classify_claimant("mail@calmsound.com", "")) == {
+        "Claimant Group": "Calm Sound",
+        "Claimant Tier": "3",
+        "Claimant Arm": "",
+        "Claimant Category": "Independent",
+    }
     assert tracker_values(classify_claimant("claim@gmail.com", ""))["Claimant Category"] == "Independent artist"
     assert tracker_values(classify_claimant("claim@symdistro.com", ""))["Claimant Group"] == "Symphonic Distribution (alt domain)"
 

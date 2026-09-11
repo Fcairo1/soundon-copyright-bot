@@ -18,7 +18,7 @@ Spotify sends two DISTINCT email types to the SoundOn copyright inbox:
 Metadata notices are handled COMPLETELY differently from infringement claims:
 
   * ❌ NO group card
-  * ❌ NO tracker sheet row (BR / SPLA / US) — ever
+  * ✅ Metadata Corrections tracker row (BR / SPLA / US)
   * ✅ Parse key fields: UPC, artist, title, label, Spotify URI, ref id
   * ✅ Determine region from the UPC via Aeolus (same lookup as the normal flow)
   * ✅ Send a PRIVATE DM card to the regional Ops owner
@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 from datetime import datetime, timedelta, timezone
 
 from copyright_alert.run_alert import (
@@ -65,6 +66,21 @@ _ADMIN_ALBUM_URL = (
     "https://sg-musician-admin.bytedance.net/avenue/content/album/new"
     "?currentPage=1&pageSize=10&showFields=upc&upc={upc}"
 )
+
+METADATA_CORRECTIONS_SHEET_NAME = "Metadata Corrections"
+METADATA_CORRECTIONS_HEADERS = [
+    "UPC",
+    "Date Received",
+    "Spotify Notice Type",
+    "Subject",
+    "Status",
+    "Notes",
+]
+_METADATA_TRACKERS = {
+    "BR": "https://bytedance.sg.larkoffice.com/sheets/HMQLsGgymhdIQ3tSbNNlk3m1gKd",
+    "SPLA": "https://bytedance.larkoffice.com/sheets/FKCTs8go0hsbWQtFtvGlg63Hgji",
+    "US": "https://bytedance.sg.larkoffice.com/sheets/FKqxsTu0bhl3ATt3n7YlIGvfgne",
+}
 
 # Maximum characters of the raw notice body embedded in the collapsible panel
 # (keeps the card well under Lark's size limits).
@@ -106,7 +122,7 @@ def is_metadata_notice(body, subject="", meta=None) -> bool:
     phrase_signal = has_misrepresent or has_scp
 
     # "5 business days" takedown-warning language.
-    five_business_days = bool(re.search(r"\b\d+\s+business\s+days?\b", text))
+    five_business_days = bool(re.search(r"\b(?:\d+|(?:five|ten|seven))\s*(?:\(\d+\)\s*)?business\s+days?\b", text))
 
     # Sender is Spotify themselves.
     head_from = meta.get("head_from") if isinstance(meta.get("head_from"), dict) else {}
@@ -128,11 +144,10 @@ def is_metadata_notice(body, subject="", meta=None) -> bool:
     )
     no_claimant = not (infringement_markers or labeled_claimant)
 
-    # The misrepresentation phrasing is the decisive positive marker: Spotify
-    # infringement takedowns can also carry "Spotify Content Protection" +
-    # "N business days", so require the misrepresentation wording OR the SCP
-    # self-identifier together with the no-claimant guard.
-    decisive = has_misrepresent or (has_scp and no_claimant)
+    # The misrepresentation phrasing is the decisive positive marker. Spotify
+    # real infringement takedowns can also carry "Spotify Content Protection" +
+    # "N business days", so the SCP self-identifier alone is not enough.
+    decisive = has_misrepresent
 
     return bool(phrase_signal and five_business_days and spotify_sender and no_claimant and decisive)
 
@@ -381,6 +396,76 @@ def _send_notice_dm(fields: dict, region: str, *, resolved: bool = False,
     return {"ok": False, "message_id": "", "receive_id_type": "", "receive_id": ""}
 
 
+def _run_lark_sheets(args, *, input_text=None):
+    cmd = ["lark-cli", "sheets", *args]
+    proc = subprocess.run(
+        cmd,
+        input=input_text,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError((proc.stderr or proc.stdout or "lark-cli sheets command failed").strip())
+    output = (proc.stdout or "").strip()
+    return json.loads(output) if output else {}
+
+
+def _metadata_tracker_url(region: str) -> str:
+    return _METADATA_TRACKERS.get(str(region or "").upper(), _METADATA_TRACKERS["BR"])
+
+
+def _ensure_metadata_corrections_sheet(region: str) -> str:
+    tracker_url = _metadata_tracker_url(region)
+    info = _run_lark_sheets(["+workbook-info", "--url", tracker_url])
+    for sheet in (info.get("data") or {}).get("sheets") or []:
+        if sheet.get("sheet_name") == METADATA_CORRECTIONS_SHEET_NAME:
+            return sheet.get("sheet_id") or ""
+
+    created = _run_lark_sheets([
+        "+sheet-create",
+        "--url", tracker_url,
+        "--title", METADATA_CORRECTIONS_SHEET_NAME,
+        "--row-count", "200",
+        "--col-count", "10",
+    ])
+    sheet_id = str((created.get("data") or {}).get("sheet_id") or "")
+    _run_lark_sheets([
+        "+csv-put",
+        "--url", tracker_url,
+        "--sheet-id", sheet_id,
+        "--start-cell", "A1",
+        "--csv", ",".join(METADATA_CORRECTIONS_HEADERS) + "\n",
+    ])
+    return sheet_id
+
+
+def _append_metadata_correction_row(fields: dict, region: str) -> bool:
+    tracker_url = _metadata_tracker_url(region)
+    sheet_id = _ensure_metadata_corrections_sheet(region)
+    if not sheet_id:
+        raise RuntimeError(f"Missing {METADATA_CORRECTIONS_SHEET_NAME} sheet id for {region}")
+
+    row = [
+        fields.get("upc", "N/A"),
+        fields.get("date_received", "N/A"),
+        "Artist/origin metadata misrepresentation",
+        fields.get("subject", ""),
+        "New",
+        f"Auto-routed from Spotify metadata correction notice; ref={fields.get('ref_id', 'N/A')}",
+    ]
+    payload = {"sheets": [{
+        "name": METADATA_CORRECTIONS_SHEET_NAME,
+        "mode": "append",
+        "header": False,
+        "columns": METADATA_CORRECTIONS_HEADERS,
+        "data": [row],
+        "dtypes": {header: "object" for header in METADATA_CORRECTIONS_HEADERS},
+    }]}
+    _run_lark_sheets(["+table-put", "--url", tracker_url, "--sheets", "-"], input_text=json.dumps(payload))
+    return True
+
+
 # ── Main handler (called from the daily scan) ────────────────────────────────
 def handle_metadata_notice(body, subject="", meta=None, msg_id="") -> dict:
     """Route a detected metadata notice: parse → region → DM → track state.
@@ -417,7 +502,8 @@ def handle_metadata_notice(body, subject="", meta=None, msg_id="") -> dict:
               f"resolved={existing.get('resolved')}) — skipping duplicate", flush=True)
         return {"status": "already_tracked", "key": key, "region": region}
 
-    # New notice → send the DM and record state.
+    # New notice → write to the Metadata Corrections tab, send the DM, and record state.
+    tracker_ok = _append_metadata_correction_row(fields, region)
     send = _send_notice_dm(fields, region)
     today = _today_brt()
 
@@ -434,14 +520,15 @@ def handle_metadata_notice(body, subject="", meta=None, msg_id="") -> dict:
             "message_id": send.get("message_id", ""),
             "receive_id_type": send.get("receive_id_type", ""),
             "receive_id": send.get("receive_id", ""),
+            "tracker_row_written": tracker_ok,
             "resolved": False,
             "resolved_at": "",
             "resolved_by": "",
         }
     update_json_state(STATE_FILE, _insert, default=lambda: {"notices": {}})
 
-    print(f"  ✓ Metadata notice recorded ({key}, region {region}, DM ok={send.get('ok')})", flush=True)
-    return {"status": "new", "key": key, "region": region, "dm_ok": send.get("ok")}
+    print(f"  ✓ Metadata notice recorded ({key}, region {region}, tracker ok={tracker_ok}, DM ok={send.get('ok')})", flush=True)
+    return {"status": "new", "key": key, "region": region, "tracker_ok": tracker_ok, "dm_ok": send.get("ok")}
 
 
 # ── Daily re-send loop ───────────────────────────────────────────────────────
