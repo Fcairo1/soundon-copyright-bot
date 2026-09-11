@@ -343,6 +343,20 @@ def _process_spotify_reply(value, custom_message="", notify_chat_id=None, event_
     try:
         _refresh_callback_credentials("callback email-status write-back")
         reply_type = (value.get("reply_type") or "").strip().lower()
+        claimant_email = str(value.get("claimant_email") or "").strip().lower()
+        if claimant_email.endswith("@soundon.global"):
+            print("spotify_reply blocked for Tier 4 internal self-claim:", json.dumps(value, ensure_ascii=False), flush=True)
+            try:
+                _send_outcome_card(
+                    chat_id=notify_chat_id,
+                    reply_type=reply_type or "internal",
+                    value=value,
+                    mode="failed",
+                    draft_url="",
+                    error_detail="Tier 4 internal self-claim — resolve/retract internally; standard external reply draft was not created.",
+                )
+            finally:
+                return
         tracker_row = value.get("tracker_row")
         # BRT (UTC-3) timestamp — the BR ops team works in São Paulo time, so the
         # tracker's Email Status column always shows BRT-local times.

@@ -1477,6 +1477,7 @@ def dm_action_cards(values):
         "lark_msg": _header_index(headers, LARK_MSG_ID_HEADER),
         "card_msg": _header_index(headers, CARD_MSG_ID_HEADER),
         "email_status": _header_index(headers, EMAIL_STATUS_HEADER),
+        "claimant_category": _header_index(headers, "Claimant Category"),
         "admin_action": _header_index(headers, ADMIN_ACTION_HEADER),
         "retracted": _header_index(headers, RETRACTED_HEADER),
     }
@@ -1497,6 +1498,9 @@ def dm_action_cards(values):
             log(f"  • Skipping row {row_num} ({_cell(row, idx['upc']) or 'N/A'}): status={status!r}, admin_action={admin_action!r}, retracted={retracted!r}")
             continue
         if _cell(row, idx["email_status"]):  # already replied
+            continue
+        if _cell(row, idx["claimant_category"]) == "Internal self-claim":
+            log(f"  • Skipping row {row_num} ({_cell(row, idx['upc']) or 'N/A'}): Tier 4 internal self-claim; no external reply DM.")
             continue
 
         detected_raw = _cell(row, idx["date"])

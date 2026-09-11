@@ -176,3 +176,36 @@ def test_nested_submission_does_not_overwrite_a_value_already_found():
     # clobber it even though it also finds an "Email:" value.
     fields = extract_fields(AUDIOSALAD_NESTED_SUBMISSION_BODY, "Infringement Claim: YouTube - 5063970532365 - SoundOn", {})
     assert fields["claimant_email"] == "alyssa.defonte@example.com"
+
+
+def test_relay_real_claimant_email_stops_before_glued_company_label():
+    fields = extract_fields(
+        AUDIOSALAD_NESTED_SUBMISSION_BODY,
+        "Infringement Claim: YouTube - 5063970532365 - SoundOn",
+        {"from": "infringement@audiosalad.com"},
+    )
+    assert fields["relay_email"] == "infringement@audiosalad.com"
+    assert fields["claimant_email"] == "alyssa.defonte@example.com"
+
+
+def test_fuga_relay_extracts_real_claimant_and_preserves_relay_email():
+    fields = extract_fields(
+        FUGA_APPLE_CLAIM_BODY,
+        "Apple Music DMCA Claim Notification - UPC: 054853875117",
+        {"from": "claims@fuga.com"},
+    )
+    assert fields["email_source"] == "FUGA"
+    assert fields["relay_email"] == "claims@fuga.com"
+    assert fields["claimant_email"] == "rights@example.com"
+
+
+def test_relay_excludes_proxy_and_internal_addresses_as_real_claimants():
+    body = """
+    Copyright Infringement Submission
+    From: Spotify Content Protection Email: infringement-claim-response@spotify.com
+    Company: Spotify
+    Contact soundon-copyright@bytedance.com or claims@soundon.global.
+    """
+    fields = extract_fields(body, "Possibly Infringing - Notification Warning No 1", {"from": "infringement-claim-response@spotify.com"})
+    assert fields["relay_email"] == "infringement-claim-response@spotify.com"
+    assert fields["claimant_email"] == "N/A"

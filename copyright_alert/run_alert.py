@@ -591,6 +591,72 @@ def _sender_email_from_meta(meta):
     return ""
 
 
+RELAY_SOURCE_NAMES = {"AudioSalad", "FUGA", "Spotify"}
+RELAY_INVALID_REAL_CLAIMANT_DOMAINS = {
+    "audiosalad.com",
+    "fuga.com",
+    "spotify.com",
+    "bytedance.com",
+    "soundon.global",
+}
+_EMAIL_TOKEN_RE = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
+_GLUED_EMAIL_LABEL_RE = re.compile(
+    r"(?P<email>[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+?\.(?:com|com\.br|org|net|gg|fr|me|live|es|co|io|music))"
+    r"(?=(?:Company|Claimant|DSP|UPC|ISRC|Name\s+of\s+track|Link\s+to\s+infringed|Name\s+of\s+copyright|More\s+detail|Content\s+Title|Release\s+Title)\s*:|\b|\s|[<>,;)]|$)",
+    re.IGNORECASE,
+)
+
+
+def _is_relay_source(email_source):
+    return str(email_source or "").strip() in RELAY_SOURCE_NAMES
+
+
+def _email_domain(email):
+    if not email or "@" not in str(email):
+        return ""
+    return str(email).rsplit("@", 1)[1].lower().strip(" .<>()[]{};,:")
+
+
+def _valid_real_claimant_email(email):
+    domain = _email_domain(email)
+    if not domain:
+        return False
+    return not any(domain == invalid or domain.endswith(f".{invalid}") for invalid in RELAY_INVALID_REAL_CLAIMANT_DOMAINS)
+
+
+def _first_clean_email_token(text):
+    text = str(text or "")
+    for regex in (_GLUED_EMAIL_LABEL_RE, _EMAIL_TOKEN_RE):
+        for match in regex.finditer(text):
+            email = (match.group("email") if "email" in match.groupdict() else match.group(0)).strip(" <>()[]{};,:")
+            if _valid_real_claimant_email(email):
+                return email
+    return ""
+
+
+def _relay_claim_body(body):
+    text = str(body or "")
+    markers = [
+        "Copyright Infringement Submission",
+        "Original claim details:",
+        "Claimant:",
+        "Claimant Name:",
+        "Email:",
+    ]
+    starts = [text.lower().find(marker.lower()) for marker in markers]
+    starts = [idx for idx in starts if idx >= 0]
+    if starts:
+        text = text[min(starts):]
+    end_match = re.search(r"\n\s*(?:Google Ad Fields|--\s*If you accept|If you accept the claim|Best Regards|Original Message)\b", text, re.IGNORECASE)
+    if end_match:
+        text = text[:end_match.start()]
+    return text
+
+
+def _extract_real_claimant_email_from_relay(body):
+    return _first_clean_email_token(_relay_claim_body(body))
+
+
 def is_retraction_email(body, subject="", meta=None):
     meta = meta or {}
     sender = _sender_email_from_meta(meta)
@@ -766,9 +832,9 @@ def _extract_copyright_infringement_submission(body):
     # would swallow "comCompany" as if it were part of the address.
     email_chunk_m = re.search(rf"Email\s*:\s*(.*?)(?={stop_labels}|\Z)", sub_body, re.IGNORECASE | re.DOTALL)
     if email_chunk_m:
-        email_m = re.search(r"([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})", email_chunk_m.group(1))
-        if email_m:
-            overrides["claimant_email"] = email_m.group(1)
+        clean_email = _first_clean_email_token(email_chunk_m.group(1))
+        if clean_email:
+            overrides["claimant_email"] = clean_email
     company_m = re.search(rf"Company\s*:\s*(.*?)(?={stop_labels}|\Z)", sub_body, re.IGNORECASE | re.DOTALL)
     if company_m and company_m.group(1).strip():
         overrides["claimant_company"] = company_m.group(1).strip()
@@ -795,6 +861,7 @@ def extract_fields(body, subject, meta):
     """Extract all needed fields from email body + subject."""
     fields = {}
     fields["email_source"] = detect_email_source(body, subject, meta)
+    fields["relay_email"] = _sender_email_from_meta(meta) if _is_relay_source(fields["email_source"]) else ""
     fields["possible_content_id_release_request"] = is_possible_content_id_release_request(body)
     fields["possible_non_claim_notice"] = is_possible_non_claim_relay_notice(subject, body)
 
@@ -824,7 +891,10 @@ def extract_fields(body, subject, meta):
 
     if claimant_line != "N/A":
         email_match = re.search(r"([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})", claimant_line)
-        if email_match and claimant_email == "N/A":
+        clean_claimant_line_email = _first_clean_email_token(claimant_line)
+        if clean_claimant_line_email and claimant_email == "N/A":
+            claimant_email = clean_claimant_line_email
+        elif email_match and claimant_email == "N/A":
             claimant_email = email_match.group(1)
         # AudioSalad style: "Firstname Lastname - email@domain.com".
         claimant_line = re.sub(r"\s+-\s*[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}.*$", "", claimant_line).strip()
@@ -932,6 +1002,13 @@ def extract_fields(body, subject, meta):
         current = fields.get(key, "N/A")
         if current in ("N/A", "no message"):
             fields[key] = _clean_email_value(value)
+
+    if _is_relay_source(fields.get("email_source")):
+        real_claimant_email = _extract_real_claimant_email_from_relay(body)
+        if real_claimant_email:
+            fields["claimant_email"] = real_claimant_email
+        elif not _valid_real_claimant_email(fields.get("claimant_email")):
+            fields["claimant_email"] = "N/A"
 
     return fields
 
@@ -1950,6 +2027,9 @@ def _ensure_major_label_tracker_columns(headers):
 
 
 def _base_tracker_values(ef, ar, msg_id_str, upc_str, isrc_str, uid_str, status, classification):
+    note = "Initial alert posted. Card contains reversible status buttons; sheet row logged at post time."
+    if classification.get("tier") == 4:
+        note = "Tier 4 internal self-claim — resolve internally / retract internally. Do not send standard external Spotify reply."
     values = {
         "UPC": (upc_str, True),
         "ISRC": (isrc_str, True),
@@ -1968,7 +2048,7 @@ def _base_tracker_values(ef, ar, msg_id_str, upc_str, isrc_str, uid_str, status,
         "Status": (status, False),
         "Date Received": (ef.get("date_received", "N/A"), False),
         "Lark Message ID": (msg_id_str, True),
-        "Notes": ("Initial alert posted. Card contains reversible status buttons; sheet row logged at post time.", False),
+        "Notes": (note, False),
         "Admin Action Taken": ("", False),
         "Card Message ID": (msg_id_str, True),
         "Email Status": ("", False),
