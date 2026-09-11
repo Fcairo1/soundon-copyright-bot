@@ -30,7 +30,7 @@ REGION_TRACKERS = {
         "sheet_id": "c02dad",
     },
     "SPLA": {
-        "url": "https://bytedance.larkoffice.com/sheets/FKCTs8go0hsbWQtFtvGlg63Hgji",
+        "url": "https://bytedance.larkoffice.com/wiki/Ig1XwJc85iWmsGkEzujcy7sln9d?sheet=66eefc",
         "sheet_id": "66eefc",
     },
     "US": {

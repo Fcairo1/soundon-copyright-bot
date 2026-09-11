@@ -97,7 +97,7 @@ REGION_CONFIGS = {
         "chat_name": "SPLA Infringement Claim Alert",
         # Canonical tracker is the wiki node below; the sheets URL is the same
         # workbook resolved for the lark-cli sheets read/append/append APIs.
-        "tracker_url": "https://bytedance.larkoffice.com/sheets/FKCTs8go0hsbWQtFtvGlg63Hgji",
+        "tracker_url": "https://bytedance.larkoffice.com/wiki/Ig1XwJc85iWmsGkEzujcy7sln9d?sheet=66eefc",
         "tracker_wiki_url": "https://bytedance.larkoffice.com/wiki/Ig1XwJc85iWmsGkEzujcy7sln9d",
         "sheet_id": "66eefc",
         "ignored_mentions": set(),

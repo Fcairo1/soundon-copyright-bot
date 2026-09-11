@@ -51,7 +51,7 @@ TRACKERS = [
     },
     {
         "name": "SPLA",
-        "url": "https://bytedance.sg.larkoffice.com/sheets/S1dOshkZlhfaX1tXmFJlrwPEgqe",
+        "url": "https://bytedance.larkoffice.com/wiki/Ig1XwJc85iWmsGkEzujcy7sln9d?sheet=66eefc",
         "sheet_id": "",
     },
     {
