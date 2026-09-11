@@ -972,8 +972,16 @@ def send_dm_post(title, content_lines):
             content.append([{"tag": "text", "text": str(line)}])
     payload = {"zh_cn": {"title": title, "content": content}}
     msg_json = json.dumps(payload, ensure_ascii=False)
+    helper_script = FEISHU_IM_DIR / "scripts" / "im_send.py"
+    if not helper_script.exists():
+        log(f"  ⚠ DM helper not found at {helper_script}; skipping DM fallback.")
+        return False
     cmd = ["python3", "scripts/im_send.py", "send", RECIPIENT_EMAIL, "post", msg_json]
-    res = subprocess.run(cmd, cwd=str(FEISHU_IM_DIR), capture_output=True, text=True, timeout=90)
+    try:
+        res = subprocess.run(cmd, cwd=str(FEISHU_IM_DIR), capture_output=True, text=True, timeout=90)
+    except FileNotFoundError as exc:
+        log(f"  ⚠ DM helper path unavailable at {FEISHU_IM_DIR}: {exc!r}")
+        return False
     ok = res.returncode == 0 and "RESULT" in (res.stdout + res.stderr) or res.returncode == 0
     log(f"  DM send rc={res.returncode}")
     log(f"    {(res.stdout + res.stderr).strip()[:400]}")

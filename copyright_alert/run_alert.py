@@ -116,6 +116,16 @@ EXCLUDED_MENTIONS = set(BASE_EXCLUDED_MENTIONS)
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
+def _col_letter(index):
+    """Zero-based column index -> spreadsheet column letters."""
+    letters = ""
+    index += 1
+    while index:
+        index, rem = divmod(index - 1, 26)
+        letters = chr(65 + rem) + letters
+    return letters
+
+
 def run(cmd, timeout=120):
     r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
     return r.stdout.strip()

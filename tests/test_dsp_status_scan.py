@@ -92,14 +92,19 @@ def test_run_writes_resolved_upc_before_statuses(monkeypatch):
     monkeypatch.setattr(scan, "lookup_upc_by_isrc", lambda isrc: "640472546318")
     monkeypatch.setattr(
         scan,
-        "query_audiosalad_statuses_by_upc",
-        lambda upc: {name: NOT_SENT_MARK for name in DSP_STATUS_COLUMNS},
+        "query_audiosalad_statuses_batch",
+        lambda upcs: {upc: {name: NOT_SENT_MARK for name in DSP_STATUS_COLUMNS} for upc in upcs},
     )
-    monkeypatch.setattr(scan, "write_status_updates", lambda updates: writes.extend(updates) or len(updates))
+    monkeypatch.setattr(
+        scan,
+        "sheet_values_api",
+        lambda _method, _sheet_url, _sheet_id, cell_range, values: writes.append((cell_range, values)),
+    )
 
     summary = scan.run(dry_run=False)
 
-    assert writes[0] == ("J7", "640472546318")
-    assert ("O7", NOT_SENT_MARK) not in writes
+    assert writes[0] == ("P7:U7", [[NOT_SENT_MARK] * 6])
+    assert writes[1] == ("J7:J7", [["640472546318"]])
+    assert not any(cell_range.startswith("O") for cell_range, _values in writes)
     assert summary["upcs_filled"] == 1
-    assert summary["written_cells"] == 7
+    assert summary["written_ranges"] == 2
