@@ -37,6 +37,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 from copyright_alert.lark_auth import extract_sheet_values, request_json_with_auth_retry, sheet_values_api
+from copyright_alert.major_label_detector import MAJOR_LABEL_HEADERS
 from copyright_alert.paths import inner_skill
 
 # ── Make the copyright_alert package importable & anchor relative paths ───────
@@ -899,6 +900,22 @@ def ensure_admin_action_column(values):
 def ensure_retracted_column(values):
     """Ensure the tracker has a 'Retracted' header available for claim retractions."""
     return ensure_tracker_column(values, RETRACTED_HEADER, section_title="PART 1A.1 — Ensure 'Retracted' column")
+
+
+def ensure_major_label_columns(values):
+    created = []
+    indices = {}
+    for header in MAJOR_LABEL_HEADERS:
+        idx, was_created = ensure_tracker_column(values, header)
+        indices[header] = idx
+        if was_created:
+            created.append(header)
+            values = read_sheet_values("A:AF")
+    if created:
+        log(f"  ✓ Major label columns created: {', '.join(created)}")
+    else:
+        log("  ✓ Major label columns already exist.")
+    return indices, created
 
 
 # ── DM sending (to the region's Ops owner) ───────────────────────────────────
@@ -1828,7 +1845,7 @@ def main(region=None):
         results["scan"] = {"error": repr(e)}
 
     # Sheet sections — ensure required columns first so later passes read accurate headers.
-    values = read_sheet_values("A:AA")
+    values = read_sheet_values("A:AF")
     try:
         admin_idx, admin_created = ensure_admin_action_column(values)
         results["admin_column"] = {"index": admin_idx, "created": admin_created}
@@ -1854,8 +1871,16 @@ def main(region=None):
         spotify_columns_ok = False
         log(f"  ✗ Spotify column section error: {e!r}")
 
-    if admin_created or retracted_created or spotify_columns_ok:
-        values = read_sheet_values("A:AA")
+    try:
+        major_label_indices, major_label_created = ensure_major_label_columns(values)
+        results["major_label_columns"] = {"indices": major_label_indices, "created": major_label_created}
+    except Exception as e:
+        major_label_created = []
+        log(f"  ✗ Major label column section error: {e!r}")
+        results["major_label_columns"] = {"error": repr(e)}
+
+    if admin_created or retracted_created or spotify_columns_ok or major_label_created:
+        values = read_sheet_values("A:AF")
 
     # A.2) Retraction detection runs after the normal new-claim pass and before
     # later metrics/DM flows so resolved retractions disappear from open counts.
@@ -1866,7 +1891,7 @@ def main(region=None):
             notify=True,
         )
         if results["retractions"].get("updated"):
-            values = read_sheet_values("A:AA")
+            values = read_sheet_values("A:AF")
     except Exception as e:
         log(f"  ✗ Retraction section error: {e!r}")
         results["retractions"] = {"error": repr(e)}

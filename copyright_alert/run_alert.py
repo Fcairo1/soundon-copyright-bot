@@ -23,6 +23,7 @@ from datetime import datetime, timedelta, date
 from pathlib import Path
 
 from copyright_alert.state_io import atomic_write_json, update_json_state
+from copyright_alert.major_label_detector import MAJOR_LABEL_HEADERS, classify_claimant, tracker_values
 from copyright_alert.lark_auth import request_json_with_auth_retry
 from copyright_alert.manager_exclusions import is_manager_excluded
 from copyright_alert.upc_exclusions import is_upc_excluded
@@ -1906,88 +1907,108 @@ def _tracker_cell(value, *, text=False):
     return cell
 
 
+def _tracker_header_row(max_col="AF"):
+    cmd = [
+        "lark-cli", "sheets", "+csv-get", "--url", TRACKER_SHEET_URL,
+        "--sheet-id", TRACKER_SHEET_ID, "--range", f"A1:{max_col}1",
+        "--max-chars", "20000",
+    ]
+    res = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    parsed, rows, _row_numbers = parse_lark_annotated_csv(res.stdout)
+    if res.returncode != 0 or not parsed or not rows:
+        print("  ⚠ Could not read tracker headers before append:", (res.stdout + res.stderr)[:500])
+        return []
+    headers = [str(value or "").strip() for value in rows[0]]
+    while headers and not headers[-1]:
+        headers.pop()
+    return headers
+
+
+def _ensure_major_label_tracker_columns(headers):
+    headers = list(headers or [])
+    missing = [header for header in MAJOR_LABEL_HEADERS if header not in headers]
+    if not missing:
+        return headers
+
+    start_idx = len(headers)
+    end_idx = start_idx + len(missing) - 1
+    target_range = f"{_col_letter(start_idx)}1:{_col_letter(end_idx)}1"
+    cells = [[_tracker_cell(header) for header in missing]]
+    cmd = [
+        "lark-cli", "sheets", "+cells-set", "--url", TRACKER_SHEET_URL,
+        "--sheet-id", TRACKER_SHEET_ID, "--range", target_range,
+        "--allow-overwrite=false",
+        "--cells", json.dumps(cells, ensure_ascii=False),
+    ]
+    res = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    print("  Major label header write rc:", res.returncode)
+    print("  Major label header write range:", target_range)
+    print("  Major label header write output:", (res.stdout + res.stderr)[:500])
+    if res.returncode == 0:
+        headers.extend(missing)
+    return headers
+
+
+def _base_tracker_values(ef, ar, msg_id_str, upc_str, isrc_str, uid_str, status, classification):
+    values = {
+        "UPC": (upc_str, True),
+        "ISRC": (isrc_str, True),
+        "Title": (ef.get("title") if ef.get("title") != "N/A" else ar.get("album_title", "N/A"), False),
+        "UID": (uid_str, True),
+        "Source": (ar.get("source_type_name", "N/A"), False),
+        "tt_30d_vv": (ar.get("tt_30d_vv", "N/A"), False),
+        "sptf_30d_str": (ar.get("sptf_30d_str", "N/A"), False),
+        "Artist(s)": (_format_artist_names(ar.get("display_artist")), False),
+        "Spotify URI": (ef.get("spotify_uri") if ef.get("spotify_uri") not in (None, "", "N/A") else "", True),
+        "DSP": (ef.get("dsp", "N/A"), False),
+        "Claimant": (ef.get("claimant_name", "N/A"), False),
+        "Email Source": (ef.get("email_source", "N/A"), False),
+        "BD": (", ".join(_display_name_from_username(p) for p in _parse_people_list(ar.get("bd_manager_list"))) or "N/A", False),
+        "Label Manager": (", ".join(_display_name_from_username(p) for p in _parse_people_list(ar.get("operation_manager_list"))) or "N/A", False),
+        "Status": (status, False),
+        "Date Received": (ef.get("date_received", "N/A"), False),
+        "Lark Message ID": (msg_id_str, True),
+        "Notes": ("Initial alert posted. Card contains reversible status buttons; sheet row logged at post time.", False),
+        "Admin Action Taken": ("", False),
+        "Card Message ID": (msg_id_str, True),
+        "Email Status": ("", False),
+        "ref_code": (ef.get("ref_id") if ef.get("ref_id") not in (None, "", "N/A") else "", True),
+        "User Name": (ar.get("user_name") if ar.get("user_name") not in (None, "", "N/A") else "", False),
+        "Claimant Email": (ef.get("claimant_email") if ef.get("claimant_email") not in (None, "", "N/A") else "", True),
+        "Retracted": ("", False),
+    }
+    for header, value in tracker_values(classification).items():
+        values[header] = (value, False)
+    return values
+
+
 def append_tracker_row(ef, ar, message_id, status=""):
-    """Append the posted alert to the tracker sheet so later callbacks can update it.
-
-    Engagement columns (tt_30d_vv / sptf_30d_str) are populated as a one-time
-    snapshot only when a brand-new tracker row is appended. Existing rows are
-    never refreshed or overwritten by daily jobs.
-
-    Columns A:Y (25):
-      A UPC, B ISRC, C Title, D UID, E Source (Aeolus source_type_name, e.g.
-      "AP", "A&R", "UG-Paid ads"), F tt_30d_vv, G sptf_30d_str, H Artist(s),
-      I Spotify URI, J DSP, K Claimant, L Email Source (which platform/DSP the notification
-      email came through, e.g. "Other"/"Spotify" — NOT the claimant's email
-      address, despite the header name; that's column X), M BD,
-      N Label Manager, O Status, P Date Received (reused as the "detected
-      at" timestamp for the Spotify reply countdown), Q Lark Message ID,
-      R Notes, S Admin Action Taken, T Card Message ID (alias of Q — same
-      group-card message_id, written to both so the daily countdown refresh
-      can find it easily), U Email Status (filled in later once a Spotify
-      reply is sent), V ref_code (the "ref:_...:ref" claim code parsed from
-      the Spotify email; blank for non-Spotify claims),
-      W User Name (Aeolus `user_name` enrichment — the uploader's SoundOn
-      username, when Aeolus has it; blank/"N/A" until that lands for a given
-      UPC. Only populated for rows appended after this column existed —
-      never backfilled onto older rows),
-      X Claimant Email (the rights holder's actual email address, parsed
-      from the claim email itself by extract_fields() — this is the field
-      account managers actually want when they ask for "the claimant's
-      email"; column L is a different, unrelated field. Only populated for
-      rows appended after this column existed),
-      Y Retracted (blank for new claims; later set to "Yes" when Spotify sends
-      a claim-retraction notice).
-
-    Returns the appended tracker row number on success, else None.
-    """
+    """Append the posted alert to the tracker sheet so later callbacks can update it."""
     ar = enrich_with_engagement_once(ar or {})
 
-    # Explicitly cast identifiers to strings to harden against spreadsheet formatting issues
     upc_str = str(ef.get("upc") or "N/A").strip()
     isrc_str = str(ef.get("isrc") or "N/A").strip()
     uid_str = str(ar.get("uid") or "N/A").strip()
     msg_id_str = str(message_id or "N/A").strip()
+    classification = classify_claimant(ef.get("claimant_email", ""), ef.get("claimant_name", ""))
 
+    headers = _ensure_major_label_tracker_columns(_tracker_header_row())
+    if not headers:
+        return None
+    row_values = _base_tracker_values(ef, ar, msg_id_str, upc_str, isrc_str, uid_str, status, classification)
     row = [[
-        _tracker_cell(upc_str, text=True),
-        _tracker_cell(isrc_str, text=True),
-        _tracker_cell(ef.get("title") if ef.get("title") != "N/A" else ar.get("album_title", "N/A")),
-        _tracker_cell(uid_str, text=True),
-        _tracker_cell(ar.get("source_type_name", "N/A")),  # E Source
-        _tracker_cell(ar.get("tt_30d_vv", "N/A")),
-        _tracker_cell(ar.get("sptf_30d_str", "N/A")),
-        _tracker_cell(_format_artist_names(ar.get("display_artist"))),
-        _tracker_cell(ef.get("spotify_uri") if ef.get("spotify_uri") not in (None, "", "N/A") else "", text=True),  # I Spotify URI
-        _tracker_cell(ef.get("dsp", "N/A")),
-        _tracker_cell(ef.get("claimant_name", "N/A")),
-        _tracker_cell(ef.get("email_source", "N/A")),
-        _tracker_cell(", ".join(_display_name_from_username(p) for p in _parse_people_list(ar.get("bd_manager_list"))) or "N/A"),
-        _tracker_cell(", ".join(_display_name_from_username(p) for p in _parse_people_list(ar.get("operation_manager_list"))) or "N/A"),
-        _tracker_cell(status),
-        _tracker_cell(ef.get("date_received", "N/A")),
-        _tracker_cell(msg_id_str, text=True),
-        _tracker_cell("Initial alert posted. Card contains reversible status buttons; sheet row logged at post time."),
-        _tracker_cell(""),          # S Admin Action Taken (filled later by daily workflow)
-        _tracker_cell(msg_id_str, text=True),  # T Card Message ID (alias of Q / Lark Message ID)
-        _tracker_cell(""),          # U Email Status (filled after a Spotify reply is sent)
-        _tracker_cell(ef.get("ref_id") if ef.get("ref_id") not in (None, "", "N/A") else "", text=True),  # V ref_code
-        _tracker_cell(ar.get("user_name") if ar.get("user_name") not in (None, "", "N/A") else ""),  # W User Name
-        _tracker_cell(ef.get("claimant_email") if ef.get("claimant_email") not in (None, "", "N/A") else "", text=True),  # X Claimant Email
-        _tracker_cell(""),          # Y Retracted (filled later by retraction-detection flow)
+        _tracker_cell(value, text=as_text)
+        for header in headers
+        for value, as_text in [row_values.get(header, ("", False))]
     ]]
-    assert len(row[0]) == 25, f"Tracker row schema drift: expected 25 cells, got {len(row[0])}"
 
     next_row = _tracker_next_row()
     if not next_row:
         return None
-    target_range = f"A{next_row}:Y{next_row}"
+    target_range = f"A{next_row}:{_col_letter(len(headers) - 1)}{next_row}"
     cmd = [
         "lark-cli", "sheets", "+cells-set", "--url", TRACKER_SHEET_URL,
         "--sheet-id", TRACKER_SHEET_ID, "--range", target_range,
-        # B11: verified `--allow-overwrite` is a supported boolean flag on
-        # `lark-cli sheets +cells-set` (default true). `=false` is valid syntax
-        # and makes the write error out instead of clobbering a non-empty target
-        # row — a safety net against a stale/wrong next_row. Keep it.
         "--allow-overwrite=false",
         "--cells", json.dumps(row, ensure_ascii=False),
     ]

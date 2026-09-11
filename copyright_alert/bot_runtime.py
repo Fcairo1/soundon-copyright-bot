@@ -357,9 +357,10 @@ def read_tracker_rows(region: str) -> Tuple[List[str], List[Dict[str, str]]]:
         # fully read (the old A1:Q200 both truncated rows and stopped before
         # columns R/S/T). Extended to U so the appended "Spotify Ref Code"
         # column is included in header-keyed records, then to V for the
-        # Read through AA so tracker extensions like Retracted remain visible to
-        # bot commands that compute counts/status from the sheet.
-        "A1:AA2000",
+        # Read through AF so tracker extensions like Retracted and claimant
+        # classification columns remain visible to bot commands that compute
+        # counts/status from the sheet.
+        "A1:AF2000",
     ]
     res = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True, timeout=90)
     if res.returncode != 0:
