@@ -165,13 +165,15 @@ def read_tracker_values(tracker: Dict[str, str]) -> List[list]:
     return read_sheet_values(tracker["url"], sheet_id, "A1:AF2000")
 
 
-def discover_claim_uids_from_trackers(*, quarter: Optional[Dict[str, str]] = None) -> Tuple[Dict[str, Dict[str, str]], List[str]]:
+def discover_claim_uids_from_trackers(*, quarter: Optional[Dict[str, str]] = None, region: Optional[str] = None) -> Tuple[Dict[str, Dict[str, str]], List[str]]:
     quarter = quarter or current_quarter()
     start = datetime.fromisoformat(quarter["start"]).date()
     end = datetime.fromisoformat(quarter["end_exclusive"]).date()
     discovered: Dict[str, Dict[str, str]] = {}
     warnings = []
     for tracker in TRACKERS:
+        if region and tracker["name"].upper() != region.upper():
+            continue
         try:
             values = read_tracker_values(tracker)
         except Exception as exc:
@@ -243,8 +245,18 @@ def _latest_partition_clause(p_date: str) -> str:
     return f"p_date = {_sql_string(p_date)}"
 
 
-def _base_scope_clause() -> str:
-    return "region = 'BR' AND `source_type[dim_user]` IN (5, 6) AND status_desc != 'REJECT'"
+def _base_scope_clause(target_region: Optional[str] = None) -> str:
+    region_filter = "region = 'BR'"
+    if target_region == "SPLA":
+        region_filter = "region IN ('MX','CL','CO','AR','ES','PR','PE')"
+    elif target_region == "US":
+        region_filter = "region IN ('US','CA','AU','NZ')"
+    elif target_region == "BR":
+        region_filter = "region = 'BR'"
+    elif target_region:
+        from copyright_alert import run_alert as ra
+        region_filter = f"region = '{ra._aeolus_sql_quote(target_region)}'"
+    return f"{region_filter} AND `source_type[dim_user]` IN (5, 6) AND status_desc != 'REJECT'"
 
 
 def query_account_release_counts_many(
@@ -253,6 +265,7 @@ def query_account_release_counts_many(
     quarter: Optional[Dict[str, str]] = None,
     include_total_for: Optional[set[str]] = None,
     p_date: Optional[str] = None,
+    region: Optional[str] = None,
 ) -> List[Dict[str, object]]:
     quarter = quarter or current_quarter()
     unique_uids = []
@@ -281,7 +294,7 @@ SELECT
 FROM {SONG_DIMENSION_TABLE}
 WHERE user_id IN ({in_list})
   AND {_latest_partition_clause(p_date)}
-  AND {_base_scope_clause()}
+  AND {_base_scope_clause(region)}
 GROUP BY user_id
 """.strip()
     parsed = _run_song_dimension_sql(sql, timeout=300)
@@ -399,16 +412,16 @@ def plan_sheet_updates(
     return {"updates": updates, "actions": actions, "quarter_column_created": bool(header_update), "quarter_index": quarter_index}
 
 
-def run(*, dry_run: bool = True, sheet_url: str = ACCOUNT_RELEASE_COUNTS_SHEET_URL, sheet_id: Optional[str] = None, now: Optional[datetime] = None) -> Dict[str, object]:
+def run(*, dry_run: bool = False, sheet_url: str = ACCOUNT_RELEASE_COUNTS_SHEET_URL, sheet_id: Optional[str] = None, now: Optional[datetime] = None, region: Optional[str] = None) -> Dict[str, object]:
     quarter = current_quarter(now)
     sheet_id = sheet_id or resolve_first_sheet_id(sheet_url)
     account_values = read_sheet_values(sheet_url, sheet_id, os.getenv(ACCOUNT_RELEASE_COUNTS_RANGE_ENV, DEFAULT_ACCOUNT_RELEASE_COUNTS_RANGE))
     inspected = inspect_account_release_sheet(account_values, quarter["label"])
-    discovered, warnings = discover_claim_uids_from_trackers(quarter=quarter)
+    discovered, warnings = discover_claim_uids_from_trackers(quarter=quarter, region=region)
     existing_uids = set(inspected["existing"].keys())
     new_uids = set(discovered.keys()) - existing_uids
     p_date = latest_p_date()
-    counts_rows = query_account_release_counts_many(discovered.keys(), quarter=quarter, include_total_for=new_uids, p_date=p_date)
+    counts_rows = query_account_release_counts_many(discovered.keys(), quarter=quarter, include_total_for=new_uids, p_date=p_date, region=region)
     plan = plan_sheet_updates(counts_rows, account_values, sheet_id, quarter_label=quarter["label"], now=now)
     if not dry_run and plan["updates"]:
         sheet_values_batch_update(sheet_url, plan["updates"])
@@ -431,7 +444,8 @@ def run(*, dry_run: bool = True, sheet_url: str = ACCOUNT_RELEASE_COUNTS_SHEET_U
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Refresh Account Release Counts from infringement trackers + Aeolus")
-    parser.add_argument("--write", action="store_true", help="Actually write to the Account Release Counts sheet")
+    parser.add_argument("--dry-run", action="store_true", help="Do not write to the sheet")
+    parser.add_argument("--region", default=None, help="Target region (BR, SPLA, US)")
     parser.add_argument("--sheet-url", default=ACCOUNT_RELEASE_COUNTS_SHEET_URL)
     parser.add_argument("--sheet-id", default=None)
     parser.add_argument("--as-of", default=None, help="Optional YYYY-MM-DD date for deterministic quarter selection")
@@ -439,7 +453,7 @@ def main() -> int:
     now = None
     if args.as_of:
         now = datetime.fromisoformat(args.as_of).replace(tzinfo=BRT)
-    result = run(dry_run=not args.write, sheet_url=args.sheet_url, sheet_id=args.sheet_id, now=now)
+    result = run(dry_run=args.dry_run, sheet_url=args.sheet_url, sheet_id=args.sheet_id, now=now, region=args.region)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 

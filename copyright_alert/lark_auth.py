@@ -348,6 +348,29 @@ def _spreadsheet_token(sheet_url: str) -> str:
             idx = parts.index(marker)
             if idx + 1 < len(parts):
                 return parts[idx + 1]
+    
+    if "wiki" in parts:
+        idx = parts.index("wiki")
+        if idx + 1 < len(parts):
+            wiki_token = parts[idx + 1]
+            try:
+                import subprocess
+                import json
+                result = subprocess.run(
+                    ["lark-cli", "wiki", "+node-get", "--node-token", wiki_token],
+                    capture_output=True, text=True, timeout=30
+                )
+                if result.returncode == 0:
+                    start_idx = result.stdout.find("{")
+                    if start_idx >= 0:
+                        payload = json.loads(result.stdout[start_idx:])
+                        obj_token = (payload.get("data") or {}).get("obj_token")
+                        if obj_token:
+                            return obj_token
+            except Exception:
+                pass
+            return wiki_token
+
     return sheet_url.strip()
 
 
