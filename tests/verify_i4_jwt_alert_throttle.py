@@ -32,8 +32,13 @@ class _FakeCompleted:
 
 def main() -> int:
     # Redirect throttle state to a temp file so we don't touch runtime/.
-    tmp = Path(tempfile.mkdtemp()) / "auth_alert_last_sent.json"
+    tmp_root = Path(tempfile.mkdtemp())
+    tmp = tmp_root / "auth_alert_last_sent.json"
+    fake_helper = tmp_root / "feishu-im-send"
+    (fake_helper / "scripts").mkdir(parents=True)
+    (fake_helper / "scripts" / "im_send.py").write_text("", encoding="utf-8")
     lark_auth._ALERT_STATE_FILE = tmp
+    lark_auth._FEISHU_IM_DIR = fake_helper
     # Simulate a successful Lark send without any network/credentials.
     sends = {"count": 0}
     def _fake_run(cmd, **kwargs):

@@ -45,7 +45,7 @@ _OAUTH_LOCK = threading.Lock()
 _FEISHU_IM_DIR = inner_skill("feishu-im-send")
 _ALERT_EMAIL = "filipe.cairo@bytedance.com"
 _ALERT_CHAT_ID = "oc_6e157309d8d7145ba5ce7f0ba67354cb"
-_AUTH_ERROR_CODES = {99991663, 99991664}
+_AUTH_ERROR_CODES = {99991663, 99991664, 99991679}
 _AUTH_ALERT_LOCK = threading.Lock()
 _AUTH_ALERT_FINGERPRINTS: set[str] = set()
 
@@ -448,9 +448,27 @@ def sheet_values_batch_update(
 
     try:
         payload = request_json_with_auth_retry(make_request, timeout=timeout, context="sheet_values_batch_update")
-    except RuntimeError:
+    except RuntimeError as exc:
         force_refresh = True
-        payload = request_json_with_auth_retry(make_request, timeout=timeout, context="sheet_values_batch_update:forced")
+        try:
+            payload = request_json_with_auth_retry(make_request, timeout=timeout, context="sheet_values_batch_update:forced")
+        except RuntimeError as forced_exc:
+            detail = f"{exc}\n{forced_exc}"
+            if "99991679" not in detail and "Unauthorized" not in detail:
+                raise
+            print(
+                "↻ sheet_values_batch_update: batch endpoint unauthorized; "
+                "falling back to single-range PUT updates",
+                flush=True,
+            )
+            results = []
+            for item in value_ranges:
+                item_range = str(item.get("range") or "")
+                if "!" not in item_range:
+                    raise RuntimeError(f"Invalid batch value range without sheet id: {item_range!r}") from forced_exc
+                item_sheet_id, item_cell_range = item_range.split("!", 1)
+                results.append(sheet_values_api("PUT", sheet_url, item_sheet_id, item_cell_range, item.get("values"), timeout=timeout))
+            return {"code": 0, "msg": "success", "fallback": "single_range_put", "results": results}
     if payload.get("code") not in (0, "0", None):
         raise RuntimeError(f"Sheet batch update failed: {json.dumps(payload, ensure_ascii=False)[:1000]}")
     return payload
@@ -516,10 +534,10 @@ def send_stale_token_alert(context: str, detail: str) -> bool:
 
     title = "⚠️ copyright_alert auth refresh failed"
     lines = [
-        f"A Lark auth error still failed after an on-demand credential refresh.",
+        "A Lark auth error still failed after an on-demand credential refresh.",
         f"Context: {context}",
         f"Detail: {detail}",
-        "Manual refresh of copyright_alert/aime_env_refresh.json may be required.",
+        "Manual re-authentication of runtime/lark_oauth_secret.json may be required.",
     ]
     payload = {
         "zh_cn": {
@@ -533,6 +551,11 @@ def send_stale_token_alert(context: str, detail: str) -> bool:
         ["python3", "scripts/im_send.py", "send", _ALERT_EMAIL, "post", msg_json],
         ["python3", "scripts/im_send.py", "send", _ALERT_CHAT_ID, "post", msg_json, "--id-type=chat_id"],
     ]
+    helper_script = _FEISHU_IM_DIR / "scripts" / "im_send.py"
+    if not helper_script.exists():
+        print(f"⚠ stale-token alert skipped: Lark IM helper not found at {helper_script}", flush=True)
+        return False
+
     for cmd in attempts:
         try:
             res = subprocess.run(
