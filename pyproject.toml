@@ -19,3 +19,6 @@ packages = [
     "scripts.diagnostics",
     "scripts.one_off",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

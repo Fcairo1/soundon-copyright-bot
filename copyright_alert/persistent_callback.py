@@ -1261,6 +1261,35 @@ def _handle_dm_upc(upc: str, message_id: str) -> None:
 # Find UPC-like sequences (12 or 13 consecutive digits) anywhere in a message.
 # Use word-boundary-ish guards so we don't match inside longer numbers.
 UPC_SCAN = re.compile(r"(?<!\d)(\d{12,13})(?!\d)")
+ACTION_CARD_TRIGGER_PHRASES = (
+    "action card",
+    "claim card",
+    "resend card",
+    "resend an action card",
+    "resend a card",
+    "new card",
+    "generate card",
+)
+INBOX_SEARCH_TRIGGER_PHRASES = (
+    "check claims",
+    "find claims",
+    "scan inbox",
+    "search claims",
+    "show claims",
+)
+
+
+def _contains_trigger_phrase(text: str, phrases) -> bool:
+    normalized = re.sub(r"\s+", " ", (text or "").lower()).strip()
+    return any(phrase in normalized for phrase in phrases)
+
+
+def _dm_upc_intent(text: str) -> str:
+    if _contains_trigger_phrase(text, ACTION_CARD_TRIGGER_PHRASES):
+        return "action_card"
+    if _contains_trigger_phrase(text, INBOX_SEARCH_TRIGGER_PHRASES):
+        return "inbox_search"
+    return "inbox_search"
 
 
 def _extract_upcs(text: str):
@@ -1354,6 +1383,22 @@ def handle_message_receive(data: P2ImMessageReceiveV1):
                 worker.start()
                 return
             if upcs:
+                intent = _dm_upc_intent(stripped)
+                if intent == "action_card":
+                    upc_list = ", ".join(upcs)
+                    try:
+                        reply_text(message_id, f"📋 Re-posting action card for UPC {upc_list}...")
+                    except Exception as exc:
+                        print("dm card ack reply error:", repr(exc), flush=True)
+                    for upc in upcs:
+                        worker = threading.Thread(
+                            target=_handle_card_command,
+                            args=(f"/card {upc}", message_id, chat_id, sender_open_id, "BR"),
+                            daemon=True,
+                        )
+                        worker.start()
+                    return
+
                 # Immediate ack so the user knows the bot received the message
                 # before the (potentially slow) inbox lookup runs.
                 if len(upcs) == 1:
