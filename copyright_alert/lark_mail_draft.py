@@ -399,6 +399,12 @@ def _normalize_original_message_payload(payload: Dict[str, Any]) -> Dict[str, An
     sender = _first_nested_value(message, ("head_from", "from", "sender"))
     if isinstance(sender, dict):
         normalized["head_from"] = sender
+    elif isinstance(sender, str):
+        normalized["head_from"] = {"mail_address": sender.strip()}
+    elif isinstance(sender, list) and sender and isinstance(sender[0], dict):
+        normalized["head_from"] = sender[0]
+    elif isinstance(sender, list) and sender and isinstance(sender[0], str):
+        normalized["head_from"] = {"mail_address": sender[0].strip()}
     subject = _first_nested_value(message, ("subject", "Subject"))
     if subject:
         normalized["subject"] = str(subject)
