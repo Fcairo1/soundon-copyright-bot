@@ -299,12 +299,16 @@ def _process_status_update(status, message_id, operator_name=None, operator_id=N
             _trigger_event_driven_recovery(chat_id, exc)
 
 
-# ── Event dedup and outcome tracking ───────────────────────────────────────
-# We track per-click event_ids for a short TTL so callback re-deliveries do not
-# create duplicate reply drafts or duplicate error cards for the same click.
+# ── Event/message dedup and outcome tracking ───────────────────────────────
+# We track callback event_ids and inbound message_ids for a short TTL so Lark
+# re-deliveries or parallel daemons do not create duplicate replies for one user
+# action.
 EVENT_LOCKS = {}
 EVENT_LOCKS_LOCK = threading.Lock()
 EVENT_DEDUP_TTL_SECONDS = 15 * 60
+MESSAGE_LOCKS = {}
+MESSAGE_LOCKS_LOCK = threading.Lock()
+MESSAGE_DEDUP_TTL_SECONDS = 60
 
 
 def _prune_event_locks(now=None):
@@ -335,6 +339,29 @@ def _release_event_lock(event_id):
         return
     with EVENT_LOCKS_LOCK:
         EVENT_LOCKS[event_id] = time.time()
+
+
+def _prune_message_locks(now=None):
+    now = now or time.time()
+    stale_ids = [
+        message_id
+        for message_id, touched_at in MESSAGE_LOCKS.items()
+        if touched_at <= now - MESSAGE_DEDUP_TTL_SECONDS
+    ]
+    for message_id in stale_ids:
+        MESSAGE_LOCKS.pop(message_id, None)
+
+
+def _acquire_message_lock(message_id):
+    if not message_id:
+        return True
+    now = time.time()
+    with MESSAGE_LOCKS_LOCK:
+        _prune_message_locks(now)
+        if message_id in MESSAGE_LOCKS:
+            return False
+        MESSAGE_LOCKS[message_id] = now
+        return True
 
 
 def _process_spotify_reply(value, custom_message="", notify_chat_id=None, event_id=None, cc="", note=""):
@@ -1082,11 +1109,20 @@ def _handle_card_command(command_text, message_id, target_chat_id="", target_ope
 
         if region_flag:
             regions = [region_flag]
-        elif region_hint and str(region_hint).upper() in REGION_CONFIGS:
-            primary = str(region_hint).upper()
-            regions = [primary] + [r for r in REGION_CONFIGS if r != primary]
         else:
-            regions = list(REGION_CONFIGS.keys())
+            tracker_order = [r for r in ("BR", "SPLA", "US") if r in REGION_CONFIGS]
+            if region_hint and str(region_hint).upper() in REGION_CONFIGS:
+                primary = str(region_hint).upper()
+                regions = [primary] + [r for r in tracker_order if r != primary]
+            else:
+                regions = tracker_order
+
+        def row_upc(row):
+            if not row:
+                return ""
+            raw = str(row[0]).strip().lstrip("'")
+            digits = re.sub(r"\D", "", raw)
+            return digits or raw
 
         found = None
         for region in regions:
@@ -1096,7 +1132,7 @@ def _handle_card_command(command_text, message_id, target_chat_id="", target_ope
                 print(f"/card: read tracker {region} via fresh subprocess failed: {exc!r}", flush=True)
                 continue
             for idx, row in enumerate(rows):
-                if row and str(row[0]).strip() == upc:
+                if row_upc(row) == upc:
                     # B7: map the list index back to the true sheet row number
                     # via row_numbers. `idx + 1` is wrong whenever the CSV
                     # reader skipped blank rows; row_numbers already accounts
@@ -1421,6 +1457,9 @@ def handle_message_receive(data: P2ImMessageReceiveV1):
         chat_id = getattr(message, "chat_id", None)
         chat_type = getattr(message, "chat_type", None)
         message_id = getattr(message, "message_id", "")
+        if not _acquire_message_lock(message_id):
+            print(f"im.message.receive duplicate ignored: message_id={message_id}", flush=True)
+            return
         text = _extract_message_text(message_type, getattr(message, "content", ""))
         if not text:
             return
