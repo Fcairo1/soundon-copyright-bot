@@ -74,3 +74,37 @@ def test_create_reply_draft_threads_when_smtp_message_id_exists(monkeypatch):
     assert result["threaded"] is True
     assert calls[0]["message_id"] == "msg_123"
     assert calls[0]["thread_id"] == "thread_123"
+
+
+
+def test_find_original_message_id_skips_reply_hits(monkeypatch):
+    def fake_cli(args, timeout=90):
+        assert args[0] == "+triage"
+        return {
+            "messages": [
+                {"message_id": "reply_msg", "subject": "Re: Spotify infringement claim response - UPC 5063965051437"},
+                {"message_id": "original_msg", "subject": "Spotify Notice of Possibly Infringing Content"},
+            ]
+        }
+
+    def fake_fetch(mailbox, message_id, headers=None):
+        if message_id == "reply_msg":
+            return {
+                "subject": "Re: Spotify infringement claim response - UPC 5063965051437",
+                "head_from": {"mail_address": "soundon-copyright@bytedance.com"},
+                "smtp_message_id": "<reply@example.com>",
+            }
+        return {
+            "subject": "Spotify Notice of Possibly Infringing Content",
+            "head_from": {"mail_address": "infringement-claim-response@spotify.com"},
+            "smtp_message_id": "<original@example.com>",
+        }
+
+    monkeypatch.setattr(lark_mail_draft, "_lark_cli_json", fake_cli)
+    monkeypatch.setattr(lark_mail_draft, "_fetch_original_message", fake_fetch)
+
+    assert lark_mail_draft._find_original_message_id(
+        "soundon-copyright@bytedance.com",
+        upc="5063965051437",
+        ref_id="ref:_00D0992XChO._500QvibkYt:ref",
+    ) == "original_msg"

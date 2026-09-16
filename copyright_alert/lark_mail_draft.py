@@ -457,24 +457,58 @@ def _has_threading_metadata(original: Dict[str, Any]) -> bool:
     return bool((original or {}).get("smtp_message_id"))
 
 
+def _is_inbound_original_claim(message: Dict[str, Any], mailbox: str = "") -> bool:
+    """Return True for original inbound claim emails, not replies/drafts/sent mail.
+
+    Mail search can return our own previously-created reply drafts because they
+    contain the same UPC/ref code. Those must never be used as the threading
+    anchor for a new reply; we need the claimant's original inbound Message-ID.
+    """
+    subject = str(message.get("subject") or message.get("Subject") or "").strip().lower()
+    if subject.startswith(("re:", "fw:", "fwd:")):
+        return False
+    sender = _first_nested_value(message, ("head_from", "from", "sender"))
+    sender_email = ""
+    if isinstance(sender, dict):
+        sender_email = str(sender.get("mail_address") or sender.get("email") or sender.get("address") or "").strip().lower()
+    elif isinstance(sender, str):
+        sender_email = sender.strip().lower()
+    mailbox_value = (mailbox or "").strip().lower()
+    if sender_email and mailbox_value and sender_email == mailbox_value:
+        return False
+    return True
+
+
 def _find_original_message_id(mailbox: str, upc: str = "", ref_id: str = "") -> str:
-    """Locate the original inbound claim email by ref code or UPC.
+    """Locate the latest original inbound claim email by ref code or UPC.
 
     The reliable source of truth for threaded reply drafts is the mailbox itself:
-    first search the unique ``ref:...:ref`` code, then fall back to the UPC. This
-    avoids relying on tracker/checkpoint fields that may contain a Lark IM card
-    message ID instead of a Lark Mail inbox message ID.
+    first search the unique ``ref:...:ref`` code, then fall back to the UPC. Search
+    results are filtered to original inbound claim emails so resend/card paths do
+    not accidentally anchor a reply to one of our own prior drafts/replies.
     """
+    fallback_mid = ""
+    seen: set[str] = set()
     for query in [q for q in (ref_id, upc) if q]:
         parsed = _lark_cli_json(
             ["+triage", "--mailbox", mailbox, "--query", str(query), "--max", "20", "--format", "json"]
         )
         messages = parsed.get("messages") or (parsed.get("data") or {}).get("messages") or []
         for m in messages:
-            mid = (m or {}).get("message_id")
-            if mid:
-                return str(mid)
-    return ""
+            mid = str((m or {}).get("message_id") or "").strip()
+            if not mid or mid in seen:
+                continue
+            seen.add(mid)
+            if not fallback_mid:
+                fallback_mid = mid
+            summary = m if isinstance(m, dict) else {}
+            if not _is_inbound_original_claim(summary, mailbox=mailbox):
+                continue
+            detail = _fetch_original_message(mailbox, mid)
+            candidate = detail or summary
+            if _is_inbound_original_claim(candidate, mailbox=mailbox):
+                return mid
+    return fallback_mid
 
 
 def _ensure_re_subject(subject: str) -> str:
