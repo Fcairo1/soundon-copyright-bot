@@ -20,6 +20,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from email.message import EmailMessage
+from email.policy import default
 from email.utils import formataddr
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
@@ -514,7 +515,7 @@ def _build_raw_reply_eml(
     references_list: Optional[List[str]] = None,
     cc_recipients: Optional[List[Dict[str, str]]] = None,
 ) -> str:
-    message = EmailMessage()
+    message = EmailMessage(policy=default.clone(max_line_length=998))
     message["From"] = mailbox
     message["To"] = ", ".join(
         formataddr((str(item.get("name") or ""), str(item.get("mail_address") or "")))
@@ -590,7 +591,7 @@ def _build_raw_new_eml(
     body_html: str,
     cc_recipients: Optional[List[Dict[str, str]]] = None,
 ) -> str:
-    message = EmailMessage()
+    message = EmailMessage(policy=default.clone(max_line_length=998))
     message["From"] = mailbox
     message["To"] = ", ".join(
         formataddr((str(item.get("name") or ""), str(item.get("mail_address") or "")))
