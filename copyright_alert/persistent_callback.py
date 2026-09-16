@@ -1326,6 +1326,43 @@ def _handle_dm_upcs(upcs, message_id: str) -> None:
         print("dm upc reply error:", repr(exc), flush=True)
 
 
+def _extract_post_text(content) -> str:
+    try:
+        parsed = json.loads(content or "{}") if isinstance(content, str) else (content or {})
+    except Exception:
+        return ""
+    if not isinstance(parsed, dict):
+        return ""
+
+    parts = []
+
+    def collect(node):
+        if isinstance(node, list):
+            for item in node:
+                collect(item)
+            return
+        if not isinstance(node, dict):
+            return
+        if node.get("tag") == "text":
+            text = str(node.get("text") or "")
+            if text:
+                parts.append(text)
+            return
+        for key in ("content", "children", "elements"):
+            collect(node.get(key))
+
+    collect(parsed.get("content"))
+    return "".join(parts).strip()
+
+
+def _extract_message_text(message_type, content) -> str:
+    if message_type == "text":
+        return parse_text_message(content)
+    if message_type == "post":
+        return _extract_post_text(content)
+    return ""
+
+
 def handle_message_receive(data: P2ImMessageReceiveV1):
     try:
         payload = _obj_to_dict(data)
@@ -1335,14 +1372,19 @@ def handle_message_receive(data: P2ImMessageReceiveV1):
             return
         message = getattr(event, "message", None)
         sender = getattr(event, "sender", None)
-        if not message or getattr(message, "message_type", None) != "text":
-            return
         if getattr(sender, "sender_type", None) == "bot":
+            return
+        if not message:
+            return
+        message_type = getattr(message, "message_type", None)
+        if message_type not in ("text", "post"):
             return
         chat_id = getattr(message, "chat_id", None)
         chat_type = getattr(message, "chat_type", None)
         message_id = getattr(message, "message_id", "")
-        text = parse_text_message(getattr(message, "content", ""))
+        text = _extract_message_text(message_type, getattr(message, "content", ""))
+        if not text:
+            return
 
         # Resolve the sender's open_id (used to key DM command handling).
         sender_open_id = None
