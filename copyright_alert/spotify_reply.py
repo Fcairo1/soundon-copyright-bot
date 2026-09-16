@@ -138,15 +138,16 @@ def _refresh_aime_credentials() -> int:
 
 # ── Core: create a threaded reply draft ──────────────────────────────────────
 def _send_reply(source_email_message_id: str, body_html: str, action: str,
-                claimant_email: str = "", fallback_subject: str = "",
-                cc: str = "", note: str = "", upc: str = "",
+                claimant_email: str = "", source_email: str = "",
+                fallback_subject: str = "", cc: str = "", note: str = "", upc: str = "",
                 ref_id: str = "") -> Dict[str, Any]:
     """Create a threaded reply draft via OAuth-backed mail draft helper.
 
     `claimant_email` and `fallback_subject` are retained for backwards
-    compatibility. The helper still receives them so the caller-visible
-    signatures and command metadata stay stable, but the reply remains anchored
-    to the original message thread.
+    compatibility. `source_email` is the original inbound sender/reply-to address
+    and is the only allowed fallback recipient when we cannot read the thread
+    metadata. The reply remains anchored to the original message thread whenever
+    possible.
 
     `cc` (optional extra recipient) and `note` (optional text appended to the
     email body) are the operator-supplied optional fields. Both are ignored when
@@ -168,6 +169,8 @@ def _send_reply(source_email_message_id: str, body_html: str, action: str,
     cc = (cc or "").strip()
     note = (note or "").strip()
     source_email_message_id = (source_email_message_id or "").strip()
+    claimant_email = (claimant_email or "").strip()
+    source_email = (source_email or "").strip().lower()
     upc = str(upc or "").strip()
     ref_id = str(ref_id or "").strip()
 
@@ -186,11 +189,12 @@ def _send_reply(source_email_message_id: str, body_html: str, action: str,
     if note:
         body_html = f"{body_html}\n<p>{note}</p>"
 
+    fallback_to = source_email or MAILBOX
     cmd = [
         "create_reply_draft",
         f"mailbox={MAILBOX}",
         f"thread_message_id={source_email_message_id or '<lookup-by-upc/ref>'}",
-        f"to={claimant_email or '<thread-derived>'}",
+        f"to={source_email or '<thread-derived>'}",
         f"subject={fallback_subject or '<thread-derived>'}",
     ]
     if cc:
@@ -207,7 +211,7 @@ def _send_reply(source_email_message_id: str, body_html: str, action: str,
         payload = create_reply_draft(
             mailbox=MAILBOX,
             thread_message_id=source_email_message_id,
-            to=claimant_email or MAILBOX,
+            to=fallback_to,
             subject=fallback_subject or f"Spotify infringement claim response - {action}",
             body_html=body_html,
             cc=cc or None,
@@ -244,46 +248,47 @@ def _send_reply(source_email_message_id: str, body_html: str, action: str,
 # ── Public reply functions ───────────────────────────────────────────────────
 def reply_agree(source_email_message_id: str, claimant_email: str,
                 upc: str, title: str, ref_id: str = "",
-                cc: str = "", note: str = "") -> Dict[str, Any]:
+                cc: str = "", note: str = "", source_email: str = "") -> Dict[str, Any]:
     body = _wrap_html([TEMPLATE_AGREE, _context_line(upc, title), _ref_line(ref_id)])
     return _send_reply(source_email_message_id, body, "agree", claimant_email,
-                       f"Spotify infringement claim response - UPC {upc}",
+                       source_email, f"Spotify infringement claim response - UPC {upc}",
                        cc=cc, note=note, upc=upc, ref_id=ref_id)
 
 
 def reply_investigating(source_email_message_id: str, claimant_email: str,
                         upc: str, title: str, ref_id: str = "",
-                        cc: str = "", note: str = "") -> Dict[str, Any]:
+                        cc: str = "", note: str = "", source_email: str = "") -> Dict[str, Any]:
     body = _wrap_html([TEMPLATE_INVESTIGATING, _context_line(upc, title), _ref_line(ref_id)])
     return _send_reply(source_email_message_id, body, "investigating", claimant_email,
-                       f"Spotify infringement claim response - UPC {upc}",
+                       source_email, f"Spotify infringement claim response - UPC {upc}",
                        cc=cc, note=note, upc=upc, ref_id=ref_id)
 
 
 def reply_dispute(source_email_message_id: str, claimant_email: str, upc: str,
                   title: str, custom_message: str = "", ref_id: str = "",
-                  cc: str = "", note: str = "") -> Dict[str, Any]:
+                  cc: str = "", note: str = "", source_email: str = "") -> Dict[str, Any]:
     # custom_message accepted for backwards-compat; not used.
     body = _wrap_html([TEMPLATE_DISPUTE, _context_line(upc, title), _ref_line(ref_id)])
     return _send_reply(source_email_message_id, body, "dispute", claimant_email,
-                       f"Spotify infringement claim response - UPC {upc}",
+                       source_email, f"Spotify infringement claim response - UPC {upc}",
                        cc=cc, note=note, upc=upc, ref_id=ref_id)
 
 
 def send_reply(reply_type: str, source_email_message_id: str, claimant_email: str,
                upc: str, title: str, custom_message: str = "",
-               ref_id: str = "", cc: str = "", note: str = "") -> Dict[str, Any]:
+               ref_id: str = "", cc: str = "", note: str = "",
+               source_email: str = "") -> Dict[str, Any]:
     """Dispatch helper used by the card-action callback."""
     reply_type = (reply_type or "").strip().lower()
     if reply_type == "agree":
         return reply_agree(source_email_message_id, claimant_email, upc, title, ref_id,
-                           cc=cc, note=note)
+                           cc=cc, note=note, source_email=source_email)
     if reply_type == "investigating":
         return reply_investigating(source_email_message_id, claimant_email, upc, title, ref_id,
-                                   cc=cc, note=note)
+                                   cc=cc, note=note, source_email=source_email)
     if reply_type == "dispute":
         return reply_dispute(source_email_message_id, claimant_email, upc, title,
-                             custom_message, ref_id, cc=cc, note=note)
+                             custom_message, ref_id, cc=cc, note=note, source_email=source_email)
     _log(f"✗ unknown reply_type: {reply_type!r}")
     return {
         "ok": False,

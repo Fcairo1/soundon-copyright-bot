@@ -244,6 +244,8 @@ def build_dm_action_card(case: dict) -> dict:
         "isrc": case.get("isrc", "N/A"),
         "source_email_message_id": source_email_message_id,
         "source_message_id": source_email_message_id,
+        "source_email": case.get("source_email", ""),
+        "reply_to_email": case.get("reply_to_email", case.get("source_email", "")),
         "claimant_email": case.get("claimant_email", "N/A"),
         "title": case.get("title", "N/A"),
         "artist": case.get("artist", "N/A"),

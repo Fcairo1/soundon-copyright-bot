@@ -375,6 +375,11 @@ def _process_spotify_reply(value, custom_message="", notify_chat_id=None, event_
                     or ""
                 ),
                 claimant_email=value.get("claimant_email", ""),
+                source_email=(
+                    value.get("source_email")
+                    or value.get("reply_to_email")
+                    or ""
+                ),
                 upc=value.get("upc", ""),
                 title=value.get("title", ""),
                 custom_message=custom_message,
@@ -928,11 +933,53 @@ def _enrich_case_for_reply(case: dict) -> dict:
     Priority order:
       1. Canonical posted_claims record for the UPC (daily scan source of truth)
       2. Inbox triage fallback, but only on inbound/non-reply subjects
+
+    The resend-card path must also carry the original inbound sender email so a
+    fallback standalone draft still addresses Spotify's source mailbox rather
+    than the claimant address extracted from the body.
     """
     case = dict(case or {})
     upc = str(case.get("upc") or "").strip()
     if not upc:
         return case
+
+    try:
+        from copyright_alert import dm_upc_lookup as dul
+        from copyright_alert import run_alert as ra
+    except Exception as exc:
+        print(f"/card enrichment imports failed for {upc}: {exc!r}", flush=True)
+        return case
+
+    def _apply_message_metadata(message_id: str, meta: dict, ef: dict, origin: str) -> bool:
+        sender_email = ""
+        try:
+            sender_email = str(ra._sender_email_from_meta(meta) or "").strip().lower()
+        except Exception:
+            sender_email = ""
+        claimant_email = str((ef or {}).get("claimant_email") or "").strip()
+        if claimant_email in ("", "N/A"):
+            claimant_email = str(case.get("claimant_email") or "").strip()
+        if claimant_email in ("", "N/A"):
+            return False
+        if message_id:
+            case["source_email_message_id"] = message_id
+        case["claimant_email"] = claimant_email
+        if sender_email:
+            case["source_email"] = sender_email
+            case["reply_to_email"] = sender_email
+        if (ef or {}).get("ref_id") not in (None, "", "N/A"):
+            case["ref_id"] = ef["ref_id"]
+        if (ef or {}).get("claimant_name") not in (None, "", "N/A"):
+            case["claimant_name"] = ef["claimant_name"]
+        if case.get("title") in (None, "", "N/A") and (ef or {}).get("title") not in (None, "", "N/A"):
+            case["title"] = ef["title"]
+        print(
+            f"/card enrichment: using {origin} for {upc} "
+            f"(source_email_message_id={case.get('source_email_message_id')!r}, "
+            f"source_email={case.get('source_email')!r}, claimant_email={case.get('claimant_email')!r})",
+            flush=True,
+        )
+        return True
 
     posted = _posted_claim_record_for_upc(upc)
     if posted:
@@ -940,6 +987,15 @@ def _enrich_case_for_reply(case: dict) -> dict:
             value = posted.get(key)
             if value not in (None, "", "N/A"):
                 case[key] = value
+        message_id = str(case.get("source_email_message_id") or "").strip()
+        if message_id:
+            try:
+                body, meta = ra.fetch_email(message_id)
+                ef = ra.extract_fields(body, meta.get("subject", ""), meta)
+                if _apply_message_metadata(message_id, meta, ef, "posted_claims record"):
+                    return case
+            except Exception as exc:
+                print(f"/card enrichment: posted_claims metadata fetch failed for {upc}: {exc!r}", flush=True)
         print(
             f"/card enrichment: using posted_claims record for {upc} "
             f"(source_email_message_id={case.get('source_email_message_id')!r}, claimant_email={case.get('claimant_email')!r})",
@@ -948,8 +1004,6 @@ def _enrich_case_for_reply(case: dict) -> dict:
         return case
 
     try:
-        from copyright_alert import dm_upc_lookup as dul
-        from copyright_alert import run_alert as ra
         msgs = [m for m in dul._triage_search(upc) if _is_inbound_claim_subject((m or {}).get("subject", ""))]
         for msg in msgs:
             mid = (msg or {}).get("message_id", "")
@@ -957,23 +1011,8 @@ def _enrich_case_for_reply(case: dict) -> dict:
                 continue
             body, meta = ra.fetch_email(mid)
             ef = ra.extract_fields(body, meta.get("subject", ""), meta)
-            claimant_email = ef.get("claimant_email")
-            if claimant_email in (None, "", "N/A"):
-                continue
-            case["source_email_message_id"] = mid
-            case["claimant_email"] = claimant_email
-            if ef.get("ref_id") not in (None, "", "N/A"):
-                case["ref_id"] = ef["ref_id"]
-            if ef.get("claimant_name") not in (None, "", "N/A"):
-                case["claimant_name"] = ef["claimant_name"]
-            if case.get("title") in (None, "", "N/A") and ef.get("title") not in (None, "", "N/A"):
-                case["title"] = ef["title"]
-            print(
-                f"/card enrichment: using inbound triage hit for {upc} "
-                f"(source_email_message_id={mid!r}, claimant_email={claimant_email!r})",
-                flush=True,
-            )
-            break
+            if _apply_message_metadata(mid, meta, ef, "inbound triage hit"):
+                break
     except Exception as exc:
         print(f"/card enrichment failed for {upc}: {exc!r}", flush=True)
     return case
