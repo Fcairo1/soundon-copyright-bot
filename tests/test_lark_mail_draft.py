@@ -36,29 +36,36 @@ def test_create_reply_draft_falls_back_to_standalone_when_original_metadata_unav
     assert "raw" in calls[0]["payload"]
 
 
-def test_create_reply_draft_threads_when_smtp_message_id_exists(monkeypatch):
+def test_create_reply_draft_uses_native_lark_reply_when_original_exists(monkeypatch):
     monkeypatch.setattr(lark_mail_draft, "refresh_user_access_token", lambda force=False: "token")
     monkeypatch.setattr(lark_mail_draft, "_find_original_message_id", lambda mailbox, upc="", ref_id="": "msg_123")
-    monkeypatch.setattr(
-        lark_mail_draft,
-        "_fetch_original_message",
-        lambda mailbox, message_id, headers=None: {
+
+    fetch_calls = []
+
+    def fake_fetch(mailbox, message_id, headers=None):
+        fetch_calls.append(message_id)
+        if message_id == "draft_456":
+            return {"thread_id": "thread_123"}
+        return {
             "smtp_message_id": "<original@example.com>",
             "thread_id": "thread_123",
             "head_from": {"mail_address": "claimant@example.com", "name": "Claimant"},
             "subject": "Original subject",
             "body_plain_text": "body ref:_00D0992XChO._500QvfyHui:ref",
             "references": ["<older@example.com>"],
-        },
-    )
+        }
 
-    calls = []
+    cli_calls = []
 
-    def fake_post(url, payload, headers=None, timeout=30):
-        calls.append(payload)
-        return {"data": {"draft_id": "draft_456", "draft_link": "https://mail.example/draft_456"}}
+    def fake_lark_cli(args, timeout=90, cwd=None):
+        cli_calls.append(args)
+        assert args[0] == "+reply"
+        assert "--message-id" in args
+        assert args[args.index("--message-id") + 1] == "msg_123"
+        return {"draft_id": "draft_456", "reference": "https://mail.example/draft_456"}
 
-    monkeypatch.setattr(lark_mail_draft, "_post_json", fake_post)
+    monkeypatch.setattr(lark_mail_draft, "_fetch_original_message", fake_fetch)
+    monkeypatch.setattr(lark_mail_draft, "_lark_cli_json", fake_lark_cli)
 
     result = lark_mail_draft.create_reply_draft(
         mailbox="soundon-copyright@bytedance.com",
@@ -72,9 +79,48 @@ def test_create_reply_draft_threads_when_smtp_message_id_exists(monkeypatch):
 
     assert result["draft_id"] == "draft_456"
     assert result["threaded"] is True
-    assert calls[0]["message_id"] == "msg_123"
-    assert calls[0]["thread_id"] == "thread_123"
+    assert result["thread_id"] == "thread_123"
+    assert fetch_calls == ["msg_123", "draft_456"]
+    assert cli_calls
 
+
+
+def test_fetch_original_message_merges_oauth_ids_with_cli_subject_and_sender(monkeypatch):
+    def fake_get(url, headers=None):
+        return {
+            "data": {
+                "message": {
+                    "message_id": "msg_123",
+                    "smtp_message_id": "original@example.com",
+                    "thread_id": "thread_123",
+                }
+            }
+        }
+
+    def fake_lark_cli(args, timeout=90, cwd=None):
+        return {
+            "data": {
+                "message_id": "msg_123",
+                "subject": "Original subject",
+                "head_from": {"mail_address": "claimant@example.com"},
+                "body_plain_text": "original body",
+            }
+        }
+
+    monkeypatch.setattr(lark_mail_draft, "_get_json", fake_get)
+    monkeypatch.setattr(lark_mail_draft, "_lark_cli_json", fake_lark_cli)
+
+    original = lark_mail_draft._fetch_original_message(
+        "soundon-copyright@bytedance.com",
+        "msg_123",
+        headers={"Authorization": "Bearer token"},
+    )
+
+    assert original["smtp_message_id"] == "original@example.com"
+    assert original["thread_id"] == "thread_123"
+    assert original["subject"] == "Original subject"
+    assert original["head_from"]["mail_address"] == "claimant@example.com"
+    assert original["body_plain_text"] == "original body"
 
 
 def test_find_original_message_id_skips_reply_hits(monkeypatch):

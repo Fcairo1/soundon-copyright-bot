@@ -15,6 +15,7 @@ import json
 import re
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -301,7 +302,7 @@ def _message_reference(value: str) -> str:
     return f"<{ref}>"
 
 
-def _lark_cli_json(args: List[str], timeout: int = 90) -> Dict[str, Any]:
+def _lark_cli_json(args: List[str], timeout: int = 90, cwd: Optional[Path] = None) -> Dict[str, Any]:
     """Run a lark-cli mail command and return the parsed JSON payload.
 
     Reuses run_alert's tolerant JSON parser (lark-cli may emit proxy/warning
@@ -313,6 +314,7 @@ def _lark_cli_json(args: List[str], timeout: int = 90) -> Dict[str, Any]:
             capture_output=True,
             text=True,
             timeout=timeout,
+            cwd=str(cwd or ROOT),
         )
     except Exception as exc:  # pragma: no cover - defensive
         print(f"  ⚠ lark-cli invocation failed: {exc!r}", flush=True)
@@ -419,25 +421,40 @@ def _fetch_original_message(mailbox: str, message_id: str, headers: Optional[Dic
     """Fetch the original inbound email so we can thread the reply correctly.
 
     ``message_id`` must be the Lark Mail message_id of the original email. It is
-    not an IM card/open_message_id. We first call the official Mail message get
-    endpoint, then fall back to the local lark-cli shortcut for older runtimes.
+    not an IM card/open_message_id. The OAuth OpenAPI response can be partial in
+    the callback app context (for example only IDs/headers, no subject/sender),
+    so we merge it with the AIME lark-cli user-context shortcut before composing
+    a reply draft.
     """
     if not message_id:
         return {}
     encoded_mailbox = urllib.parse.quote(mailbox, safe="")
     encoded_message_id = urllib.parse.quote(message_id, safe="")
     url = f"{MAIL_API_BASE}/user_mailboxes/{encoded_mailbox}/messages/{encoded_message_id}?format=full"
+    openapi_original: Dict[str, Any] = {}
     if headers:
         try:
-            return _normalize_original_message_payload(_get_json(url, headers=headers))
+            openapi_original = _normalize_original_message_payload(_get_json(url, headers=headers))
         except Exception as exc:
             print(f"  ⚠ OpenAPI message lookup failed for {message_id!r}: {exc!r}", flush=True)
+
+    cli_original: Dict[str, Any] = {}
     parsed = _lark_cli_json(
         ["+message", "--mailbox", mailbox, "--message-id", message_id, "--html=false", "--format", "json"]
     )
-    if not parsed:
-        return {}
-    return _normalize_original_message_payload(parsed)
+    if parsed:
+        cli_original = _normalize_original_message_payload(parsed)
+
+    if not openapi_original:
+        return cli_original
+    if not cli_original:
+        return openapi_original
+
+    merged = dict(openapi_original)
+    for key, value in cli_original.items():
+        if merged.get(key) in (None, "", []):
+            merged[key] = value
+    return merged
 
 
 def _looks_like_im_message_id(message_id: str) -> bool:
@@ -618,6 +635,97 @@ def _create_draft(mailbox: str, payload: Dict[str, Any], headers: Dict[str, str]
     return result
 
 
+def _recipient_arg(recipients: Iterable[Dict[str, str]]) -> str:
+    return ",".join(
+        formataddr((str(item.get("name") or ""), str(item.get("mail_address") or "")))
+        for item in recipients
+        if item.get("mail_address")
+    )
+
+
+def _create_lark_cli_reply_draft(
+    mailbox: str,
+    message_id: str,
+    body_html: str,
+    cc_recipients: Optional[List[Dict[str, str]]] = None,
+    expected_thread_id: str = "",
+) -> Dict[str, Any]:
+    """Create a draft through Lark's native reply flow.
+
+    Lark Mail does not attach raw ``drafts.create`` messages to the UI thread
+    just because RFC ``In-Reply-To`` / ``References`` headers are present. The
+    proven native path is the same one used by ``lark-cli mail +reply``: it
+    fetches the parent Mail message and creates the draft with Lark's internal
+    reply metadata, including ``X-Lms-Reply-To-Message-Id`` and the quoted
+    history block expected by the client.
+    """
+    temp_dir = ROOT / "runtime" / "mail_reply_bodies"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    body_path: Optional[Path] = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            suffix=".html",
+            prefix="spotify_reply_",
+            dir=temp_dir,
+            delete=False,
+        ) as body_file:
+            body_file.write(body_html)
+            body_path = Path(body_file.name)
+
+        args = [
+            "+reply",
+            "--mailbox",
+            mailbox,
+            "--message-id",
+            message_id,
+            "--body-file",
+            str(body_path.relative_to(ROOT)),
+            "--no-signature",
+            "--format",
+            "json",
+            "--jq",
+            ".data",
+        ]
+        cc_arg = _recipient_arg(cc_recipients or [])
+        if cc_arg:
+            args.extend(["--cc", cc_arg])
+
+        payload = _lark_cli_json(args, timeout=120, cwd=ROOT)
+    finally:
+        if body_path:
+            try:
+                body_path.unlink()
+            except FileNotFoundError:
+                pass
+
+    draft_id = str(payload.get("draft_id") or payload.get("id") or "").strip()
+    draft_link = str(
+        payload.get("reference")
+        or payload.get("draft_link")
+        or payload.get("send_preview_url")
+        or ""
+    ).strip()
+    if not draft_id:
+        raise LarkMailDraftError(f"lark-cli +reply did not return a draft_id: {json.dumps(payload, ensure_ascii=False)[:800]}")
+    if not draft_link:
+        encoded_mailbox = urllib.parse.quote(mailbox, safe="")
+        draft_link = f"https://www.larkoffice.com/mail?draftId={draft_id}&scene=send-preview&mailbox={encoded_mailbox}"
+
+    result = {"draft_id": draft_id, "draft_link": draft_link, "raw": payload}
+    if expected_thread_id:
+        draft_message = _fetch_original_message(mailbox, draft_id)
+        actual_thread_id = str(draft_message.get("thread_id") or "").strip()
+        result["thread_id"] = actual_thread_id
+        if actual_thread_id and actual_thread_id != expected_thread_id:
+            raise LarkMailDraftError(
+                "Lark created the reply draft, but it is not attached to the original thread "
+                f"(draft_id={draft_id}, expected_thread_id={expected_thread_id}, actual_thread_id={actual_thread_id})."
+            )
+    return result
+
+
 def _build_raw_new_eml(
     mailbox: str,
     recipients: List[Dict[str, str]],
@@ -762,6 +870,17 @@ def create_reply_draft(
 
     # ── Preserve the ref:...:ref tracking code from the original body ─────────
     body_html = _ensure_ref_preserved(body_html, original_body, ref_id=ref_id)
+
+    if smtp_message_id and message_id:
+        result = _create_lark_cli_reply_draft(
+            mailbox,
+            message_id,
+            body_html,
+            cc_recipients=cc_recipients or None,
+            expected_thread_id=thread_id,
+        )
+        result["threaded"] = True
+        return result
 
     if smtp_message_id:
         drafts_payload: Dict[str, Any] = {
