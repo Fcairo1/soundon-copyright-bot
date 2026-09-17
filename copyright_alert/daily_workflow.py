@@ -157,6 +157,7 @@ SPOTIFY_DM_STATE_FILE = "copyright_alert/spotify_dm_sent.json"
 # of truth lives in tag_managers; do not reintroduce a local calendar-day value.
 from copyright_alert.tag_managers import business_days_remaining_brt, REPLY_DEADLINE_WORKDAYS  # noqa: E402
 from copyright_alert import metadata_notice  # noqa: E402
+from copyright_alert import takedown_stream_tracker  # noqa: E402
 
 
 # ── Region configuration ─────────────────────────────────────────────────────
@@ -1946,6 +1947,22 @@ def main(region=None):
     except Exception as e:
         log(f"  ✗ Metadata-notice section error: {e!r}")
         results["metadata_notices"] = {"error": repr(e)}
+
+    # H) ACR takedown stream tracker — for ACR-tab cases marked Takedown on the
+    # dashboard, refresh the original track's Aeolus streams and write the
+    # since-takedown delta back to the "ACR Takedown Stream Tracker" sheet.
+    # The tracker sheet is region-agnostic (not one of the 3 regional trackers),
+    # and daily_workflow.py runs once per region per day, so this fires on
+    # every regional invocation — but it's harmless: each row is throttled to
+    # ~weekly internally via last_checked, so once the first region's run of
+    # the day refreshes the rows that are due, the other regions' runs the
+    # same day find nothing due and return immediately.
+    try:
+        section("PART H — ACR takedown stream tracker")
+        results["takedown_stream_tracker"] = takedown_stream_tracker.run_daily_refresh()
+    except Exception as e:
+        log(f"  ✗ Takedown-stream-tracker section error: {e!r}")
+        results["takedown_stream_tracker"] = {"error": repr(e)}
 
     section("RUN COMPLETE")
     log(json.dumps(results, ensure_ascii=False, indent=2))
