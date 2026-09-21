@@ -633,15 +633,16 @@ def manual_scan_region(region: str, max_messages: int = 80) -> dict:
             body, meta = ra.fetch_email(msg_id)
             if not body:
                 continue
-            ef = ra.extract_fields(body, subject, meta)
-            upc = str(ef.get("upc", "") or "").strip()
-            if not upc or upc == "N/A":
-                summary["skipped_no_identifier"] += 1
-                continue
-            if is_upc_excluded(upc):
-                summary["skipped_upc_excluded"] = summary.get("skipped_upc_excluded", 0) + 1
-                continue
-            candidates.append({"message_id": msg_id, "subject": subject, "date": date, "ef": ef})
+            entries = ra.extract_claim_entries(body, subject, meta)
+            for ef in entries:
+                upc = str(ef.get("upc", "") or "").strip()
+                if not upc or upc == "N/A":
+                    summary["skipped_no_identifier"] += 1
+                    continue
+                if is_upc_excluded(upc):
+                    summary["skipped_upc_excluded"] = summary.get("skipped_upc_excluded", 0) + 1
+                    continue
+                candidates.append({"message_id": msg_id, "subject": subject, "date": date, "ef": ef})
         summary["parsed_candidates"] = len(candidates)
         aeolus_by_upc = ra.batch_query_aeolus_by_upc([c["ef"].get("upc") for c in candidates])
         summary["unique_upcs"] = len(aeolus_by_upc)
@@ -661,7 +662,7 @@ def manual_scan_region(region: str, max_messages: int = 80) -> dict:
                 summary["skipped_not_qualifying"] += 1
                 continue
             dup_key = ra.claim_key(ef, ar, subject)
-            if ra.is_claim_already_posted(dup_key):
+            if ra.is_claim_already_posted(dup_key, ef=ef, ar=ar, subject=subject):
                 summary["skipped_duplicate"] += 1
                 continue
 

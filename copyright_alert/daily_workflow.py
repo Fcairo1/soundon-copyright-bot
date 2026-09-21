@@ -54,7 +54,7 @@ from copyright_alert.run_alert import (  # noqa: E402
     TRIAGE_QUERY,
     parse_lark_json,
     fetch_email,
-    extract_fields,
+    extract_claim_entries,
     extract_retraction_fields,
     is_retraction_email,
     is_retraction_already_processed,
@@ -524,22 +524,29 @@ def _parse_candidate(msg_id, subject, date, thread_id, seen_threads, summary):
     except Exception as exc:
         log(f"     ⚠ metadata-notice routing error (continuing as normal claim): {exc!r}")
 
-    ef = extract_fields(body, subject, meta)
-    upc = str(ef.get("upc", "") or "").strip()
-    isrc = ef.get("isrc", "")
-    log(f"     UPC={upc or 'N/A'} ISRC={isrc}")
+    entries = extract_claim_entries(body, subject, meta)
+    identifiers = []
+    candidates = []
+    for ef in entries:
+        upc = str(ef.get("upc", "") or "").strip()
+        isrc = ef.get("isrc", "")
+        identifiers.append(f"{upc or 'N/A'}|{isrc or 'N/A'}")
+        if (not upc or upc == "N/A") and (not isrc or isrc == "N/A"):
+            continue
+        candidates.append({
+            "message_id": msg_id,
+            "subject": subject,
+            "date": date,
+            "ef": ef,
+        })
 
-    if (not upc or upc == "N/A") and (not isrc or isrc == "N/A"):
+    log(f"     Extracted {len(candidates)} claim entr{'y' if len(candidates) == 1 else 'ies'}: {', '.join(identifiers) or 'N/A'}")
+    if not candidates:
         log("     ✗ No UPC or ISRC, skipping")
         summary["skipped_no_identifier"] += 1
         return ("skip", "no identifier")
 
-    return ("candidate", {
-        "message_id": msg_id,
-        "subject": subject,
-        "date": date,
-        "ef": ef,
-    })
+    return ("candidate", candidates)
 
 
 # ── PART 1A — incremental scan + post ────────────────────────────────────────
@@ -603,7 +610,7 @@ def run_scan():
         r_date = item.get("date", "")
         kind, info = _parse_candidate(rid, r_subject, r_date, rid, seen_threads, summary)
         if kind == "candidate":
-            candidates.append(info)
+            candidates.extend(info if isinstance(info, list) else [info])
         elif kind == "failed":
             failed_entries[rid] = {"message_id": rid, "subject": r_subject, "date": r_date}
         # "skip" ⇒ intentionally resolved; drop from the retry list.
@@ -625,7 +632,7 @@ def run_scan():
 
         kind, info = _parse_candidate(msg_id, subject, date, thread_id, seen_threads, summary)
         if kind == "candidate":
-            candidates.append(info)
+            candidates.extend(info if isinstance(info, list) else [info])
         elif kind == "failed":
             failed_entries[msg_id] = {"message_id": msg_id, "subject": subject, "date": date}
 
@@ -666,7 +673,7 @@ def run_scan():
             continue
 
         dup_key = claim_key(ef, ar, subject)
-        if is_claim_already_posted(dup_key):
+        if is_claim_already_posted(dup_key, ef=ef, ar=ar, subject=subject):
             log(f"     ✗ Duplicate already posted: {dup_key}")
             summary["skipped_duplicate"] += 1
             failed_entries.pop(msg_id, None)

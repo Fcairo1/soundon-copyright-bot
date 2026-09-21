@@ -302,7 +302,7 @@ def first_line(text, *patterns, default="N/A"):
 _FIELD_LABELS = [
     "Claimant", "Claimant Name", "Email", "Company", "Claim Type", "Claimed Territory",
     "Claimant's Description", "Initial Claim Description", "content_description", "Content Title",
-    "Release Title", "Artist", "UPC", "UPC(s)", "ISRC", "Label Name", "Label",
+    "Release Title", "Title", "Artist", "UPC", "UPC(s)", "ISRC", "Label Name", "Label",
     "Content Type", "URI", "DSP", "DSP(s)", "If you", "Best Regards", "ref",
 ]
 
@@ -403,6 +403,68 @@ def _spotify_uri_for_upc(body, upc):
         if block.get("upc") == upc:
             return block.get("spotify_uri", "")
     return ""
+
+
+def _extract_claim_blocks(body):
+    """Extract repeated per-release claim blocks from bundled claim emails."""
+    text = _normalized_body(body)
+    if not text:
+        return []
+
+    pattern = re.compile(
+        r"(?:^|\n)\s*(?:Content Title|Title)\s*:[ \t]*(?P<title>.*?)"
+        r"\n\s*Artist\s*:[ \t]*(?P<artist>.*?)"
+        r"\n\s*UPC(?:\(s\))?\s*:[ \t]*(?P<upc>\d{10,14})"
+        r"(?:\n\s*Label Name\s*:[ \t]*(?P<label_name>.*?))?"
+        r"(?:\n\s*Content Type\s*:[ \t]*(?P<content_type>.*?))?"
+        r"(?:\n\s*(?:Spotify URI|URI|Spotify Link)\s*:[ \t]*(?P<spotify_uri>.*?))?"
+        r"(?=\n\s*(?:Content Title|Title)\s*:|\n\s*If you\b|\n\s*Best Regards\b|\n\s*ref:_|\Z)",
+        re.IGNORECASE | re.DOTALL,
+    )
+
+    blocks = []
+    seen_upcs = set()
+    for match in pattern.finditer(text):
+        upc = str(match.group("upc") or "").strip()
+        if not upc or upc in seen_upcs:
+            continue
+        seen_upcs.add(upc)
+        spotify_uri = _extract_bare_spotify_token(match.group("spotify_uri") or "")
+        blocks.append({
+            "title": _clean_email_value(match.group("title")) or "N/A",
+            "artist": _clean_email_value(match.group("artist")) or "N/A",
+            "upc": upc,
+            "label_name": _clean_email_value(match.group("label_name")) or "N/A",
+            "content_type": _clean_email_value(match.group("content_type")) or "N/A",
+            "spotify_uri": spotify_uri,
+        })
+
+    return blocks
+
+
+def extract_claim_entries(body, subject, meta):
+    """Return one extracted field dict per independently-actionable claim entry."""
+    base_fields = extract_fields(body, subject, meta)
+    blocks = _extract_claim_blocks(body)
+    if not blocks:
+        return [base_fields]
+
+    entries = []
+    for block in blocks:
+        fields = dict(base_fields)
+        fields.update({
+            "upc": block.get("upc") or fields.get("upc", "N/A"),
+            "title": block.get("title") or fields.get("title", "N/A"),
+            "artist": block.get("artist") or fields.get("artist", "N/A"),
+            "label_name": block.get("label_name") or fields.get("label_name", "N/A"),
+            "content_type": block.get("content_type") or fields.get("content_type", "N/A"),
+        })
+        spotify_uri = block.get("spotify_uri") or _spotify_uri_for_upc(body, block.get("upc"))
+        if spotify_uri:
+            fields["spotify_uri"] = spotify_uri
+        entries.append(fields)
+
+    return entries or [base_fields]
 
 
 def _clean_email_value(value):
@@ -1575,11 +1637,6 @@ def claim_key(ef, ar=None, subject=""):
     """Build a duplicate-prevention key. Same release can post again only for a different claim."""
     ar = ar or {}
     ref_id = ef.get("ref_id")
-    if ref_id and ref_id != "N/A":
-        return f"ref:{ref_id}"
-    claim_id = first(subject or "", r"Claim\s+(\d{6,})")
-    if claim_id != "N/A":
-        return f"claim:{claim_id}"
     # ef.get("upc")/ef.get("isrc") return the string "N/A" (truthy) when the
     # value is missing, so a plain `or` never reaches the Aeolus fallback.
     # Use an explicit check so ar's value is used when ef has no real value (B9).
@@ -1587,13 +1644,38 @@ def claim_key(ef, ar=None, subject=""):
     upc = ef_upc if ef_upc not in (None, "", "N/A") else (ar.get("upc") or "N/A")
     ef_isrc = ef.get("isrc")
     isrc = ef_isrc if ef_isrc not in (None, "", "N/A") else (ar.get("isrc") or "N/A")
+    if ref_id and ref_id != "N/A":
+        if upc not in (None, "", "N/A"):
+            return f"ref:{ref_id}|upc:{upc}"
+        return f"ref:{ref_id}"
+    claim_id = first(subject or "", r"Claim\s+(\d{6,})")
+    if claim_id != "N/A":
+        return f"claim:{claim_id}"
     claimant = (ef.get("claimant_email") or ef.get("claimant_name") or "N/A").lower()
     message = _message_preview(ef.get("claimant_message", "N/A"), limit=80).lower()
     return "|".join(["release_claim", str(upc), str(isrc), claimant, message])
 
 
-def is_claim_already_posted(claim_key_value):
-    return bool(claim_key_value and claim_key_value in _load_posted_claims())
+def is_claim_already_posted(claim_key_value, ef=None, ar=None, subject=""):
+    posted_claims = _load_posted_claims()
+    if claim_key_value and claim_key_value in posted_claims:
+        return True
+
+    ref_id = (ef or {}).get("ref_id")
+    if not ref_id or ref_id == "N/A":
+        return False
+
+    legacy_key = f"ref:{ref_id}"
+    legacy_record = posted_claims.get(legacy_key)
+    if not legacy_record:
+        return False
+
+    ar = ar or {}
+    ef_upc = (ef or {}).get("upc")
+    upc = ef_upc if ef_upc not in (None, "", "N/A") else (ar.get("upc") or "N/A")
+    if upc in (None, "", "N/A"):
+        return True
+    return str(legacy_record.get("upc") or "").strip() == str(upc).strip()
 
 
 def qualifies(row):
@@ -2352,103 +2434,105 @@ def main():
             print("  ✗ Could not fetch email body, skipping")
             continue
 
-        ef = extract_fields(body, subject, meta)
-        upc = ef.get("upc", "")
-        isrc = ef.get("isrc", "")
-        print(f"  UPC extracted: {upc}")
-        print(f"  ISRC extracted: {isrc}")
+        entries = extract_claim_entries(body, subject, meta)
+        print(f"  Extracted {len(entries)} claim entr{'y' if len(entries) == 1 else 'ies'} from the email")
+        for ef in entries:
+            upc = ef.get("upc", "")
+            isrc = ef.get("isrc", "")
+            print(f"  UPC extracted: {upc}")
+            print(f"  ISRC extracted: {isrc}")
 
-        lookup_id = isrc if isrc and isrc != "N/A" else upc
-        lookup_type = "isrc" if isrc and isrc != "N/A" else "upc"
-        if upc and upc != "N/A" and is_upc_excluded(upc):
-            print(f"  ✗ Skipping excluded UPC {upc}")
-            continue
-        if not lookup_id or lookup_id == "N/A":
-            print("  ✗ No ISRC or UPC found, skipping")
-            continue
+            lookup_id = isrc if isrc and isrc != "N/A" else upc
+            lookup_type = "isrc" if isrc and isrc != "N/A" else "upc"
+            if upc and upc != "N/A" and is_upc_excluded(upc):
+                print(f"  ✗ Skipping excluded UPC {upc}")
+                continue
+            if not lookup_id or lookup_id == "N/A":
+                print("  ✗ No ISRC or UPC found, skipping")
+                continue
 
-        print(f"  Querying Aeolus for {lookup_type.upper()} {lookup_id}...")
-        ar = query_aeolus(lookup_id, lookup_type)
-        ar = enrich_with_engagement_once(ar)
-        if not ar:
-            print("  ✗ No Aeolus data found, skipping")
-            continue
+            print(f"  Querying Aeolus for {lookup_type.upper()} {lookup_id}...")
+            ar = query_aeolus(lookup_id, lookup_type)
+            ar = enrich_with_engagement_once(ar)
+            if not ar:
+                print("  ✗ No Aeolus data found, skipping")
+                continue
 
-        print(f"  Aeolus row: {ar}")
-        if (not ef.get("isrc") or ef.get("isrc") == "N/A") and ar.get("isrc"):
-            ef["isrc"] = str(ar.get("isrc")).strip() or "N/A"
-            print(f"  ISRC filled from Aeolus: {ef['isrc']}")
+            print(f"  Aeolus row: {ar}")
+            if (not ef.get("isrc") or ef.get("isrc") == "N/A") and ar.get("isrc"):
+                ef["isrc"] = str(ar.get("isrc")).strip() or "N/A"
+                print(f"  ISRC filled from Aeolus: {ef['isrc']}")
 
-        matched_spotify_uri = _spotify_uri_for_upc(body, ef.get("upc"))
-        if matched_spotify_uri:
-            ef["spotify_uri"] = matched_spotify_uri
-            print(f"  Spotify URI matched by UPC: {ef['spotify_uri']}")
+            matched_spotify_uri = _spotify_uri_for_upc(body, ef.get("upc"))
+            if matched_spotify_uri:
+                ef["spotify_uri"] = matched_spotify_uri
+                print(f"  Spotify URI matched by UPC: {ef['spotify_uri']}")
 
-        if not qualifies(ar):
-            print("  ✗ Skipping not qualifying after Aeolus filters")
-            continue
+            if not qualifies(ar):
+                print("  ✗ Skipping not qualifying after Aeolus filters")
+                continue
 
-        duplicate_key = claim_key(ef, ar, subject)
-        if is_claim_already_posted(duplicate_key):
-            print(f"  ✗ Skipping duplicate claim already posted: {duplicate_key}")
-            continue
+            duplicate_key = claim_key(ef, ar, subject)
+            if is_claim_already_posted(duplicate_key, ef=ef, ar=ar, subject=subject):
+                print(f"  ✗ Skipping duplicate claim already posted: {duplicate_key}")
+                continue
 
-        print("  ✓ Building and posting Lark card...")
-        card = build_card(ef, ar, region=CURRENT_REGION)
+            print("  ✓ Building and posting Lark card...")
+            card = build_card(ef, ar, region=CURRENT_REGION)
 
-        # Save card for inspection
-        with open("copyright_alert/last_card.json", "w") as f:
-            json.dump(card, f, indent=2)
-        print("  Card saved to copyright_alert/last_card.json")
-
-        _reserve_claim_before_post(duplicate_key, ef, ar, subject, msg_id)
-        success, posted_message_id = post_card(card, ar, upc=ef.get("upc"), context=f"{CURRENT_REGION} run_alert group post")
-        # C5: Record the claim whenever the post succeeded, even if the API did
-        # not return a message_id. Previously this required a non-empty
-        # posted_message_id, so a successful post with an empty id was never
-        # recorded and the next run re-posted the same card as a duplicate.
-        if success:
-            card = build_posted_group_card(
-                ef,
-                ar,
-                posted_message_id,
-                source_email_message_id=msg_id,
-                region=CURRENT_REGION,
-            )
+            # Save card for inspection
             with open("copyright_alert/last_card.json", "w") as f:
                 json.dump(card, f, indent=2)
-            patch_card_message(posted_message_id, card)
-            tracker_row = append_tracker_row(ef, ar, posted_message_id, status="")
-            update_account_release_counts_for_claim(ar)
-            _save_posted_claim(duplicate_key, {
-                "message_id": posted_message_id,
-                "source_email_message_id": msg_id,
-                "subject": subject,
-                "upc": ef.get("upc", "N/A"),
-                "isrc": ef.get("isrc", "N/A"),
-                "title": ef.get("title") if ef.get("title") != "N/A" else ar.get("album_title", "N/A"),
-                "artist": _format_artist_names(ar.get("display_artist")),
-                "user_name": ar.get("user_name", "N/A"),
-                "ref_id": ef.get("ref_id", "N/A"),
-                "dsp": ef.get("dsp", "Unknown"),
-                "dsp_confidence": ef.get("dsp_confidence", "low"),
-                "claimant_name": ef.get("claimant_name", "N/A"),
-                "claimant_email": ef.get("claimant_email", "N/A"),
-                "possible_content_id_release_request": bool(ef.get("possible_content_id_release_request")),
-                "possible_non_claim_notice": bool(ef.get("possible_non_claim_notice")),
-                "region": CURRENT_REGION,
-                "tracker_row": tracker_row,
-                "chat_id": TARGET_CHAT_ID,
-            })
-        if success:
-            print(f"\n✅ Alert posted successfully for UPC {upc}!")
-            print(f"   Title:  {ef.get('title')}")
-            print(f"   Artist: {ar.get('display_artist')}")
-            print(f"   Source: {ar.get('source_type_name')}, Tier: {ar.get('User Tier')}")
-            sys.exit(0)
-        else:
-            _delete_posted_claim(duplicate_key)
-            print("  ✗ Card posting failed, trying next candidate")
+            print("  Card saved to copyright_alert/last_card.json")
+
+            _reserve_claim_before_post(duplicate_key, ef, ar, subject, msg_id)
+            success, posted_message_id = post_card(card, ar, upc=ef.get("upc"), context=f"{CURRENT_REGION} run_alert group post")
+            # C5: Record the claim whenever the post succeeded, even if the API did
+            # not return a message_id. Previously this required a non-empty
+            # posted_message_id, so a successful post with an empty id was never
+            # recorded and the next run re-posted the same card as a duplicate.
+            if success:
+                card = build_posted_group_card(
+                    ef,
+                    ar,
+                    posted_message_id,
+                    source_email_message_id=msg_id,
+                    region=CURRENT_REGION,
+                )
+                with open("copyright_alert/last_card.json", "w") as f:
+                    json.dump(card, f, indent=2)
+                patch_card_message(posted_message_id, card)
+                tracker_row = append_tracker_row(ef, ar, posted_message_id, status="")
+                update_account_release_counts_for_claim(ar)
+                _save_posted_claim(duplicate_key, {
+                    "message_id": posted_message_id,
+                    "source_email_message_id": msg_id,
+                    "subject": subject,
+                    "upc": ef.get("upc", "N/A"),
+                    "isrc": ef.get("isrc", "N/A"),
+                    "title": ef.get("title") if ef.get("title") != "N/A" else ar.get("album_title", "N/A"),
+                    "artist": _format_artist_names(ar.get("display_artist")),
+                    "user_name": ar.get("user_name", "N/A"),
+                    "ref_id": ef.get("ref_id", "N/A"),
+                    "dsp": ef.get("dsp", "Unknown"),
+                    "dsp_confidence": ef.get("dsp_confidence", "low"),
+                    "claimant_name": ef.get("claimant_name", "N/A"),
+                    "claimant_email": ef.get("claimant_email", "N/A"),
+                    "possible_content_id_release_request": bool(ef.get("possible_content_id_release_request")),
+                    "possible_non_claim_notice": bool(ef.get("possible_non_claim_notice")),
+                    "region": CURRENT_REGION,
+                    "tracker_row": tracker_row,
+                    "chat_id": TARGET_CHAT_ID,
+                })
+            if success:
+                print(f"\n✅ Alert posted successfully for UPC {upc}!")
+                print(f"   Title:  {ef.get('title')}")
+                print(f"   Artist: {ar.get('display_artist')}")
+                print(f"   Source: {ar.get('source_type_name')}, Tier: {ar.get('User Tier')}")
+                sys.exit(0)
+            else:
+                _delete_posted_claim(duplicate_key)
+                print("  ✗ Card posting failed, trying next candidate")
 
     print("\n⚠️  No qualifying email found in the candidate list.")
     sys.exit(1)
