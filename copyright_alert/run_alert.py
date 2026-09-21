@@ -2436,6 +2436,7 @@ def main():
 
         entries = extract_claim_entries(body, subject, meta)
         print(f"  Extracted {len(entries)} claim entr{'y' if len(entries) == 1 else 'ies'} from the email")
+        posted_any = False
         for ef in entries:
             upc = ef.get("upc", "")
             isrc = ef.get("isrc", "")
@@ -2492,6 +2493,7 @@ def main():
             # posted_message_id, so a successful post with an empty id was never
             # recorded and the next run re-posted the same card as a duplicate.
             if success:
+                posted_any = True
                 card = build_posted_group_card(
                     ef,
                     ar,
@@ -2524,15 +2526,16 @@ def main():
                     "tracker_row": tracker_row,
                     "chat_id": TARGET_CHAT_ID,
                 })
-            if success:
                 print(f"\n✅ Alert posted successfully for UPC {upc}!")
                 print(f"   Title:  {ef.get('title')}")
                 print(f"   Artist: {ar.get('display_artist')}")
                 print(f"   Source: {ar.get('source_type_name')}, Tier: {ar.get('User Tier')}")
-                sys.exit(0)
             else:
                 _delete_posted_claim(duplicate_key)
                 print("  ✗ Card posting failed, trying next candidate")
+
+        if posted_any:
+            sys.exit(0)
 
     print("\n⚠️  No qualifying email found in the candidate list.")
     sys.exit(1)

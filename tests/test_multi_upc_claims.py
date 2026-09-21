@@ -162,3 +162,77 @@ def test_legacy_ref_duplicate_only_blocks_the_same_upc(monkeypatch):
         run_alert.claim_key(other_upc_fields),
         ef=other_upc_fields,
     ) is False
+
+
+SECOND_REF_ID = "ref:_00D0992XChO._500Qvio0rf:ref"
+SECOND_SUBJECT = f"Possibly Infringing - Notification Warning No 1 - Crystal Music Brasil - Claim 25186257 - {SECOND_REF_ID}"
+SECOND_EXPECTED_UPCS = [
+    "074417897171",
+    "074417897188",
+    "044317699656",
+]
+SECOND_MULTI_UPC_BODY = """
+Hello,
+Claimant Name: Liliam Liliam Marques
+Email: claim@thesignal.gg
+Claim Type: composition
+Claimed Territory: WORLDWIDE
+Content Title: Montagem Anbilis Irtonotica
+Artist: DJ Beu, MC K3
+UPC: 074417897171
+Label Name: Crystal Music Brasil
+Content Type: ALBUM
+URI: spotify:album:3T8X6sHAA8JxPP6D17KuJP
+Title: Montagem Retine Espectral
+Artist: DJ Vulgo MPC, MC K3, mc luuki
+UPC: 074417897188
+Label Name: Crystal Music Brasil
+Content Type: ALBUM
+URI: spotify:album:4EWMOcJ7jBzfY9r4FsvImX
+Title: Montagem Astral Calamity
+Artist: DJ THEUZITO 011, MC K3
+UPC: 044317699656
+Label Name: Crystal Music Brasil
+Content Type: ALBUM
+URI: spotify:album:6WHM2fB4jQ5r86aQv9H0Dk
+Best Regards,
+Spotify Content Protection
+ref:_00D0992XChO._500Qvio0rf:ref
+"""
+
+
+def test_extract_claim_entries_handles_second_bundled_spotify_claim_email():
+    entries = run_alert.extract_claim_entries(
+        SECOND_MULTI_UPC_BODY,
+        SECOND_SUBJECT,
+        {"from": "infringement-claim-response@spotify.com"},
+    )
+
+    assert [entry["upc"] for entry in entries] == SECOND_EXPECTED_UPCS
+    assert [entry["title"] for entry in entries] == [
+        "Montagem Anbilis Irtonotica",
+        "Montagem Retine Espectral",
+        "Montagem Astral Calamity",
+    ]
+    assert all(entry["ref_id"] == SECOND_REF_ID for entry in entries)
+
+
+def test_parse_candidate_is_region_agnostic_for_shared_multi_upc_scan_path(monkeypatch):
+    monkeypatch.setattr(daily_workflow, "fetch_email", lambda msg_id: (SECOND_MULTI_UPC_BODY, {"from": "infringement-claim-response@spotify.com"}))
+    monkeypatch.setattr(daily_workflow.metadata_notice, "is_metadata_notice", lambda *args, **kwargs: False)
+
+    for region in ("BR", "SPLA", "US"):
+        daily_workflow.configure_region(region)
+        summary = {"examined": 0, "skipped_prefilter": 0, "skipped_no_identifier": 0, "metadata_notices": 0}
+        kind, info = daily_workflow._parse_candidate(
+            f"msg-{region}",
+            SECOND_SUBJECT,
+            "2026-09-20T17:40:36Z",
+            f"thread-{region}",
+            set(),
+            summary,
+        )
+
+        assert kind == "candidate"
+        assert [candidate["ef"]["upc"] for candidate in info] == SECOND_EXPECTED_UPCS
+        assert summary["skipped_no_identifier"] == 0
