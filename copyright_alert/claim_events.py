@@ -13,6 +13,8 @@ event_type:
   card_posted        when the claim card was posted (Lark message create_time)
   am_action          a manager status change (card button here; the dashboard
                      writes the same event type with source="dashboard")
+  card_unavailable   the card message can't be read (deleted / not visible to
+                     the bot); recorded once so it isn't retried every day
   admin_action_seen  first time "Admin Action Taken" was seen filled for a claim
                      that a manager had already moved to Confirm Takedown /
                      Resolved (ops handling clock; accurate to the daily run)
@@ -27,6 +29,7 @@ import json
 import os
 import sys
 import time
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -57,6 +60,16 @@ REF_CODE_HEADERS = ("ref_code", "Spotify Ref Code")
 
 AM_TERMINAL_MARKERS = ("confirm takedown", "resolved")
 MAX_CREATE_TIME_LOOKUPS_PER_RUN = 450
+
+
+class MessageUnavailable(Exception):
+    """The card message can't be read (deleted, or not visible to the bot).
+    Permanent for our purposes: don't keep retrying it every day."""
+
+
+def is_message_id(value) -> bool:
+    text = str(value or "").strip()
+    return text.startswith("om_") and len(text) > 3
 
 
 def utc_now_str() -> str:
@@ -196,7 +209,11 @@ def record_status_event(values, header_index, row_num, *, new_status, region, ke
     prev_status = _row_field(row, header_index, STATUS_HEADER)
     if _status_text(prev_status) == _status_text(new_status):
         return False
-    claim_key = _row_field(row, header_index, MESSAGE_ID_HEADER) or _norm(key_hint)
+    claim_key = _row_field(row, header_index, MESSAGE_ID_HEADER)
+    if not is_message_id(claim_key):
+        claim_key = _norm(key_hint) if is_message_id(key_hint) else ""
+    if not claim_key:
+        return False
     return append_event(
         claim_key, "am_action", new_status, "card", region,
         prev_status=prev_status,
@@ -208,7 +225,12 @@ def record_status_event(values, header_index, row_num, *, new_status, region, ke
 # ── Daily sync: card_posted backfill + admin_action_seen ────────────────────
 
 def get_message_create_time(message_id: str) -> Optional[str]:
-    """Lark message create_time (ms epoch) as a UTC string, or None."""
+    """Lark message create_time (ms epoch) as a UTC string.
+
+    Returns None for a transient problem (no token, network) so the daily run
+    retries later; raises MessageUnavailable when Lark says the message can't
+    be read (HTTP 400/404 or a non-zero API code), so we record that and stop.
+    """
     from copyright_alert import run_alert as ra
 
     token = ra._get_bot_access_token()
@@ -221,12 +243,18 @@ def get_message_create_time(message_id: str) -> Optional[str]:
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             payload = json.loads(resp.read())
-        items = (payload.get("data") or {}).get("items") or []
-        if payload.get("code") == 0 and items and items[0].get("create_time"):
-            return ms_to_utc_str(items[0]["create_time"])
+    except urllib.error.HTTPError as exc:
+        if exc.code in (400, 404):
+            raise MessageUnavailable(f"HTTP {exc.code}") from exc
+        print(f"  claim_events: create_time lookup failed for {message_id}: {exc!r}", flush=True)
+        return None
     except Exception as exc:
         print(f"  claim_events: create_time lookup failed for {message_id}: {exc!r}", flush=True)
-    return None
+        return None
+    items = (payload.get("data") or {}).get("items") or []
+    if payload.get("code") == 0 and items and items[0].get("create_time"):
+        return ms_to_utc_str(items[0]["create_time"])
+    raise MessageUnavailable(f"code {payload.get('code')}")
 
 
 def plan_card_posted(values, events: Iterable[Dict[str, str]], region: str) -> List[Dict[str, str]]:
@@ -234,11 +262,11 @@ def plan_card_posted(values, events: Iterable[Dict[str, str]], region: str) -> L
     if not values:
         return []
     header_index = {_norm(v): i for i, v in enumerate(values[0]) if _norm(v)}
-    have = {e["claim_key"] for e in events if e["event_type"] == "card_posted"}
+    have = {e["claim_key"] for e in events if e["event_type"] in ("card_posted", "card_unavailable")}
     todo, seen = [], set()
     for row in values[1:]:
         key = _row_field(row, header_index, MESSAGE_ID_HEADER)
-        if not key or key in have or key in seen:
+        if not is_message_id(key) or key in have or key in seen:
             continue
         seen.add(key)
         todo.append({
@@ -248,6 +276,23 @@ def plan_card_posted(values, events: Iterable[Dict[str, str]], region: str) -> L
             "region": region,
         })
     return todo
+
+
+def find_invalid_message_id_rows(values) -> List[int]:
+    """Sheet row numbers whose Lark Message ID is not a real om_ id (a data
+    problem to fix by hand, e.g. a date typed/written into that column)."""
+    if not values:
+        return []
+    header_index = {_norm(v): i for i, v in enumerate(values[0]) if _norm(v)}
+    idx = header_index.get(MESSAGE_ID_HEADER)
+    if idx is None:
+        return []
+    bad = []
+    for n, row in enumerate(values[1:], start=2):
+        value = _norm(row[idx]) if idx < len(row) else ""
+        if any(_norm(c) for c in row) and not is_message_id(value):
+            bad.append(n)
+    return bad
 
 
 def plan_admin_action_seen(values, events: Iterable[Dict[str, str]], region: str) -> List[Dict[str, str]]:
@@ -263,7 +308,7 @@ def plan_admin_action_seen(values, events: Iterable[Dict[str, str]], region: str
     for row in values[1:]:
         key = _row_field(row, header_index, MESSAGE_ID_HEADER)
         admin = _row_field(row, header_index, ADMIN_ACTION_HEADER)
-        if not key or key not in waiting or key in done:
+        if not is_message_id(key) or key not in waiting or key in done:
             continue
         if admin.lower() in ("", "no"):
             continue
@@ -289,9 +334,18 @@ def run_daily_sync(region: str, *, dry_run: bool = False,
     card_todo = plan_card_posted(values, events, region)
     rows_to_append: List[List[str]] = []
     looked_up = skipped = 0
+    unavailable = 0
     for item in card_todo[:MAX_CREATE_TIME_LOOKUPS_PER_RUN]:
-        ts = create_time_fn(item["claim_key"])
         looked_up += 1
+        try:
+            ts = create_time_fn(item["claim_key"])
+        except MessageUnavailable as exc:
+            unavailable += 1
+            rows_to_append.append(_build_row(
+                item["claim_key"], "card_unavailable", str(exc)[:60], "backfill", region,
+                ref_code=item["ref_code"], upc=item["upc"],
+            ))
+            continue
         if not ts:
             skipped += 1
             continue
@@ -310,7 +364,9 @@ def run_daily_sync(region: str, *, dry_run: bool = False,
 
     summary.update({
         "card_posted_missing": len(card_todo), "create_time_lookups": looked_up,
-        "create_time_failed": skipped, "admin_action_seen_new": len(seen_todo),
+        "create_time_failed": skipped, "card_unavailable": unavailable,
+        "invalid_message_id_rows": find_invalid_message_id_rows(values)[:20],
+        "admin_action_seen_new": len(seen_todo),
         "rows_to_append": len(rows_to_append),
     })
     if rows_to_append and not dry_run:

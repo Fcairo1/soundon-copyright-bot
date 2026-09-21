@@ -79,6 +79,65 @@ def _ev(key, etype, status=""):
     return {"claim_key": key, "event_type": etype, "status": status}
 
 
+def test_is_message_id():
+    assert ce.is_message_id("om_x100b67d9e13720ace2f93dd6c76c7cb")
+    assert not ce.is_message_id("2026-09-15 15:41")
+    assert not ce.is_message_id("")
+    assert not ce.is_message_id("om_")
+
+
+def test_record_status_event_ignores_invalid_row_key_and_uses_hint(monkeypatch):
+    sent = []
+    monkeypatch.setattr(ce, "append_event", lambda *a, **k: sent.append(a) or True)
+    values = _values(["123", "", "2026-09-01", "2026-09-15 15:41", "", ""])
+    ce.record_status_event(values, _index(), 2, new_status="🔍 Investigating", region="BR", key_hint="om_goodhint123")
+    assert sent[0][0] == "om_goodhint123"
+
+
+def test_record_status_event_skips_when_no_valid_key(monkeypatch):
+    sent = []
+    monkeypatch.setattr(ce, "append_event", lambda *a, **k: sent.append(a) or True)
+    values = _values(["123", "", "2026-09-01", "2026-09-15 15:41", "", ""])
+    assert not ce.record_status_event(values, _index(), 2, new_status="🔍 Investigating", region="BR", key_hint="")
+    assert sent == []
+
+
+def test_plan_card_posted_skips_invalid_and_already_unavailable():
+    values = _values(
+        ["1", "", "d", "om_validone1", "", ""],
+        ["2", "", "d", "2026-09-15 15:41", "", ""],     # invalid id
+        ["3", "", "d", "om_gone12345", "", ""],          # already marked unavailable
+    )
+    todo = ce.plan_card_posted(values, [_ev("om_gone12345", "card_unavailable")], "BR")
+    assert [t["claim_key"] for t in todo] == ["om_validone1"]
+    assert ce.find_invalid_message_id_rows(values) == [3]
+
+
+def test_run_daily_sync_marks_unavailable_and_keeps_going(monkeypatch):
+    from copyright_alert import handle_callback
+
+    values = _values(["1", "", "d", "om_gone12345", "", ""], ["2", "", "d", "om_okay12345", "", ""],
+                     ["3", "", "d", "om_flaky12345", "", ""])
+    monkeypatch.setattr(handle_callback, "read_sheet_values", lambda region=None: values)
+    monkeypatch.setattr(ce, "read_events", lambda: [])
+    monkeypatch.setattr(ce, "flush_pending", lambda: 0)
+    monkeypatch.setattr(ce.time, "sleep", lambda s: None)
+    wrote = []
+    monkeypatch.setattr(ce, "_append_rows", lambda rows: wrote.append(rows))
+
+    def fake(key):
+        if key == "om_gone12345":
+            raise ce.MessageUnavailable("HTTP 400")
+        if key == "om_flaky12345":
+            return None          # transient: no event, retried next run
+        return "2026-09-01 12:00:00"
+
+    summary = ce.run_daily_sync("BR", create_time_fn=fake)
+    types = sorted((r[0], r[2]) for r in wrote[0])
+    assert types == [("om_gone12345", "card_unavailable"), ("om_okay12345", "card_posted")]
+    assert summary["card_unavailable"] == 1 and summary["create_time_failed"] == 1
+
+
 def test_plan_card_posted_only_missing_and_dedupes():
     values = _values(
         ["1", "", "2026-09-01", "om_a", "", ""],
