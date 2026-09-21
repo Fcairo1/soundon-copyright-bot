@@ -158,6 +158,7 @@ SPOTIFY_DM_STATE_FILE = "copyright_alert/spotify_dm_sent.json"
 from copyright_alert.tag_managers import business_days_remaining_brt, REPLY_DEADLINE_WORKDAYS  # noqa: E402
 from copyright_alert import metadata_notice  # noqa: E402
 from copyright_alert import takedown_stream_tracker  # noqa: E402
+from copyright_alert import claim_events  # noqa: E402
 
 
 # ── Region configuration ─────────────────────────────────────────────────────
@@ -1970,6 +1971,16 @@ def main(region=None):
     except Exception as e:
         log(f"  ✗ Takedown-stream-tracker section error: {e!r}")
         results["takedown_stream_tracker"] = {"error": repr(e)}
+
+    # I) Claim event log — backfill card_posted times (Lark message create_time)
+    # and stamp admin_action_seen for ops-handling-time metrics. Region-specific:
+    # each regional run syncs its own tracker. Never raises.
+    try:
+        section("PART I — Claim event log sync")
+        results["claim_event_log"] = claim_events.run_daily_sync_safe(ACTIVE_REGION)
+    except Exception as e:
+        log(f"  ✗ Claim-event-log section error: {e!r}")
+        results["claim_event_log"] = {"error": repr(e)}
 
     section("RUN COMPLETE")
     log(json.dumps(results, ensure_ascii=False, indent=2))

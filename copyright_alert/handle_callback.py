@@ -756,6 +756,18 @@ def update_sheet_status(message_id, status, upc=None, isrc=None, region=None, tr
                 print(f"Sheet update {cell} via lark-cli fallback failed: {fallback_exc!r}", flush=True)
                 ok = False
     print("Sheet row matched by:", match_reason, "row:", row_num)
+    if ok:
+        # Timeline for reply/resolution-time metrics. Best-effort: never let
+        # event logging affect the status write or the card click.
+        try:
+            from copyright_alert import claim_events
+
+            claim_events.record_status_event(
+                values, header_index, row_num,
+                new_status=status, region=region, key_hint=message_id,
+            )
+        except Exception as exc:
+            print(f"claim_events: status event logging failed (non-fatal): {exc!r}", flush=True)
     return ok
 
 
