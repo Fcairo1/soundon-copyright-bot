@@ -112,7 +112,7 @@ def _append_rows(rows: List[List[str]]) -> None:
             },
         )
 
-    payload = request_json_with_auth_retry(make_request, timeout=60, context="claim_events.append")
+    payload = request_json_with_auth_retry(make_request, timeout=20, context="claim_events.append")
     if payload.get("code") not in (0, "0", None):
         raise RuntimeError(f"Event log append failed: {json.dumps(payload, ensure_ascii=False)[:500]}")
 
