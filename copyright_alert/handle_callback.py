@@ -142,7 +142,7 @@ def _parse_lark_annotated_csv(raw):
 def _read_sheet_values_cli(sheet_url, sheet_id):
     cmd = [
         "lark-cli", "sheets", "+csv-get", "--url", sheet_url,
-        "--sheet-id", sheet_id, "--range", "A1:Z2000",  # B11: uncapped from A1:Z500
+        "--sheet-id", sheet_id, "--range", "A1:BZ2000",  # B11/B2: matches read_sheet_values' SHEET_READ_WIDTH
     ]
     last_error = ""
     for attempt in range(1, 4):
@@ -497,16 +497,28 @@ def patch_message(message_id, card):
         return False
 
 
+# B2: was hardcoded to "A1:Z2000" / 26 columns — the tracker sheets have
+# grown past column Z (Documentation Status Y, Status Changed At Z, Retracted
+# AA, Claimant Group/Tier/Arm/Category AC-AF, ...), and a caller that
+# discovers "the next free column" by reading this and measuring the header
+# row's length would silently target an already-used column, overwriting its
+# header. Widened to BZ (78 columns) to match the read-range convention
+# already used elsewhere (daily_workflow.py's "A:AF", account_release_counts
+# / the dashboard's "read up to BZ") — a strict superset for every existing
+# caller, so this can't change behavior for anything reading within A:Z.
+SHEET_READ_WIDTH = 78  # A..BZ
+
+
 def read_sheet_values(region=None):
     sheet_url, sheet_id = _tracker_config(region)
     try:
-        raw_values = extract_sheet_values(_sheet_api("GET", sheet_url, sheet_id, "A1:Z2000"))
+        raw_values = extract_sheet_values(_sheet_api("GET", sheet_url, sheet_id, "A1:BZ2000"))
         rows = []
         for row in raw_values:
             row = list(row or [])
-            if len(row) < 26:
-                row.extend([""] * (26 - len(row)))
-            rows.append(row[:26])
+            if len(row) < SHEET_READ_WIDTH:
+                row.extend([""] * (SHEET_READ_WIDTH - len(row)))
+            rows.append(row[:SHEET_READ_WIDTH])
         return rows
     except Exception as exc:
         print(f"Sheet read via persisted user OAuth failed; falling back to lark-cli legacy path: {exc!r}", flush=True)

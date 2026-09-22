@@ -28,6 +28,25 @@ def test_ensure_columns_appends_missing_headers(monkeypatch):
     assert len(writes) == 2
 
 
+def test_ensure_columns_handles_padded_wide_header_row(monkeypatch):
+    """Regression for the 2026-09-22 incident: read_sheet_values pads every
+    row to a fixed width (78 cols), so a header row with real headers only
+    through column AF (32) but padded with 46 blank trailing cells must NOT
+    be treated as "78 columns in use" — that overwrote the live "Retracted"
+    header (AA) on the real BR tracker."""
+    headers_row = ["UPC", "Status"] + ["H%d" % i for i in range(30)] + [""] * 46  # 32 real + 46 padding = 78
+    assert len(headers_row) == 78
+    monkeypatch.setattr(hc, "_tracker_config", lambda region=None: ("https://sheet", "sid"))
+    monkeypatch.setattr(hc, "read_sheet_values", lambda region=None: [headers_row])
+    writes = []
+    monkeypatch.setattr(hc, "_sheet_api", lambda *a, **k: writes.append(a[3]) or {"code": 0})
+    result = mt.ensure_columns("BR")
+    assert result["created"] == [ms.MARKETSHARE_AT_CLAIM_HEADER, ms.MARKETSHARE_CURRENT_HEADER]
+    # must land right after the 32 real headers (index 32 -> "AG"), not at
+    # the padded width (index 78 -> "CA")
+    assert writes == ["AG1", "AH1"]
+
+
 def test_ensure_columns_noop_when_present(monkeypatch):
     monkeypatch.setattr(hc, "_tracker_config", lambda region=None: ("https://sheet", "sid"))
     monkeypatch.setattr(hc, "read_sheet_values", lambda region=None: [HEADER])

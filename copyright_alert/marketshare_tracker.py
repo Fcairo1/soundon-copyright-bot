@@ -56,6 +56,22 @@ def _col_letter(index: int) -> str:
     return letters
 
 
+def _last_used_column_index(headers: Sequence[str]) -> int:
+    """Index of the last non-blank header. read_sheet_values pads every row
+    out to a fixed width (see handle_callback.SHEET_READ_WIDTH), so
+    len(headers) is that fixed width, NOT the real number of columns in use —
+    using it as "the next free column" targets a column far past the real
+    data (or, if the real headers ever exceeded the old, narrower pad width,
+    an ALREADY-USED one: this is exactly how "Marketshare At Claim (ppm)"
+    overwrote the live "Retracted" header on the BR tracker on 2026-09-22).
+    Mirrors daily_workflow.ensure_tracker_column's last_nonempty scan."""
+    last = -1
+    for i, h in enumerate(headers):
+        if h:
+            last = i
+    return last
+
+
 def ensure_columns(region: str) -> Dict[str, object]:
     """Append the two marketshare headers to the region's tracker if missing.
     Mirrors daily_workflow.ensure_tracker_column, self-contained here so this
@@ -69,8 +85,13 @@ def ensure_columns(region: str) -> Dict[str, object]:
     for header_name in (ms.MARKETSHARE_AT_CLAIM_HEADER, ms.MARKETSHARE_CURRENT_HEADER):
         if header_name in headers:
             continue
-        target_idx = len(headers)
-        headers.append(header_name)
+        target_idx = _last_used_column_index(headers) + 1
+        while target_idx < len(headers) and headers[target_idx]:
+            target_idx += 1   # defensive: skip past anything already there
+        if target_idx >= len(headers):
+            headers.append(header_name)
+        else:
+            headers[target_idx] = header_name
         hc._sheet_api("PUT", sheet_url, sheet_id, f"{_col_letter(target_idx)}1", values=[[header_name]])
         created.append(header_name)
     return {"created": created}
