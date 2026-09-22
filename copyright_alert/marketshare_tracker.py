@@ -133,17 +133,24 @@ def run_daily_sync(region: str, *, dry_run: bool = False, today: Optional[date] 
 
     updates: List[tuple] = []   # (row_number, col_letter, value)
     backfilled = open_refreshed = skipped_no_date = 0
+    missing_at_claim = 0   # real (UPC-present) rows with no Marketshare At Claim yet, before this run
     open_rows: List[tuple] = []   # (row_number, upc)
     backfill_rows: List[tuple] = []   # (row_number, upc, received_date)
 
     for row_number, row in enumerate(values[1:], start=2):
         upc = _cell(row, upc_idx)
         if not upc:
+            # read_sheet_values reads a fixed A1:BZ2000 range and returns every
+            # row in it, so `values` always has ~2000 entries regardless of the
+            # region's real claim count — skipping here (as this always did)
+            # keeps every OTHER count correct, but a naive len(values)-based
+            # stat does not; see missing_at_claim below.
             continue
         status, email_status, retracted = _cell(row, status_idx), _cell(row, email_idx), _cell(row, retracted_idx)
         bucket = ms.bucket(status, email_status, retracted)
 
         if not _cell(row, at_claim_idx):
+            missing_at_claim += 1
             received = _parse_date(_cell(row, date_idx))
             if not received:
                 skipped_no_date += 1
@@ -182,7 +189,7 @@ def run_daily_sync(region: str, *, dry_run: bool = False, today: Optional[date] 
 
     return {
         "region": region, "dry_run": dry_run, "ensure": ensure_result,
-        "at_claim_backfilled": backfilled, "at_claim_pending_next_run": max(0, len(values) - 1 - backfilled - skipped_no_date),
+        "at_claim_backfilled": backfilled, "at_claim_pending_next_run": max(0, missing_at_claim - backfilled),
         "current_refreshed": open_refreshed, "current_pending_next_run": max(0, len(open_rows) - len(open_rows_capped)),
         "skipped_no_date_received": skipped_no_date, "write_count": len(updates),
     }

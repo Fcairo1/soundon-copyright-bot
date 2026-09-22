@@ -140,6 +140,23 @@ def test_current_refresh_respects_per_run_cap(monkeypatch):
     assert len(batch_calls[0]) == mt.MAX_CURRENT_REFRESH_PER_RUN
 
 
+def test_pending_count_ignores_padded_blank_rows(monkeypatch):
+    """Regression: read_sheet_values reads a fixed A1:BZ2000 range, so
+    `values` always has ~2000 rows regardless of the region's real claim
+    count. SPLA (30 real claims) and US (45) both reported
+    at_claim_pending_next_run=1979 — the same number as BR (263) — because
+    the old formula used len(values), not a real-row count."""
+    real_rows = [["638022638262", "🔴 Confirm Takedown", "2026-09-01", "", "", "", ""]] * 3
+    padded_blank_rows = [["", "", "", "", "", "", ""]] * 1975   # simulates the ~2000-row sheet padding
+    values = _values(*(real_rows + padded_blank_rows))
+    _patch_common(monkeypatch, values)
+    monkeypatch.setattr(ms, "get_marketshare_ppm_for_upc", lambda upc, end: 1.0)
+    monkeypatch.setattr(ms, "get_marketshare_ppm_for_upcs", lambda upcs, end: {})
+    result = mt.run_daily_sync("BR", dry_run=True)
+    assert result["at_claim_backfilled"] == 3
+    assert result["at_claim_pending_next_run"] == 0   # not ~1979
+
+
 def test_dry_run_writes_nothing(monkeypatch):
     values = _values(["638022638262", "🔴 Confirm Takedown", "2026-09-01", "", "", "", ""])
     _patch_common(monkeypatch, values)
