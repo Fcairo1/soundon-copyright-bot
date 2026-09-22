@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -50,6 +51,8 @@ COLUMNS = [
     "actor", "region", "prev_status", "ref_code", "upc",
 ]
 PENDING_FILE = ROOT / "runtime" / "claim_events_pending.jsonl"
+MAX_LOG_ROWS = 10000  # the sheet is pre-sized to this; range writes can't grow it
+_APPEND_LOCK = threading.Lock()
 
 MESSAGE_ID_HEADER = "Lark Message ID"
 STATUS_HEADER = "Status"
@@ -104,30 +107,45 @@ def _build_row(claim_key, event_type, status, source, region, *, ts=None, actor=
 
 # ── Sheet I/O (user-OAuth, same auth the tracker sheets use) ────────────────
 
+def _next_empty_row() -> int:
+    from copyright_alert.lark_auth import extract_sheet_values, sheet_values_api
+
+    values = extract_sheet_values(sheet_values_api("GET", EVENT_LOG_SHEET_URL, EVENT_LOG_SHEET_ID, f"A1:A{MAX_LOG_ROWS}"))
+    last = 1  # row 1 is the header
+    for n, row in enumerate(values, start=1):
+        if row and _norm(row[0]):
+            last = n
+    return last + 1
+
+
 def _append_rows(rows: List[List[str]]) -> None:
-    from copyright_alert.lark_auth import _spreadsheet_token, get_user_access_token, request_json_with_auth_retry
+    """Write rows after the last used row with plain range writes.
 
-    token = _spreadsheet_token(EVENT_LOG_SHEET_URL)
-    url = f"https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/{token}/values_append?insertDataOption=INSERT_ROWS"
+    The bot's OAuth token is rejected (99991679, missing scope) on the
+    values_append endpoint — the same reason lark_auth.sheet_values_batch_update
+    falls back to single-range PUTs — so we find the first empty row, PUT the
+    block there, and read the keys back to confirm nothing else wrote into the
+    same rows in the meantime (the dashboard appends to this sheet too).
+    """
+    from copyright_alert.lark_auth import extract_sheet_values, sheet_values_api
+
+    if not rows:
+        return
     last_col = chr(64 + len(COLUMNS))
-    body = json.dumps(
-        {"valueRange": {"range": f"{EVENT_LOG_SHEET_ID}!A:{last_col}", "values": rows}}, ensure_ascii=False
-    ).encode("utf-8")
-
-    def make_request():
-        return urllib.request.Request(
-            url,
-            data=body,
-            method="POST",
-            headers={
-                "Content-Type": "application/json; charset=utf-8",
-                "Authorization": f"Bearer {get_user_access_token()}",
-            },
-        )
-
-    payload = request_json_with_auth_retry(make_request, timeout=20, context="claim_events.append")
-    if payload.get("code") not in (0, "0", None):
-        raise RuntimeError(f"Event log append failed: {json.dumps(payload, ensure_ascii=False)[:500]}")
+    expected = [_norm(r[0]) for r in rows]
+    with _APPEND_LOCK:
+        for _attempt in range(3):
+            start = _next_empty_row()
+            end = start + len(rows) - 1
+            if end > MAX_LOG_ROWS:
+                raise RuntimeError(f"Claim Event Log is full ({MAX_LOG_ROWS} rows) — insert more rows in the sheet")
+            sheet_values_api("PUT", EVENT_LOG_SHEET_URL, EVENT_LOG_SHEET_ID, f"A{start}:{last_col}{end}", values=rows, timeout=30)
+            check = extract_sheet_values(sheet_values_api("GET", EVENT_LOG_SHEET_URL, EVENT_LOG_SHEET_ID, f"A{start}:A{end}"))
+            got = [(_norm(r[0]) if r else "") for r in check]
+            got += [""] * (len(expected) - len(got))
+            if got[: len(expected)] == expected:
+                return
+        raise RuntimeError("Claim Event Log append could not be verified after 3 attempts")
 
 
 def _queue_pending(rows: List[List[str]]) -> None:

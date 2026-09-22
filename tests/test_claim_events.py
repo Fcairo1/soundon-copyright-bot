@@ -195,3 +195,64 @@ def test_run_daily_sync_appends_card_posted(monkeypatch):
     row = wrote[0][0]
     assert row[:5] == ["om_a", "2026-09-01 12:00:00", "card_posted", "", "backfill"]
     assert row[6] == "BR" and row[8] == "ref:9" and row[9] == "1"
+
+
+class _FakeSheet:
+    """Minimal stand-in for lark_auth.sheet_values_api / extract_sheet_values."""
+
+    def __init__(self, rows, interfere_once=False):
+        self.rows = {i + 1: list(r) for i, r in enumerate(rows)}   # row number -> cells
+        self.puts = []
+        self.interfere_once = interfere_once
+
+    def api(self, method, url, sheet_id, cell_range, values=None, timeout=60):
+        import re
+        m = re.match(r"A(\d+):(?:[A-Z])(\d+)$", cell_range) or re.match(r"A(\d+):A(\d+)$", cell_range)
+        start, end = int(m.group(1)), int(m.group(2))
+        if method == "PUT":
+            self.puts.append((start, end, values))
+            for i, row in enumerate(values):
+                self.rows[start + i] = list(row)
+            if self.interfere_once:            # someone else overwrote our first row right after
+                self.interfere_once = False
+                self.rows[start] = ["someone_else"] + [""] * 9
+            return {"code": 0}
+        return {"rows": [self.rows.get(n, []) for n in range(start, end + 1)]}
+
+    @staticmethod
+    def extract(payload):
+        return payload["rows"]
+
+
+def _patch_sheet(monkeypatch, sheet):
+    from copyright_alert import lark_auth
+
+    monkeypatch.setattr(lark_auth, "sheet_values_api", sheet.api)
+    monkeypatch.setattr(lark_auth, "extract_sheet_values", sheet.extract)
+    monkeypatch.setattr(ce, "MAX_LOG_ROWS", 50)
+
+
+def test_append_rows_writes_after_last_used_row(monkeypatch):
+    sheet = _FakeSheet([["claim_key"], ["om_old1"], ["om_old2"]])
+    _patch_sheet(monkeypatch, sheet)
+    rows = [["om_a", "t", "card_posted", "", "backfill", "", "BR", "", "", ""],
+            ["om_b", "t", "card_posted", "", "backfill", "", "BR", "", "", ""]]
+    ce._append_rows(rows)
+    assert sheet.puts == [(4, 5, rows)]
+
+
+def test_append_rows_retries_when_rows_were_overwritten(monkeypatch):
+    sheet = _FakeSheet([["claim_key"]], interfere_once=True)
+    _patch_sheet(monkeypatch, sheet)
+    ce._append_rows([["om_a", "t", "x", "", "s", "", "BR", "", "", ""]])
+    assert [p[0] for p in sheet.puts] == [2, 3]      # second attempt lands on the next free row
+    assert sheet.rows[3][0] == "om_a"
+
+
+def test_append_rows_refuses_past_sheet_capacity(monkeypatch):
+    import pytest
+
+    sheet = _FakeSheet([["claim_key"]] + [[f"om_{i}"] for i in range(49)])   # rows 1..50 used
+    _patch_sheet(monkeypatch, sheet)
+    with pytest.raises(RuntimeError, match="full"):
+        ce._append_rows([["om_new", "t", "x", "", "s", "", "BR", "", "", ""]])
