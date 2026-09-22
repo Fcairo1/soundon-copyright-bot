@@ -159,6 +159,7 @@ from copyright_alert.tag_managers import business_days_remaining_brt, REPLY_DEAD
 from copyright_alert import metadata_notice  # noqa: E402
 from copyright_alert import takedown_stream_tracker  # noqa: E402
 from copyright_alert import claim_events  # noqa: E402
+from copyright_alert import marketshare_tracker  # noqa: E402
 
 
 # ── Region configuration ─────────────────────────────────────────────────────
@@ -1981,6 +1982,16 @@ def main(region=None):
     except Exception as e:
         log(f"  ✗ Claim-event-log section error: {e!r}")
         results["claim_event_log"] = {"error": repr(e)}
+
+    # J) Marketshare per claimed UPC — backfill the frozen at-claim snapshot
+    # and refresh the current figure for open (at_risk) claims. Self-contained
+    # (reads its own region config), so region-specific like the scan itself.
+    try:
+        section("PART J — Marketshare sync")
+        results["marketshare"] = marketshare_tracker.run_daily_sync_safe(ACTIVE_REGION)
+    except Exception as e:
+        log(f"  ✗ Marketshare section error: {e!r}")
+        results["marketshare"] = {"error": repr(e)}
 
     section("RUN COMPLETE")
     log(json.dumps(results, ensure_ascii=False, indent=2))
