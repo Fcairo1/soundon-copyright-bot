@@ -31,6 +31,7 @@ STATUS_HEADER = "Status"
 DATE_RECEIVED_HEADER = "Date Received"
 EMAIL_STATUS_HEADER = "Email Status"
 RETRACTED_HEADER = "Retracted"
+MAX_BACKFILL_PER_RUN = 80  # bounds worst-case runtime; remaining rows retry next daily run
 
 
 def _norm(value) -> str:
@@ -122,6 +123,7 @@ def run_daily_sync(region: str, *, dry_run: bool = False, today: Optional[date] 
     updates: List[tuple] = []   # (row_number, col_letter, value)
     backfilled = open_refreshed = skipped_no_date = 0
     open_rows: List[tuple] = []   # (row_number, upc)
+    backfill_rows: List[tuple] = []   # (row_number, upc, received_date)
 
     for row_number, row in enumerate(values[1:], start=2):
         upc = _cell(row, upc_idx)
@@ -134,14 +136,23 @@ def run_daily_sync(region: str, *, dry_run: bool = False, today: Optional[date] 
             received = _parse_date(_cell(row, date_idx))
             if not received:
                 skipped_no_date += 1
-            else:
-                ppm = ms.get_marketshare_ppm_for_upc(upc, received)
-                if ppm is not None:
-                    updates.append((row_number, _col_letter(at_claim_idx), ppm))
-                    backfilled += 1
+            elif len(backfill_rows) < MAX_BACKFILL_PER_RUN:
+                backfill_rows.append((row_number, upc, received))
 
         if bucket == "at_risk":
             open_rows.append((row_number, upc))
+
+    if backfill_rows:
+        # Batch-resolve every UPC needing a backfill in one pass (chunked),
+        # instead of one Aeolus call per row — this plus the per-run cap is
+        # what fixed the first live run's 600s timeout (526+ sequential
+        # queries over ~260 claims).
+        ms.batch_resolve_upcs([upc for _, upc, _ in backfill_rows])
+        for row_number, upc, received in backfill_rows:
+            ppm = ms.get_marketshare_ppm_for_upc(upc, received)
+            if ppm is not None:
+                updates.append((row_number, _col_letter(at_claim_idx), ppm))
+                backfilled += 1
 
     if open_rows:
         ppm_by_upc = ms.get_marketshare_ppm_for_upcs([upc for _, upc in open_rows], today)
@@ -159,7 +170,8 @@ def run_daily_sync(region: str, *, dry_run: bool = False, today: Optional[date] 
 
     return {
         "region": region, "dry_run": dry_run, "ensure": ensure_result,
-        "at_claim_backfilled": backfilled, "current_refreshed": open_refreshed,
+        "at_claim_backfilled": backfilled, "at_claim_pending_next_run": max(0, len(values) - 1 - backfilled - skipped_no_date),
+        "current_refreshed": open_refreshed,
         "skipped_no_date_received": skipped_no_date, "write_count": len(updates),
     }
 

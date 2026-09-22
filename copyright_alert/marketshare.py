@@ -83,45 +83,92 @@ def _quote(value) -> str:
     return "'" + ra._aeolus_sql_quote(value) + "'"
 
 
+def _rows_to_upc_map(rows) -> Dict[str, Dict[str, object]]:
+    by_upc_country: Dict[tuple, str] = {}   # (upc, country) -> latest p_date seen
+    isrcs_by_upc: Dict[str, set] = {}
+    for r in rows:
+        upc = str(r.get("upc") or "").strip()
+        isrc = str(r.get("isrc") or "").strip()
+        country = str(r.get("user_region") or "").strip()
+        latest = str(r.get("latest") or "")
+        if not upc:
+            continue
+        if isrc:
+            isrcs_by_upc.setdefault(upc, set()).add(isrc)
+        if country:
+            key = (upc, country)
+            if latest > by_upc_country.get(key, ""):
+                by_upc_country[key] = latest
+    out: Dict[str, Dict[str, object]] = {}
+    for upc, isrcs in isrcs_by_upc.items():
+        countries = {c: latest for (u, c), latest in by_upc_country.items() if u == upc}
+        if not countries:
+            continue
+        country = max(countries, key=lambda c: countries[c])
+        out[upc] = {"isrcs": sorted(isrcs), "country": country, "fetched_at": time.time()}
+    return out
+
+
+def batch_resolve_upcs(upcs: Sequence[str], *, chunk_size: int = 40) -> Dict[str, Optional[Dict[str, object]]]:
+    """Resolve many UPCs' ISRCs + country in one grouped query per chunk,
+    instead of one Aeolus call per UPC — a claim backfill over ~260 rows at
+    one resolve_upc() call each was part of what made the first live dry-run
+    time out at 600s. Populates the same cache resolve_upc() reads from."""
+    out: Dict[str, Optional[Dict[str, object]]] = {}
+    uncached = []
+    now = time.time()
+    for upc in dict.fromkeys(str(u or "").strip() for u in upcs if str(u or "").strip() and str(u or "").strip().upper() != "N/A"):
+        cached = _upc_cache.get(upc)
+        if cached and now - cached["fetched_at"] < _UPC_CACHE_TTL_SECONDS:
+            out[upc] = cached
+        else:
+            uncached.append(upc)
+    if not uncached:
+        return out
+    cutoff = (datetime.utcnow() - timedelta(days=_RECENT_LOOKUP_WINDOW_DAYS)).strftime("%Y-%m-%d")
+    for i in range(0, len(uncached), chunk_size):
+        chunk = uncached[i:i + chunk_size]
+        in_list = ", ".join(_quote(v) for v in chunk)
+        sql = (
+            f"SELECT `[upc]`, `[isrc]`, `[user_region]`, MAX(`[p_date]`) AS latest "
+            f"FROM `{SONG_DIM_TABLE}` "
+            f"WHERE `[upc]` IN ({in_list}) AND `[p_date]` >= {_quote(cutoff)} "
+            "GROUP BY `[upc]`, `[isrc]`, `[user_region]`"
+        )
+        parsed = ra._run_aeolus_sql(sql, timeout=180, dataset_id=SONG_DIM_DATASET)
+        rows = ra._aeolus_rows_to_dict(parsed) if parsed else []
+        resolved = _rows_to_upc_map(rows)
+        for upc in chunk:
+            result = resolved.get(upc)
+            out[upc] = result
+            if result:
+                _upc_cache[upc] = result
+    return out
+
+
 def resolve_upc(upc: str) -> Optional[Dict[str, object]]:
     """Return {"isrcs": [...], "country": "BR"} for one UPC, cached. None if
     Aeolus has no data for it. A UPC whose songs span more than one country
-    (compilations) uses whichever country has the most recent activity."""
+    (compilations) uses whichever country has the most recent activity.
+    Prefer batch_resolve_upcs() when resolving more than a couple of UPCs."""
     upc = str(upc or "").strip()
     if not upc or upc.upper() == "N/A":
         return None
     cached = _upc_cache.get(upc)
     if cached and time.time() - cached["fetched_at"] < _UPC_CACHE_TTL_SECONDS:
         return cached
-    cutoff = (datetime.utcnow() - timedelta(days=_RECENT_LOOKUP_WINDOW_DAYS)).strftime("%Y-%m-%d")
-    sql = (
-        f"SELECT `[isrc]`, `[user_region]`, MAX(`[p_date]`) AS latest "
-        f"FROM `{SONG_DIM_TABLE}` "
-        f"WHERE `[upc]` = {_quote(upc)} AND `[p_date]` >= {_quote(cutoff)} "
-        "GROUP BY `[isrc]`, `[user_region]`"
-    )
-    parsed = ra._run_aeolus_sql(sql, timeout=120, dataset_id=SONG_DIM_DATASET)
-    rows = ra._aeolus_rows_to_dict(parsed) if parsed else []
-    if not rows:
-        return None
-    isrcs = sorted({str(r.get("isrc") or "").strip() for r in rows if r.get("isrc")})
-    by_country: Dict[str, str] = {}
-    for r in rows:
-        country = str(r.get("user_region") or "").strip()
-        latest = str(r.get("latest") or "")
-        if country and latest > by_country.get(country, ""):
-            by_country[country] = latest
-    country = max(by_country, key=lambda c: by_country[c]) if by_country else ""
-    if not isrcs or not country:
-        return None
-    result = {"isrcs": isrcs, "country": country, "fetched_at": time.time()}
-    _upc_cache[upc] = result
-    return result
+    return batch_resolve_upcs([upc]).get(upc)
 
 
 def _marketshare_ppm(isrcs: Sequence[str], country: str, end_date, *, window_days: int = 30) -> Optional[float]:
     """sum(api_sptf_play_cnt_1d) / sum(fixed_stream) for one country over
-    [end_date - window_days + 1, end_date], in parts per million."""
+    [end_date - window_days + 1, end_date], in parts per million.
+
+    One combined query (correlated subqueries in the SELECT list), not two —
+    a per-row backfill over ~260 claims at 2 queries each is what caused the
+    first live dry-run to time out at 600s (confirmed: 526+ sequential
+    queries). Verified this combined form returns the same numbers as the
+    separate num/den queries before switching to it."""
     if not isrcs or not country:
         return None
     end = end_date if isinstance(end_date, date) else datetime.strptime(str(end_date)[:10], "%Y-%m-%d").date()
@@ -129,25 +176,21 @@ def _marketshare_ppm(isrcs: Sequence[str], country: str, end_date, *, window_day
     start_s, end_s = start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
     in_list = ", ".join(_quote(v) for v in isrcs)
 
-    num_sql = (
-        f"SELECT SUM(`[api_sptf_play_cnt_1d]`) AS n FROM `{ENGAGEMENT_TABLE}` "
+    sql = (
+        f"SELECT (SELECT SUM(`[api_sptf_play_cnt_1d]`) FROM `{ENGAGEMENT_TABLE}` "
         f"WHERE `[isrc]` IN ({in_list}) AND `[country_code]` = {_quote(country)} "
-        f"AND `[p_date]` >= {_quote(start_s)} AND `[p_date]` <= {_quote(end_s)}"
-    )
-    den_sql = (
-        "SELECT SUM(m) AS d FROM (SELECT `[country_code]`, `[p_date]`, "
+        f"AND `[p_date]` >= {_quote(start_s)} AND `[p_date]` <= {_quote(end_s)}) AS n, "
+        "(SELECT SUM(m) FROM (SELECT `[country_code]`, `[p_date]`, "
         f"MAX(`[valid_total_approx_sptf_play_cnt_1d]`) AS m FROM `{ENGAGEMENT_TABLE}` "
         f"WHERE `[country_code]` = {_quote(country)} "
         f"AND `[p_date]` >= {_quote(start_s)} AND `[p_date]` <= {_quote(end_s)} "
-        "GROUP BY `[country_code]`, `[p_date]`)"
+        "GROUP BY `[country_code]`, `[p_date]`)) AS d"
     )
-    num_parsed = ra._run_aeolus_sql(num_sql, timeout=180, dataset_id=ENGAGEMENT_DATASET)
-    den_parsed = ra._run_aeolus_sql(den_sql, timeout=180, dataset_id=ENGAGEMENT_DATASET)
-    num_rows = ra._aeolus_rows_to_dict(num_parsed) if num_parsed else []
-    den_rows = ra._aeolus_rows_to_dict(den_parsed) if den_parsed else []
+    parsed = ra._run_aeolus_sql(sql, timeout=180, dataset_id=ENGAGEMENT_DATASET)
+    rows = ra._aeolus_rows_to_dict(parsed) if parsed else []
     try:
-        num = float(num_rows[0].get("n") or 0) if num_rows else 0.0
-        den = float(den_rows[0].get("d") or 0) if den_rows else 0.0
+        num = float(rows[0].get("n") or 0) if rows else 0.0
+        den = float(rows[0].get("d") or 0) if rows else 0.0
     except (TypeError, ValueError, IndexError):
         return None
     if den <= 0:

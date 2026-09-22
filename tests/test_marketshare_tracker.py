@@ -108,6 +108,20 @@ def test_open_claim_refreshes_current_via_batch(monkeypatch):
     assert result["current_refreshed"] == 1
 
 
+def test_backfill_respects_per_run_cap_and_calls_batch_resolve(monkeypatch):
+    rows = [[f"UPC{i}", "🔴 Confirm Takedown", "2026-09-01", "", "", "", ""] for i in range(mt.MAX_BACKFILL_PER_RUN + 5)]
+    values = _values(*rows)
+    _patch_common(monkeypatch, values)
+    monkeypatch.setattr(ms, "get_marketshare_ppm_for_upc", lambda upc, end: 1.0)
+    monkeypatch.setattr(ms, "get_marketshare_ppm_for_upcs", lambda upcs, end: {})
+    batch_calls = []
+    monkeypatch.setattr(ms, "batch_resolve_upcs", lambda upcs: batch_calls.append(list(upcs)))
+    result = mt.run_daily_sync("BR", dry_run=True)
+    assert result["at_claim_backfilled"] == mt.MAX_BACKFILL_PER_RUN
+    assert result["at_claim_pending_next_run"] == 5
+    assert len(batch_calls[0]) == mt.MAX_BACKFILL_PER_RUN
+
+
 def test_dry_run_writes_nothing(monkeypatch):
     values = _values(["638022638262", "🔴 Confirm Takedown", "2026-09-01", "", "", "", ""])
     _patch_common(monkeypatch, values)

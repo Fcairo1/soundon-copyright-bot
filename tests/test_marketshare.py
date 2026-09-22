@@ -43,9 +43,11 @@ def _rows(cols, data):
 
 
 def test_resolve_upc_picks_most_recent_country(monkeypatch):
+    ms._upc_cache.clear()
     monkeypatch.setattr(ms.ra, "_run_aeolus_sql", lambda sql, **k: _rows(
-        ["isrc", "user_region", "latest"],
-        [["A1", "BR", "2026-09-10"], ["A2", "BR", "2026-09-10"], ["A1", "US", "2026-08-01"]],
+        ["upc", "isrc", "user_region", "latest"],
+        [["638022638262", "A1", "BR", "2026-09-10"], ["638022638262", "A2", "BR", "2026-09-10"],
+         ["638022638262", "A1", "US", "2026-08-01"]],
     ))
     resolved = ms.resolve_upc("638022638262")
     assert resolved["isrcs"] == ["A1", "A2"]
@@ -58,7 +60,7 @@ def test_resolve_upc_none_for_blank_or_na():
 
 
 def test_resolve_upc_none_when_aeolus_has_no_rows(monkeypatch):
-    monkeypatch.setattr(ms.ra, "_run_aeolus_sql", lambda sql, **k: _rows(["isrc", "user_region", "latest"], []))
+    monkeypatch.setattr(ms.ra, "_run_aeolus_sql", lambda sql, **k: _rows(["upc", "isrc", "user_region", "latest"], []))
     assert ms.resolve_upc("000000000000") is None
 
 
@@ -66,7 +68,7 @@ def test_resolve_upc_is_cached(monkeypatch):
     calls = []
     def fake(sql, **k):
         calls.append(sql)
-        return _rows(["isrc", "user_region", "latest"], [["A1", "BR", "2026-09-10"]])
+        return _rows(["upc", "isrc", "user_region", "latest"], [["123", "A1", "BR", "2026-09-10"]])
     monkeypatch.setattr(ms.ra, "_run_aeolus_sql", fake)
     ms._upc_cache.clear()
     ms.resolve_upc("123")
@@ -74,24 +76,42 @@ def test_resolve_upc_is_cached(monkeypatch):
     assert len(calls) == 1
 
 
+def test_batch_resolve_upcs_chunks_and_dedupes(monkeypatch):
+    calls = []
+    def fake(sql, **k):
+        calls.append(sql)
+        return _rows(["upc", "isrc", "user_region", "latest"],
+                     [["U1", "A1", "BR", "2026-09-10"], ["U2", "B1", "US", "2026-09-10"]])
+    monkeypatch.setattr(ms.ra, "_run_aeolus_sql", fake)
+    ms._upc_cache.clear()
+    out = ms.batch_resolve_upcs(["U1", "U2", "U1", ""], chunk_size=40)
+    assert len(calls) == 1   # one query for both UPCs
+    assert out["U1"] == {"isrcs": ["A1"], "country": "BR", "fetched_at": out["U1"]["fetched_at"]}
+    assert out["U2"]["country"] == "US"
+
+
+def test_batch_resolve_upcs_missing_upc_is_none(monkeypatch):
+    monkeypatch.setattr(ms.ra, "_run_aeolus_sql", lambda sql, **k: _rows(["upc", "isrc", "user_region", "latest"], []))
+    ms._upc_cache.clear()
+    assert ms.batch_resolve_upcs(["ghost"]) == {"ghost": None}
+
+
 def test_marketshare_ppm_divides_correctly(monkeypatch):
     calls = []
 
     def fake(sql, **k):
         calls.append(sql)
-        if "SUM(`[api_sptf_play_cnt_1d]`)" in sql:
-            return _rows(["n"], [["1006"]])
-        return _rows(["d"], [["17813848870.595703"]])
+        return _rows(["n", "d"], [["1006", "17813848870.595703"]])
 
     monkeypatch.setattr(ms.ra, "_run_aeolus_sql", fake)
     ppm = ms._marketshare_ppm(["AEA3A2209422"], "BR", date(2026, 9, 12))
     assert ppm == round(1006 / 17813848870.595703 * 1_000_000, 3)
-    assert len(calls) == 2
+    assert len(calls) == 1   # one combined query, not two — this is the fix for the 600s timeout
     assert "2026-08-14" in calls[0] and "2026-09-12" in calls[0]   # 30-day window
 
 
 def test_marketshare_ppm_none_on_zero_denominator(monkeypatch):
-    monkeypatch.setattr(ms.ra, "_run_aeolus_sql", lambda sql, **k: _rows(["n"], [["0"]]) if "n" not in sql else _rows(["n"], [["0"]]))
+    monkeypatch.setattr(ms.ra, "_run_aeolus_sql", lambda sql, **k: _rows(["n", "d"], [["100", "0"]]))
     assert ms._marketshare_ppm(["X"], "BR", date(2026, 9, 12)) is None
 
 
