@@ -20,6 +20,7 @@ daily_workflow.py, same shape as claim_events.py and takedown_stream_tracker.py.
 from __future__ import annotations
 
 import json
+import os
 from datetime import date, datetime
 from typing import Dict, List, Optional, Sequence
 
@@ -31,7 +32,11 @@ STATUS_HEADER = "Status"
 DATE_RECEIVED_HEADER = "Date Received"
 EMAIL_STATUS_HEADER = "Email Status"
 RETRACTED_HEADER = "Retracted"
-MAX_BACKFILL_PER_RUN = 80  # bounds worst-case runtime; remaining rows retry next daily run
+# Bounds worst-case runtime; remaining rows retry next daily run. Lowered
+# from 80 after two real timeouts (600s, then 300s) with unknown real
+# per-query latency on the AIME workspace. Env-overridable so it can be
+# recalibrated without another code push once real timing is known.
+MAX_BACKFILL_PER_RUN = int(os.getenv("MARKETSHARE_MAX_BACKFILL_PER_RUN", "20"))
 
 
 def _norm(value) -> str:
