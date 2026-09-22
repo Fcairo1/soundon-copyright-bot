@@ -127,7 +127,13 @@ def test_get_marketshare_ppm_for_upc_none_when_unresolved(monkeypatch):
 
 def test_batch_groups_shared_isrc_sets_into_one_query(monkeypatch):
     ms._upc_cache.clear()
-    monkeypatch.setattr(ms, "resolve_upc", lambda upc: {"isrcs": ["A1"], "country": "BR"} if upc != "other" else {"isrcs": ["Z9"], "country": "US"})
+    resolve_calls = []
+
+    def fake_batch_resolve(upcs):
+        resolve_calls.append(list(upcs))
+        return {u: ({"isrcs": ["A1"], "country": "BR"} if u != "other" else {"isrcs": ["Z9"], "country": "US"}) for u in upcs}
+
+    monkeypatch.setattr(ms, "batch_resolve_upcs", fake_batch_resolve)
     calls = []
     def fake_compute(isrcs, country, end_date, **k):
         calls.append((tuple(isrcs), country))
@@ -136,9 +142,10 @@ def test_batch_groups_shared_isrc_sets_into_one_query(monkeypatch):
     out = ms.get_marketshare_ppm_for_upcs(["upc1", "upc2", "other", "upc1"], date(2026, 9, 12))
     assert out == {"upc1": 5.0, "upc2": 5.0, "other": 5.0}
     assert len(calls) == 2   # one query for the (BR, A1) group, one for (US, Z9)
+    assert len(resolve_calls) == 1   # resolution itself batched in one call, not per UPC
 
 
 def test_batch_none_for_unresolvable_upc(monkeypatch):
-    monkeypatch.setattr(ms, "resolve_upc", lambda upc: None)
+    monkeypatch.setattr(ms, "batch_resolve_upcs", lambda upcs: {u: None for u in upcs})
     out = ms.get_marketshare_ppm_for_upcs(["bad"], date(2026, 9, 12))
     assert out == {"bad": None}

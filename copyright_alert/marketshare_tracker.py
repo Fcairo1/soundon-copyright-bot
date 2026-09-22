@@ -37,6 +37,12 @@ RETRACTED_HEADER = "Retracted"
 # per-query latency on the AIME workspace. Env-overridable so it can be
 # recalibrated without another code push once real timing is known.
 MAX_BACKFILL_PER_RUN = int(os.getenv("MARKETSHARE_MAX_BACKFILL_PER_RUN", "20"))
+# Same idea for the OPEN-CLAIM "current" refresh — this had no cap at all
+# and, before get_marketshare_ppm_for_upcs batched its UPC resolution,
+# was the actual dominant cost in the 600s timeout (real measured latency:
+# ~8.4-8.7s per query on the AIME workspace, and BR alone has ~19
+# Investigating/Disputing claims).
+MAX_CURRENT_REFRESH_PER_RUN = int(os.getenv("MARKETSHARE_MAX_CURRENT_REFRESH_PER_RUN", "15"))
 
 
 def _norm(value) -> str:
@@ -159,9 +165,10 @@ def run_daily_sync(region: str, *, dry_run: bool = False, today: Optional[date] 
                 updates.append((row_number, _col_letter(at_claim_idx), ppm))
                 backfilled += 1
 
-    if open_rows:
-        ppm_by_upc = ms.get_marketshare_ppm_for_upcs([upc for _, upc in open_rows], today)
-        for row_number, upc in open_rows:
+    open_rows_capped = open_rows[:MAX_CURRENT_REFRESH_PER_RUN]
+    if open_rows_capped:
+        ppm_by_upc = ms.get_marketshare_ppm_for_upcs([upc for _, upc in open_rows_capped], today)
+        for row_number, upc in open_rows_capped:
             ppm = ppm_by_upc.get(upc)
             if ppm is not None:
                 updates.append((row_number, _col_letter(current_idx), ppm))
@@ -176,7 +183,7 @@ def run_daily_sync(region: str, *, dry_run: bool = False, today: Optional[date] 
     return {
         "region": region, "dry_run": dry_run, "ensure": ensure_result,
         "at_claim_backfilled": backfilled, "at_claim_pending_next_run": max(0, len(values) - 1 - backfilled - skipped_no_date),
-        "current_refreshed": open_refreshed,
+        "current_refreshed": open_refreshed, "current_pending_next_run": max(0, len(open_rows) - len(open_rows_capped)),
         "skipped_no_date_received": skipped_no_date, "write_count": len(updates),
     }
 

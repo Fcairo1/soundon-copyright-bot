@@ -207,11 +207,19 @@ def get_marketshare_ppm_for_upc(upc: str, end_date) -> Optional[float]:
 
 def get_marketshare_ppm_for_upcs(upcs: Sequence[str], end_date) -> Dict[str, Optional[float]]:
     """Batch version, grouped so each distinct (country, isrc-set) pair is
-    queried once even when several claims share a UPC."""
+    queried once even when several claims share a UPC.
+
+    Resolution itself is batched too (batch_resolve_upcs), not one resolve_upc()
+    call per UPC — real timing on the AIME workspace (2026-09-22) showed
+    ~8.4s per individual resolve call, so this path alone (one per open/
+    at_risk claim, uncapped) was the dominant cost in the BR dry-run timeout,
+    on top of the already-capped backfill loop."""
     out: Dict[str, Optional[float]] = {}
+    unique_upcs = list(dict.fromkeys(str(u or "").strip() for u in upcs if str(u or "").strip()))
+    resolved_by_upc = batch_resolve_upcs(unique_upcs)
     groups: Dict[tuple, List[str]] = {}
-    for upc in dict.fromkeys(str(u or "").strip() for u in upcs if str(u or "").strip()):
-        resolved = resolve_upc(upc)
+    for upc in unique_upcs:
+        resolved = resolved_by_upc.get(upc)
         if not resolved:
             out[upc] = None
             continue
