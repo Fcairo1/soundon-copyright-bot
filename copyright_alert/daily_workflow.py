@@ -160,6 +160,7 @@ from copyright_alert import metadata_notice  # noqa: E402
 from copyright_alert import takedown_stream_tracker  # noqa: E402
 from copyright_alert import claim_events  # noqa: E402
 from copyright_alert import marketshare_tracker  # noqa: E402
+from copyright_alert import acr_digest  # noqa: E402
 
 
 # ── Region configuration ─────────────────────────────────────────────────────
@@ -1992,6 +1993,17 @@ def main(region=None):
     except Exception as e:
         log(f"  ✗ Marketshare section error: {e!r}")
         results["marketshare"] = {"error": repr(e)}
+
+    # K) ACR scan digest — check for a new scan cycle tab and post the summary
+    # card if one appeared. Region-agnostic (the ACR sheet isn't per-region),
+    # self-throttled by its own digested-tabs state, so safe to call every day
+    # from every regional invocation.
+    try:
+        section("PART K — ACR scan digest")
+        results["acr_digest"] = acr_digest.run_daily_check_safe()
+    except Exception as e:
+        log(f"  ✗ ACR digest section error: {e!r}")
+        results["acr_digest"] = {"error": repr(e)}
 
     section("RUN COMPLETE")
     log(json.dumps(results, ensure_ascii=False, indent=2))
