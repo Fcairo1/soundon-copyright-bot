@@ -27,6 +27,22 @@ def test_artist_columns_five_exactly_no_join_needed():
     assert mn.artist_columns_from_display_artist(raw) == ["A1", "A2", "A3", "A4", "A5"]
 
 
+def test_backfill_resolved_count_is_per_unique_upc_not_per_row(monkeypatch):
+    # Real production bug: a UPC appearing on 2 rows must not make
+    # upcs_resolved_via_aeolus (and thus upcs_not_found) double-count it.
+    rows = [_row("111", status="New"), _row("111", status=""), _row("222", status="")]
+    monkeypatch.setattr(mn, "_read_metadata_tracker_rows", lambda region: (HEADER, rows, "sid"))
+    monkeypatch.setattr(mn, "batch_query_aeolus_by_upc", lambda upcs: {
+        "111": {"display_artist": '["Artist A"]'},
+    })
+    monkeypatch.setattr(mn, "_run_lark_sheets", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not write")))
+
+    summary = mn.backfill_metadata_artists_and_status("BR", dry_run=True)
+    assert summary["unique_upcs"] == 2
+    assert summary["upcs_resolved_via_aeolus"] == 1
+    assert summary["upcs_not_found"] == 1
+
+
 def test_backfill_dry_run_fills_only_blank_status_and_does_not_write(monkeypatch):
     rows = [_row("111", status="New"), _row("222", status=""), _row("333", status="")]
     monkeypatch.setattr(mn, "_read_metadata_tracker_rows", lambda region: (HEADER, rows, "sid"))

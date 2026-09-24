@@ -570,12 +570,13 @@ def backfill_metadata_artists_and_status(region: str = "BR", *, dry_run: bool = 
     unique_upcs = sorted({u for u in upcs if u})
     aeolus_rows = batch_query_aeolus_by_upc(unique_upcs) if unique_upcs else {}
 
-    resolved = 0
+    # Counted over unique UPCs (aeolus_rows is keyed by unique UPC) — NOT per
+    # data row, which would double-count a UPC that appears in multiple rows
+    # and could make upcs_not_found go negative.
+    resolved = len(aeolus_rows)
     artist_rows = []
     for upc in upcs:
         row_data = aeolus_rows.get(upc, {})
-        if row_data:
-            resolved += 1
         artist_rows.append(artist_columns_from_display_artist(row_data.get("display_artist")))
 
     filled_blank = 0
