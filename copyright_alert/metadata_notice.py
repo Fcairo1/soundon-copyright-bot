@@ -32,6 +32,8 @@ Applies to ALL regions (BR, SPLA, US).
 """
 from __future__ import annotations
 
+import csv
+import io
 import json
 import re
 import subprocess
@@ -43,6 +45,8 @@ from copyright_alert.run_alert import (
     _clean_email_value,
     _normalized_body,
     _ops_context_for_region,
+    _parse_people_list,
+    batch_query_aeolus_by_upc,
     extract_fields,
     first,
     labeled_value,
@@ -68,7 +72,7 @@ _ADMIN_ALBUM_URL = (
 )
 
 METADATA_CORRECTIONS_SHEET_NAME = "Metadata Corrections"
-METADATA_CORRECTIONS_HEADERS = [
+METADATA_CORRECTIONS_BASE_HEADERS = [
     "UPC",
     "Date Received",
     "Spotify Notice Type",
@@ -76,6 +80,14 @@ METADATA_CORRECTIONS_HEADERS = [
     "Status",
     "Notes",
 ]
+# Artist 1-4 hold one name each; a 5th+ artist gets comma-joined into Artist 5.
+METADATA_ARTIST_HEADERS = ["Artist 1", "Artist 2", "Artist 3", "Artist 4", "Artist 5"]
+METADATA_CORRECTIONS_HEADERS = METADATA_CORRECTIONS_BASE_HEADERS + METADATA_ARTIST_HEADERS
+
+# Default status for new rows — matches the infringement-claims tracker's real
+# status vocabulary (confirmed in run_alert.py / persistent_callback.py), so a
+# metadata-notice row reads consistently next to a claims row for the same UPC.
+DEFAULT_METADATA_STATUS = "🔍 Investigating"
 _METADATA_TRACKERS = {
     "BR": "https://bytedance.sg.larkoffice.com/sheets/HMQLsGgymhdIQ3tSbNNlk3m1gKd",
     "SPLA": "https://bytedance.larkoffice.com/wiki/Ig1XwJc85iWmsGkEzujcy7sln9d?sheet=66eefc",
@@ -198,6 +210,23 @@ def parse_metadata_notice(body, subject="", meta=None) -> dict:
         "notice_body": notice_body or "N/A",
         "subject": subject or "",
     }
+
+
+def artist_columns_from_display_artist(raw) -> list:
+    """Split an Aeolus ``display_artist`` value into the 5 sheet columns.
+
+    ``display_artist`` arrives as a JSON-array-shaped string (e.g.
+    '["Anna Luz","DJ Lano SP"]') — confirmed live against the real Metadata
+    Corrections tracker's UPCs. Artists 1-4 get one name each; a 5th name and
+    any beyond it are comma-joined into Artist 5.
+    """
+    names = _parse_people_list(raw)
+    cols = ["", "", "", "", ""]
+    for i, name in enumerate(names[:4]):
+        cols[i] = name
+    if len(names) > 4:
+        cols[4] = ", ".join(names[4:])
+    return cols
 
 
 def notice_key(fields: dict) -> str:
@@ -427,7 +456,7 @@ def _ensure_metadata_corrections_sheet(region: str) -> str:
         "--url", tracker_url,
         "--title", METADATA_CORRECTIONS_SHEET_NAME,
         "--row-count", "200",
-        "--col-count", "10",
+        "--col-count", str(len(METADATA_CORRECTIONS_HEADERS)),
     ])
     sheet_id = str((created.get("data") or {}).get("sheet_id") or "")
     _run_lark_sheets([
@@ -440,19 +469,21 @@ def _ensure_metadata_corrections_sheet(region: str) -> str:
     return sheet_id
 
 
-def _append_metadata_correction_row(fields: dict, region: str) -> bool:
+def _append_metadata_correction_row(fields: dict, region: str, artist_columns=None) -> bool:
     tracker_url = _metadata_tracker_url(region)
     sheet_id = _ensure_metadata_corrections_sheet(region)
     if not sheet_id:
         raise RuntimeError(f"Missing {METADATA_CORRECTIONS_SHEET_NAME} sheet id for {region}")
 
+    artist_cols = list(artist_columns) if artist_columns else ["", "", "", "", ""]
     row = [
         fields.get("upc", "N/A"),
         fields.get("date_received", "N/A"),
         "Artist/origin metadata misrepresentation",
         fields.get("subject", ""),
-        "New",
+        DEFAULT_METADATA_STATUS,
         f"Auto-routed from Spotify metadata correction notice; ref={fields.get('ref_id', 'N/A')}",
+        *artist_cols,
     ]
     payload = {"sheets": [{
         "name": METADATA_CORRECTIONS_SHEET_NAME,
@@ -464,6 +495,144 @@ def _append_metadata_correction_row(fields: dict, region: str) -> bool:
     }]}
     _run_lark_sheets(["+table-put", "--url", tracker_url, "--sheets", "-"], input_text=json.dumps(payload))
     return True
+
+
+# ── Backfill (Artist 1-5 + blank-status fill on the existing tracker) ────────
+def _column_letter(index0: int) -> str:
+    """0-indexed column number -> spreadsheet letter (0->A, 6->G, ...)."""
+    letters = ""
+    n = index0 + 1
+    while n > 0:
+        n, rem = divmod(n - 1, 26)
+        letters = chr(65 + rem) + letters
+    return letters
+
+
+def _rows_to_csv(rows) -> str:
+    buf = io.StringIO()
+    csv.writer(buf, lineterminator="\n").writerows(rows)
+    return buf.getvalue()
+
+
+def _read_metadata_tracker_rows(region: str):
+    """Read every row of the region's Metadata Corrections tab.
+
+    Returns (header: list[str], data_rows: list[list[str]], sheet_id: str).
+    Blank trailing rows in the sheet's padded range are dropped.
+    """
+    tracker_url = _metadata_tracker_url(region)
+    sheet_id = _ensure_metadata_corrections_sheet(region)
+    if not sheet_id:
+        raise RuntimeError(f"Missing {METADATA_CORRECTIONS_SHEET_NAME} sheet id for {region}")
+
+    result = _run_lark_sheets([
+        "+csv-get", "--url", tracker_url, "--sheet-id", sheet_id,
+        "--include-row-prefix=false",
+    ])
+    csv_text = (result.get("data") or {}).get("annotated_csv") or ""
+    rows = list(csv.reader(io.StringIO(csv_text)))
+    if not rows:
+        return [], [], sheet_id
+    header = [h.strip() for h in rows[0]]
+    data_rows = [r for r in rows[1:] if any(c.strip() for c in r)]
+    return header, data_rows, sheet_id
+
+
+def backfill_metadata_artists_and_status(region: str = "BR", *, dry_run: bool = True) -> dict:
+    """Backfill Artist 1-5 and blank Status cells on an existing tracker tab.
+
+    * Adds the Artist 1-5 headers if the sheet doesn't already have them.
+    * Resolves every unique UPC's artist names in ONE batched Aeolus query
+      (batch_query_aeolus_by_upc), not one query per row — an earlier feature
+      on this same tracker family (marketshare backfill) hit real 600s
+      timeouts from exactly that per-row pattern.
+    * Overwrites the Artist columns for every row — they're always computed
+      from Aeolus, never ops-edited, so re-running this is always safe.
+    * Fills Status ONLY where it is currently blank. Every non-blank value
+      (including "New", the default written before this change shipped) is
+      left exactly as-is — this was an explicit scope decision, not an
+      oversight, so most existing rows will keep reading "New".
+    """
+    tracker_url = _metadata_tracker_url(region)
+    header, data_rows, sheet_id = _read_metadata_tracker_rows(region)
+    if not header:
+        raise RuntimeError(f"Could not read {METADATA_CORRECTIONS_SHEET_NAME} header for {region}")
+
+    def _hidx(name):
+        return header.index(name) if name in header else None
+
+    upc_i = _hidx("UPC")
+    status_i = _hidx("Status")
+    if upc_i is None or status_i is None:
+        raise RuntimeError(f"{METADATA_CORRECTIONS_SHEET_NAME} header missing UPC/Status: {header}")
+
+    upcs = [(r[upc_i].strip() if len(r) > upc_i else "") for r in data_rows]
+    unique_upcs = sorted({u for u in upcs if u})
+    aeolus_rows = batch_query_aeolus_by_upc(unique_upcs) if unique_upcs else {}
+
+    resolved = 0
+    artist_rows = []
+    for upc in upcs:
+        row_data = aeolus_rows.get(upc, {})
+        if row_data:
+            resolved += 1
+        artist_rows.append(artist_columns_from_display_artist(row_data.get("display_artist")))
+
+    filled_blank = 0
+    new_status = []
+    for r in data_rows:
+        current = r[status_i].strip() if len(r) > status_i else ""
+        if not current:
+            new_status.append(DEFAULT_METADATA_STATUS)
+            filled_blank += 1
+        else:
+            new_status.append(current)
+
+    has_artist_headers = all(h in header for h in METADATA_ARTIST_HEADERS)
+    artist_start_col = _column_letter(len(METADATA_CORRECTIONS_BASE_HEADERS))  # "G" today
+    status_col = _column_letter(status_i)
+
+    summary = {
+        "region": region,
+        "rows": len(data_rows),
+        "unique_upcs": len(unique_upcs),
+        "upcs_resolved_via_aeolus": resolved,
+        "upcs_not_found": len(unique_upcs) - resolved,
+        "headers_already_present": has_artist_headers,
+        "status_blank_filled": filled_blank,
+        "dry_run": dry_run,
+        "sample": [
+            {"upc": upcs[i], "artists": artist_rows[i], "status": new_status[i]}
+            for i in range(min(3, len(data_rows)))
+        ],
+    }
+    if dry_run:
+        return summary
+
+    if not has_artist_headers:
+        _run_lark_sheets([
+            "+csv-put", "--url", tracker_url, "--sheet-id", sheet_id,
+            "--start-cell", f"{artist_start_col}1",
+            "--csv", _rows_to_csv([METADATA_ARTIST_HEADERS]),
+        ])
+
+    _run_lark_sheets([
+        "+csv-put", "--url", tracker_url, "--sheet-id", sheet_id,
+        "--start-cell", f"{artist_start_col}2",
+        "--csv", _rows_to_csv(artist_rows),
+    ])
+
+    if filled_blank:
+        _run_lark_sheets([
+            "+csv-put", "--url", tracker_url, "--sheet-id", sheet_id,
+            "--start-cell", f"{status_col}2",
+            "--csv", _rows_to_csv([[v] for v in new_status]),
+        ])
+
+    summary["headers_written"] = not has_artist_headers
+    summary["artist_rows_written"] = len(artist_rows)
+    summary["status_rows_written"] = filled_blank
+    return summary
 
 
 # ── Main handler (called from the daily scan) ────────────────────────────────
@@ -489,6 +658,8 @@ def handle_metadata_notice(body, subject="", meta=None, msg_id="") -> dict:
     if fields.get("title", "N/A") == "N/A" and aeolus_row.get("album_title"):
         fields["title"] = str(aeolus_row.get("album_title"))
 
+    artist_columns = artist_columns_from_display_artist(aeolus_row.get("display_artist"))
+
     existing = get_notice(key)
     if existing:
         # Already tracked — record that we saw it again, but do not re-send here
@@ -503,7 +674,7 @@ def handle_metadata_notice(body, subject="", meta=None, msg_id="") -> dict:
         return {"status": "already_tracked", "key": key, "region": region}
 
     # New notice → write to the Metadata Corrections tab, send the DM, and record state.
-    tracker_ok = _append_metadata_correction_row(fields, region)
+    tracker_ok = _append_metadata_correction_row(fields, region, artist_columns)
     send = _send_notice_dm(fields, region)
     today = _today_brt()
 
@@ -625,6 +796,13 @@ if __name__ == "__main__":
     import sys
     if len(sys.argv) > 1 and sys.argv[1] == "resend":
         print(json.dumps(resend_unresolved_notices(), ensure_ascii=False, indent=2))
+    elif len(sys.argv) > 1 and sys.argv[1] == "--backfill":
+        _args = sys.argv[2:]
+        _dry_run = "--dry-run" in _args
+        _region_arg = next((a.split("=", 1)[1] for a in _args if a.startswith("--region=")), "ALL").upper()
+        _regions = list(_METADATA_TRACKERS) if _region_arg == "ALL" else [_region_arg]
+        _results = {r: backfill_metadata_artists_and_status(r, dry_run=_dry_run) for r in _regions}
+        print(json.dumps(_results, ensure_ascii=False, indent=2))
     else:
         # Demo: build a sample card.
         demo = {
