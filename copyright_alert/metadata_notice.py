@@ -548,10 +548,10 @@ def backfill_metadata_artists_and_status(region: str = "BR", *, dry_run: bool = 
       timeouts from exactly that per-row pattern.
     * Overwrites the Artist columns for every row — they're always computed
       from Aeolus, never ops-edited, so re-running this is always safe.
-    * Fills Status ONLY where it is currently blank. Every non-blank value
-      (including "New", the default written before this change shipped) is
-      left exactly as-is — this was an explicit scope decision, not an
-      oversight, so most existing rows will keep reading "New".
+    * Fills Status where it is currently blank OR still "New" (the stale
+      programmatic default written before this change shipped — never an
+      ops decision). Any other value is a real ops-set status and is left
+      exactly as-is.
     """
     tracker_url = _metadata_tracker_url(region)
     header, data_rows, sheet_id = _read_metadata_tracker_rows(region)
@@ -579,11 +579,14 @@ def backfill_metadata_artists_and_status(region: str = "BR", *, dry_run: bool = 
         row_data = aeolus_rows.get(upc, {})
         artist_rows.append(artist_columns_from_display_artist(row_data.get("display_artist")))
 
+    # "New" is the stale pre-this-change programmatic default (never an ops
+    # decision), so it's treated the same as truly blank — both get filled.
+    # Any other value is a real ops-set status and is left untouched.
     filled_blank = 0
     new_status = []
     for r in data_rows:
         current = r[status_i].strip() if len(r) > status_i else ""
-        if not current:
+        if not current or current == "New":
             new_status.append(DEFAULT_METADATA_STATUS)
             filled_blank += 1
         else:

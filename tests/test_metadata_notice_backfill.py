@@ -43,8 +43,8 @@ def test_backfill_resolved_count_is_per_unique_upc_not_per_row(monkeypatch):
     assert summary["upcs_not_found"] == 1
 
 
-def test_backfill_dry_run_fills_only_blank_status_and_does_not_write(monkeypatch):
-    rows = [_row("111", status="New"), _row("222", status=""), _row("333", status="")]
+def test_backfill_dry_run_fills_blank_and_new_status_does_not_write(monkeypatch):
+    rows = [_row("111", status="New"), _row("222", status=""), _row("333", status="⚖️ Disputing")]
     monkeypatch.setattr(mn, "_read_metadata_tracker_rows", lambda region: (HEADER, rows, "sid"))
     monkeypatch.setattr(mn, "batch_query_aeolus_by_upc", lambda upcs: {
         "111": {"display_artist": '["Artist A"]'},
@@ -57,10 +57,11 @@ def test_backfill_dry_run_fills_only_blank_status_and_does_not_write(monkeypatch
     assert summary["unique_upcs"] == 3
     assert summary["upcs_resolved_via_aeolus"] == 2
     assert summary["upcs_not_found"] == 1
-    assert summary["status_blank_filled"] == 2
+    assert summary["status_blank_filled"] == 2  # "New" + the truly-blank row
     assert summary["headers_already_present"] is False
-    assert summary["sample"][0]["status"] == "New"
-    assert summary["sample"][1]["status"] == "🔍 Investigating"
+    assert summary["sample"][0]["status"] == "🔍 Investigating"  # "New" -> filled
+    assert summary["sample"][1]["status"] == "🔍 Investigating"  # blank -> filled
+    assert summary["sample"][2]["status"] == "⚖️ Disputing"  # real ops status -> untouched
 
 
 def test_backfill_real_run_writes_headers_artist_block_and_status_block(monkeypatch):
@@ -75,7 +76,7 @@ def test_backfill_real_run_writes_headers_artist_block_and_status_block(monkeypa
 
     summary = mn.backfill_metadata_artists_and_status("BR", dry_run=False)
     assert summary["headers_written"] is True
-    assert summary["status_rows_written"] == 1
+    assert summary["status_rows_written"] == 2  # "New" and the blank row both get filled
 
     start_cells = [args[args.index("--start-cell") + 1] for args in calls]
     assert "G1" in start_cells  # artist headers
@@ -84,7 +85,7 @@ def test_backfill_real_run_writes_headers_artist_block_and_status_block(monkeypa
 
 
 def test_backfill_skips_status_write_when_nothing_blank(monkeypatch):
-    rows = [_row("111", status="New")]
+    rows = [_row("111", status="🔴 Confirm Takedown")]
     monkeypatch.setattr(mn, "_read_metadata_tracker_rows", lambda region: (HEADER, rows, "sid"))
     monkeypatch.setattr(mn, "batch_query_aeolus_by_upc", lambda upcs: {})
     calls = []
