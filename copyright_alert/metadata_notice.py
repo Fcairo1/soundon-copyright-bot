@@ -37,6 +37,9 @@ import io
 import json
 import re
 import subprocess
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime, timedelta, timezone
 
 from copyright_alert.run_alert import (
@@ -82,7 +85,23 @@ METADATA_CORRECTIONS_BASE_HEADERS = [
 ]
 # Artist 1-4 hold one name each; a 5th+ artist gets comma-joined into Artist 5.
 METADATA_ARTIST_HEADERS = ["Artist 1", "Artist 2", "Artist 3", "Artist 4", "Artist 5"]
-METADATA_CORRECTIONS_HEADERS = METADATA_CORRECTIONS_BASE_HEADERS + METADATA_ARTIST_HEADERS
+# "Has Infringement Claim?" = "Yes" iff the row's UPC also appears in the same
+# region's main claims tracker tab; "Spotify Status" = a live Online/Offline/
+# Unknown check. Both are backfill-only columns (see
+# backfill_metadata_claim_and_spotify_status) — new rows get blank placeholders
+# at append time (_append_metadata_correction_row) and are populated by the
+# next backfill run, same as Artist 1-5 already work for pre-Aeolus-era rows.
+METADATA_CLAIM_HEADER = "Has Infringement Claim?"
+METADATA_SPOTIFY_STATUS_HEADER = "Spotify Status"
+METADATA_NEW_HEADERS = [METADATA_CLAIM_HEADER, METADATA_SPOTIFY_STATUS_HEADER]
+METADATA_CORRECTIONS_HEADERS = METADATA_CORRECTIONS_BASE_HEADERS + METADATA_ARTIST_HEADERS + METADATA_NEW_HEADERS
+
+# Sheet rows (1-indexed, header = row 1) that must never be read as a write
+# target by the backfill below, for any column — confirmed sensitive/
+# known-fragile rows on the live BR tracker. No other region has any entry.
+_METADATA_PROTECTED_ROWS = {
+    "BR": {235, 1787},
+}
 
 # Default status for new rows — matches the infringement-claims tracker's real
 # status vocabulary (confirmed in run_alert.py / persistent_callback.py), so a
@@ -484,6 +503,13 @@ def _append_metadata_correction_row(fields: dict, region: str, artist_columns=No
         DEFAULT_METADATA_STATUS,
         f"Auto-routed from Spotify metadata correction notice; ref={fields.get('ref_id', 'N/A')}",
         *artist_cols,
+        # "Has Infringement Claim?" / "Spotify Status": left blank at append
+        # time (matches METADATA_CORRECTIONS_HEADERS' column count) rather
+        # than computed here, so a brand-new notice never pays for a fresh
+        # claims-tab read or a live Spotify check inline in the notice-handling
+        # path. The next backfill run fills them in, same as it does for
+        # Artist 1-5 on rows written before that backfill existed.
+        "", "",
     ]
     payload = {"sheets": [{
         "name": METADATA_CORRECTIONS_SHEET_NAME,
@@ -636,6 +662,238 @@ def backfill_metadata_artists_and_status(region: str = "BR", *, dry_run: bool = 
     summary["headers_written"] = not has_artist_headers
     summary["artist_rows_written"] = len(artist_rows)
     summary["status_rows_written"] = filled_blank
+    return summary
+
+
+# ── Backfill (Has Infringement Claim? + Spotify Status) ──────────────────────
+def _claims_tracker_location(region: str):
+    """(tracker_url, sheet_id) of the region's MAIN infringement-claims tab.
+
+    For BR and US this is a different tab within the SAME spreadsheet as the
+    Metadata Corrections tracker; SPLA's claims tab lives in the same wiki-
+    backed sheet used everywhere else in the bot for SPLA. Sourced from
+    bot_runtime.REGION_CONFIGS (lazy import — see handle_callback.py /
+    daily_workflow.py for the same established pattern, avoids a circular
+    import with bot_runtime at module load time), not hardcoded here, so this
+    never drifts from the single source of truth the rest of the bot uses.
+    """
+    from copyright_alert.bot_runtime import REGION_CONFIGS  # lazy import (avoids circular import)
+    cfg = REGION_CONFIGS.get(str(region or "").upper())
+    if not cfg:
+        raise RuntimeError(f"No REGION_CONFIGS entry for region {region!r}")
+    return cfg["tracker_url"], cfg["sheet_id"]
+
+
+def _read_claims_upcs(region: str) -> set:
+    """Every UPC (column A) present in the region's main claims tracker tab.
+
+    Read ONCE per region, not once per metadata row — an earlier feature on
+    this same tracker family (marketshare backfill) hit real 600s timeouts
+    from exactly that per-row pattern (see backfill_metadata_artists_and_status).
+    """
+    tracker_url, sheet_id = _claims_tracker_location(region)
+    result = _run_lark_sheets([
+        "+csv-get", "--url", tracker_url, "--sheet-id", sheet_id,
+        "--include-row-prefix=false",
+    ])
+    csv_text = (result.get("data") or {}).get("annotated_csv") or ""
+    rows = list(csv.reader(io.StringIO(csv_text)))
+    if len(rows) < 2:
+        return set()
+    header = [h.strip() for h in rows[0]]
+    if "UPC" not in header:
+        return set()
+    upc_i = header.index("UPC")
+    return {r[upc_i].strip() for r in rows[1:] if len(r) > upc_i and r[upc_i].strip()}
+
+
+def _spotify_uri_for_upc(upc: str, notices: dict) -> str:
+    """Best-known Spotify URI for a UPC, from previously-processed metadata
+    notices' saved fields (parse_metadata_notice already extracts spotify_uri;
+    handle_metadata_notice persists the full `fields` dict into
+    runtime/metadata_notices_state.json — see _insert in handle_metadata_notice).
+    If the same UPC appears on more than one historical notice, the most
+    recently first-seen one wins. Returns "" if nothing usable is on file —
+    e.g. a very old notice predating spotify_uri parsing, or a row backfilled
+    from a source other than a metadata notice email.
+    """
+    best_seen = ""
+    best_uri = ""
+    for rec in notices.values():
+        fields = rec.get("fields") or {}
+        if str(fields.get("upc", "")).strip() != upc:
+            continue
+        uri = str(fields.get("spotify_uri", "") or "").strip()
+        if not uri or uri == "N/A":
+            continue
+        seen = str(rec.get("first_seen", "") or "")
+        if seen >= best_seen:
+            best_seen, best_uri = seen, uri
+    return best_uri
+
+
+def _spotify_id_and_kind_from_uri(uri: str):
+    """('4iV5W9...', 'track') from a spotify: URI or an open.spotify.com URL;
+    (None, None) if it can't be parsed."""
+    uri = (uri or "").strip()
+    m = re.search(r"spotify:(track|album|artist):([A-Za-z0-9]+)", uri)
+    if m:
+        return m.group(2), m.group(1)
+    m = re.search(r"open\.spotify\.com/(track|album|artist)/([A-Za-z0-9]+)", uri)
+    if m:
+        return m.group(2), m.group(1)
+    return None, None
+
+
+def check_spotify_status(spotify_uri: str, *, timeout: int = 10) -> str:
+    """Lightweight, no-auth check of whether a Spotify track/album/artist is
+    still live.
+
+    No existing Spotify-availability utility exists elsewhere in this bot —
+    dsp_status_scan.py checks AudioSalad DELIVERY status (was the distributor
+    told to send it to Spotify?), a different question from "is it actually
+    live/playable on Spotify right now?" (has it since been taken down?).
+    This uses Spotify's public oEmbed endpoint, which needs no auth/API key:
+    it 200s for a live item and 404s for a removed/taken-down one.
+
+    Returns "Online" / "Offline" / "Unknown". Network errors, timeouts, an
+    unparseable URI, and any non-200/404 response all resolve to "Unknown",
+    never "Offline" — a transient failure must never be misreported as a
+    real takedown.
+    """
+    spotify_id, kind = _spotify_id_and_kind_from_uri(spotify_uri)
+    if not spotify_id:
+        return "Unknown"
+    track_url = f"https://open.spotify.com/{kind}/{spotify_id}"
+    oembed_url = "https://open.spotify.com/oembed?" + urllib.parse.urlencode({"url": track_url})
+    try:
+        req = urllib.request.Request(oembed_url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return "Online" if resp.status == 200 else "Unknown"
+    except urllib.error.HTTPError as exc:
+        return "Offline" if exc.code == 404 else "Unknown"
+    except Exception:
+        return "Unknown"
+
+
+def backfill_metadata_claim_and_spotify_status(region: str = "BR", *, dry_run: bool = True) -> dict:
+    """Backfill 'Has Infringement Claim?' and 'Spotify Status' on the existing
+    Metadata Corrections tracker tab.
+
+    * 'Has Infringement Claim?' = "Yes" if the row's UPC appears anywhere in
+      the SAME region's main claims tracker tab, else left blank. The claims
+      UPC column is read ONCE per region (_read_claims_upcs), not once per
+      metadata row.
+    * 'Spotify Status' = a live Online/Offline/Unknown check (check_spotify_status)
+      using each row's best-known Spotify URI, resolved from the bot's local
+      notice state (_spotify_uri_for_upc). Rows with no resolvable URI (too
+      old, or the original notice email had none) get "Unknown", not "Offline".
+    * Rows listed in _METADATA_PROTECTED_ROWS for this region are never read
+      as a write target for EITHER column — not computed, not included in any
+      write range, regardless of dry_run.
+    """
+    tracker_url = _metadata_tracker_url(region)
+    header, data_rows, sheet_id = _read_metadata_tracker_rows(region)
+    if not header:
+        raise RuntimeError(f"Could not read {METADATA_CORRECTIONS_SHEET_NAME} header for {region}")
+
+    upc_i = header.index("UPC") if "UPC" in header else None
+    if upc_i is None:
+        raise RuntimeError(f"{METADATA_CORRECTIONS_SHEET_NAME} header missing UPC: {header}")
+
+    claim_upcs = _read_claims_upcs(region)
+    notices = _load_state().get("notices") or {}
+    protected = _METADATA_PROTECTED_ROWS.get(str(region or "").upper(), set())
+
+    claim_flags = []
+    spotify_statuses = []
+    for idx, r in enumerate(data_rows):
+        sheet_row = idx + 2  # header occupies row 1
+        if sheet_row in protected:
+            # None (not "" / "Unknown") marks "never touch" — distinct from a
+            # real computed blank/Unknown result — and is skipped entirely by
+            # the write step below, in both dry-run and real-run summaries.
+            claim_flags.append(None)
+            spotify_statuses.append(None)
+            continue
+        upc = r[upc_i].strip() if len(r) > upc_i else ""
+        claim_flags.append("Yes" if upc and upc in claim_upcs else "")
+        uri = _spotify_uri_for_upc(upc, notices) if upc else ""
+        spotify_statuses.append(check_spotify_status(uri) if uri else "Unknown")
+
+    has_claim_i = header.index(METADATA_CLAIM_HEADER) if METADATA_CLAIM_HEADER in header else None
+    has_spotify_i = header.index(METADATA_SPOTIFY_STATUS_HEADER) if METADATA_SPOTIFY_STATUS_HEADER in header else None
+    has_new_headers = has_claim_i is not None and has_spotify_i is not None
+    claim_col = _column_letter(has_claim_i if has_new_headers else len(header))
+    spotify_col = _column_letter(has_spotify_i if has_new_headers else len(header) + 1)
+
+    summary = {
+        "region": region,
+        "rows": len(data_rows),
+        "claims_upcs_loaded": len(claim_upcs),
+        "has_claim_yes": sum(1 for v in claim_flags if v == "Yes"),
+        "spotify_online": sum(1 for v in spotify_statuses if v == "Online"),
+        "spotify_offline": sum(1 for v in spotify_statuses if v == "Offline"),
+        "spotify_unknown": sum(1 for v in spotify_statuses if v == "Unknown"),
+        "headers_already_present": has_new_headers,
+        "protected_rows_skipped": sum(1 for v in claim_flags if v is None),
+        "dry_run": dry_run,
+        "sample": [
+            {
+                "upc": (data_rows[i][upc_i].strip() if len(data_rows[i]) > upc_i else ""),
+                "has_claim": claim_flags[i],
+                "spotify_status": spotify_statuses[i],
+            }
+            for i in range(min(3, len(data_rows)))
+        ],
+    }
+    if dry_run:
+        return summary
+
+    if not has_new_headers:
+        _run_lark_sheets([
+            "+csv-put", "--url", tracker_url, "--sheet-id", sheet_id,
+            "--start-cell", f"{claim_col}1",
+            "--csv", _rows_to_csv([[METADATA_CLAIM_HEADER, METADATA_SPOTIFY_STATUS_HEADER]]),
+        ])
+
+    def _write_column(col_letter, values):
+        # A single +csv-put call writes one CONTIGUOUS block, so a protected
+        # row in the middle of the range has to split the write into segments
+        # around it rather than skip a cell mid-range.
+        written = 0
+        segment, seg_start_row = [], None
+        for i, v in enumerate(values):
+            sheet_row = i + 2
+            if v is None:
+                if segment:
+                    _run_lark_sheets([
+                        "+csv-put", "--url", tracker_url, "--sheet-id", sheet_id,
+                        "--start-cell", f"{col_letter}{seg_start_row}",
+                        "--csv", _rows_to_csv([[x] for x in segment]),
+                    ])
+                    written += len(segment)
+                    segment = []
+                seg_start_row = None
+                continue
+            if seg_start_row is None:
+                seg_start_row = sheet_row
+            segment.append(v)
+        if segment:
+            _run_lark_sheets([
+                "+csv-put", "--url", tracker_url, "--sheet-id", sheet_id,
+                "--start-cell", f"{col_letter}{seg_start_row}",
+                "--csv", _rows_to_csv([[x] for x in segment]),
+            ])
+            written += len(segment)
+        return written
+
+    claim_written = _write_column(claim_col, claim_flags)
+    spotify_written = _write_column(spotify_col, spotify_statuses)
+
+    summary["headers_written"] = not has_new_headers
+    summary["claim_rows_written"] = claim_written
+    summary["spotify_rows_written"] = spotify_written
     return summary
 
 
@@ -805,7 +1063,12 @@ if __name__ == "__main__":
         _dry_run = "--dry-run" in _args
         _region_arg = next((a.split("=", 1)[1] for a in _args if a.startswith("--region=")), "ALL").upper()
         _regions = list(_METADATA_TRACKERS) if _region_arg == "ALL" else [_region_arg]
-        _results = {r: backfill_metadata_artists_and_status(r, dry_run=_dry_run) for r in _regions}
+        _results = {}
+        for _r in _regions:
+            _results[_r] = {
+                "artists_and_status": backfill_metadata_artists_and_status(_r, dry_run=_dry_run),
+                "claim_and_spotify_status": backfill_metadata_claim_and_spotify_status(_r, dry_run=_dry_run),
+            }
         print(json.dumps(_results, ensure_ascii=False, indent=2))
     else:
         # Demo: build a sample card.
