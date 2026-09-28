@@ -537,7 +537,13 @@ def _parse_candidate(msg_id, subject, date, thread_id, seen_threads, summary):
             log("     ⚠️ Spotify rights-confirmation notice — routing to group+DM handler")
             result = rights_confirmation_notice.handle_rights_confirmation_notice(body, subject, meta, msg_id=msg_id)
             log(f"     rights-confirmation notice: {result}")
-            return ("skip", "rights confirmation notice")
+            # Only handled/skipped when the UPC's Aeolus source is AP/A&R — an
+            # "ineligible_source" result means the notice was NOT written to
+            # the Rights Confirmation tab or posted anywhere, so it must fall
+            # through to normal claim-entry extraction below rather than being
+            # silently dropped.
+            if result.get("status") != "ineligible_source":
+                return ("skip", "rights confirmation notice")
     except Exception as exc:
         log(f"     ⚠ rights-confirmation routing error (continuing as normal claim): {exc!r}")
 

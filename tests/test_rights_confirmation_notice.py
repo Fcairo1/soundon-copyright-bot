@@ -179,8 +179,36 @@ def test_handle_reply_callback_no_rights(monkeypatch):
 
 
 def test_handle_notice_skips_already_tracked(monkeypatch):
-    monkeypatch.setattr(rc, "query_aeolus", lambda upc: {"user_region": "BR"})
+    monkeypatch.setattr(rc, "query_aeolus", lambda upc: {"user_region": "BR", "source_type_name": "AP"})
     monkeypatch.setattr(rc, "get_notice", lambda key: {"region": "BR"})
     monkeypatch.setattr(rc, "update_json_state", lambda *a, **k: None)
     result = rc.handle_rights_confirmation_notice(REAL_BODY, REAL_SUBJECT, msg_id="m1")
     assert result["status"] == "already_tracked"
+
+
+def test_handle_notice_falls_through_for_ineligible_source(monkeypatch):
+    monkeypatch.setattr(rc, "query_aeolus", lambda upc: {"user_region": "BR", "source_type_name": "UG-Paid ads"})
+    monkeypatch.setattr(rc, "_append_rights_confirmation_row",
+                         lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not write tracker row")))
+    monkeypatch.setattr(rc, "post_rights_confirmation_group_card",
+                         lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not post group card")))
+    monkeypatch.setattr(rc, "_send_rights_confirmation_dm",
+                         lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not send DM")))
+
+    result = rc.handle_rights_confirmation_notice(REAL_BODY, REAL_SUBJECT, msg_id="m1")
+    assert result["status"] == "ineligible_source"
+    assert result["source_type_name"] == "UG-Paid ads"
+
+
+def test_handle_notice_proceeds_for_ar_source(monkeypatch):
+    monkeypatch.setattr(rc, "query_aeolus", lambda upc: {"user_region": "BR", "source_type_name": "A&R"})
+    monkeypatch.setattr(rc, "get_notice", lambda key: {})
+    monkeypatch.setattr(rc, "_append_rights_confirmation_row", lambda *a, **k: True)
+    monkeypatch.setattr(rc, "post_rights_confirmation_group_card", lambda *a, **k: (True, "msg1"))
+    monkeypatch.setattr(rc, "_set_card_message_id", lambda *a, **k: True)
+    monkeypatch.setattr(rc, "_send_rights_confirmation_dm", lambda *a, **k: {"ok": True, "message_id": "dm1"})
+    monkeypatch.setattr(rc, "update_json_state", lambda *a, **k: None)
+
+    result = rc.handle_rights_confirmation_notice(REAL_BODY, REAL_SUBJECT, msg_id="m1")
+    assert result["status"] == "new"
+    assert result["group_ok"] is True

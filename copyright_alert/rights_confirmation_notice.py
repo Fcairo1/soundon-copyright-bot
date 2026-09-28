@@ -42,6 +42,18 @@ Handling, per the user's explicit spec:
     but gated on the sheet's own Email Status column per the user's spec,
     not a separate "resolved" flag).
 
+Only handled as a rights-confirmation case when the UPC's Aeolus
+source_type_name is "AP" or "A&R" (ELIGIBLE_SOURCE_TYPES below) — any other
+source falls straight through to the normal infringement-claim flow in
+daily_workflow.py instead, per explicit user instruction.
+
+Rights-confirmation rows never count toward infringement-claim totals: they
+live in their own "Rights Confirmation" tab/sheet_id, not the main claims
+tracker tab the dashboard/claim counts read from — same isolation already
+relied on for Metadata Corrections. An ineligible-source case that falls
+through to the normal claim flow legitimately DOES count as a claim there,
+which is the intended default when this specialized handling doesn't apply.
+
 The existing backlog (2 real emails already misclassified as normal
 infringement claims, per live inbox check 2026-09-28) is explicitly OUT of
 scope per the user — this only applies going forward.
@@ -89,6 +101,12 @@ RIGHTS_CONFIRMATION_HEADERS = [
 STATUS_HAVE_RIGHTS = "We have rights"
 STATUS_NO_RIGHTS = "We do not have rights"
 STATUS_INVESTIGATING = "Investigating"
+
+# Only handle a rights-confirmation notice as such when the UPC's Aeolus
+# source_type_name (the same "Source" field shown on the normal claims
+# tracker) is one of these — per explicit user instruction. Anything else
+# falls through to the normal infringement-claim flow instead.
+ELIGIBLE_SOURCE_TYPES = {"AP", "A&R"}
 
 # Subject prefixes for the two OTHER Spotify claim-response email shapes, so
 # this detector can positively exclude them rather than rely on body text
@@ -462,6 +480,12 @@ def handle_rights_confirmation_notice(body, subject="", meta=None, msg_id="") ->
     upc = str(fields.get("upc", "") or "").strip()
     aeolus_row = query_aeolus(upc) if upc and upc != "N/A" else {}
     region = _canonical_alert_region(aeolus_row=aeolus_row) if aeolus_row else "BR"
+
+    source_type = str(aeolus_row.get("source_type_name", "") or "").strip()
+    if source_type not in ELIGIBLE_SOURCE_TYPES:
+        print(f"  • Rights-confirmation notice ineligible (source={source_type!r}, "
+              f"needs AP/A&R) — falling through to normal claim handling ({key})", flush=True)
+        return {"status": "ineligible_source", "key": key, "region": region, "source_type_name": source_type}
 
     existing = get_notice(key)
     if existing:
