@@ -274,6 +274,25 @@ def get_notice(key: str) -> dict:
     return (_load_state().get("notices") or {}).get(key, {})
 
 
+def find_notice_by_upc(upc: str) -> dict:
+    """Most-recently-seen tracked notice for this UPC, or {} if none.
+
+    Used by persistent_callback.py's on-demand `/card <UPC>` command so it can
+    resend the RIGHT card type for a UPC that isn't a normal infringement
+    claim (see also rights_confirmation_notice.find_notice_by_upc).
+    """
+    upc = str(upc or "").strip()
+    if not upc:
+        return {}
+    best = {}
+    for rec in (_load_state().get("notices") or {}).values():
+        if str((rec.get("fields") or {}).get("upc", "")).strip() != upc:
+            continue
+        if not best or rec.get("first_seen", "") >= best.get("first_seen", ""):
+            best = rec
+    return best
+
+
 # ── Card builder ─────────────────────────────────────────────────────────────
 def build_metadata_notice_card(fields: dict, region: str, *, resolved: bool = False,
                                resolved_by: str = "", resolved_at: str = "") -> dict:

@@ -163,6 +163,12 @@ def _send_reply(source_email_message_id: str, body_html: str, action: str,
         "message_id": "",
         "mail_deep_link": "",
         "draft_text": "",
+        # True only once create_reply_draft() confirms it anchored the draft to
+        # the original email's smtp_message_id. False (with thread_warning set)
+        # means it silently fell back to a standalone, unthreaded draft — the
+        # caller MUST surface this to the operator, never swallow it quietly.
+        "threaded": False,
+        "thread_warning": "",
         "error": None,
     }
 
@@ -233,9 +239,16 @@ def _send_reply(source_email_message_id: str, body_html: str, action: str,
         result["send_preview_url"] = draft_url
         result["mail_deep_link"] = draft_url
         result["draft_text"] = body_html
+        result["threaded"] = bool(payload.get("threaded"))
+        if not result["threaded"]:
+            result["thread_warning"] = (
+                "⚠️ Could NOT thread this reply to the original Spotify email — "
+                f"created as a new standalone email instead ({payload.get('warning') or 'reason unknown'}). "
+                "Spotify may not recognize it as a response to the original claim."
+            )
         _log(
             f"✓ {action}: DRAFT created "
-            f"(draft_id={result['draft_id'] or 'N/A'}, "
+            f"(draft_id={result['draft_id'] or 'N/A'}, threaded={result['threaded']}, "
             f"send_preview_url={result['send_preview_url'] or 'N/A'})."
         )
         return result

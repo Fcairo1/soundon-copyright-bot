@@ -55,3 +55,30 @@ def test_send_reply_uses_source_email_as_fallback_recipient(monkeypatch):
     assert result["ok"] is True
     assert captured["to"] == "infringement-claim-response@spotify.com"
     assert captured["thread_message_id"] == "legacy_or_missing"
+
+
+def test_send_reply_flags_successful_threading(monkeypatch):
+    monkeypatch.setattr(spotify_reply, "create_reply_draft", lambda **k: {
+        "draft_id": "d1", "draft_link": "https://mail.example/d1", "threaded": True,
+    })
+    result = spotify_reply.send_reply(
+        reply_type="agree", source_email_message_id="msg1", claimant_email="a@b.com",
+        upc="123", title="T", ref_id="ref:1",
+    )
+    assert result["threaded"] is True
+    assert result["thread_warning"] == ""
+
+
+def test_send_reply_surfaces_threading_failure_loudly(monkeypatch):
+    monkeypatch.setattr(spotify_reply, "create_reply_draft", lambda **k: {
+        "draft_id": "d1", "draft_link": "https://mail.example/d1",
+        "threaded": False, "warning": "original message was missing smtp_message_id",
+    })
+    result = spotify_reply.send_reply(
+        reply_type="agree", source_email_message_id="msg1", claimant_email="a@b.com",
+        upc="123", title="T", ref_id="ref:1",
+    )
+    assert result["ok"] is True  # a draft WAS created — this isn't a failure
+    assert result["threaded"] is False
+    assert "could not" in result["thread_warning"].lower()
+    assert "missing smtp_message_id" in result["thread_warning"]

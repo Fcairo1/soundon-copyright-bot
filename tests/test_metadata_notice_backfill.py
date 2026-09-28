@@ -337,3 +337,18 @@ def test_backfill_skips_header_write_when_new_headers_already_present(monkeypatc
     assert summary["headers_written"] is False
     start_cells = [args[args.index("--start-cell") + 1] for args in calls]
     assert "L1" not in start_cells
+
+
+def test_find_notice_by_upc_returns_most_recent_match(monkeypatch):
+    monkeypatch.setattr(mn, "_load_state", lambda: {"notices": {
+        "old": {"fields": {"upc": "111"}, "first_seen": "2026-09-01 00:00:00"},
+        "new": {"fields": {"upc": "111"}, "first_seen": "2026-09-20 00:00:00"},
+        "other": {"fields": {"upc": "222"}, "first_seen": "2026-09-25 00:00:00"},
+    }})
+    rec = mn.find_notice_by_upc("111")
+    assert rec["first_seen"] == "2026-09-20 00:00:00"
+
+
+def test_find_notice_by_upc_no_match_returns_empty(monkeypatch):
+    monkeypatch.setattr(mn, "_load_state", lambda: {"notices": {}})
+    assert mn.find_notice_by_upc("999") == {}

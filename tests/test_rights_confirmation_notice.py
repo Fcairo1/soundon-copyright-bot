@@ -212,3 +212,37 @@ def test_handle_notice_proceeds_for_ar_source(monkeypatch):
     result = rc.handle_rights_confirmation_notice(REAL_BODY, REAL_SUBJECT, msg_id="m1")
     assert result["status"] == "new"
     assert result["group_ok"] is True
+
+
+def test_find_notice_by_upc_returns_most_recent_match(monkeypatch):
+    monkeypatch.setattr(rc, "_load_state", lambda: {"notices": {
+        "old": {"upc": "111", "first_seen": "2026-09-01 00:00:00"},
+        "new": {"upc": "111", "first_seen": "2026-09-20 00:00:00"},
+        "other": {"upc": "222", "first_seen": "2026-09-25 00:00:00"},
+    }})
+    rec = rc.find_notice_by_upc("111")
+    assert rec["first_seen"] == "2026-09-20 00:00:00"
+
+
+def test_find_notice_by_upc_no_match_returns_empty(monkeypatch):
+    monkeypatch.setattr(rc, "_load_state", lambda: {"notices": {}})
+    assert rc.find_notice_by_upc("999") == {}
+
+
+def test_handle_reply_callback_surfaces_thread_warning_on_card_and_state(monkeypatch):
+    monkeypatch.setattr(rc, "get_notice", lambda key: {"fields": {"title": "T", "ref_id": "ref:1"}, "source_email_message_id": "msg1"})
+    monkeypatch.setattr(rc, "_reply_have_rights", lambda *a, **k: {"ok": True, "thread_warning": "⚠️ Could NOT thread this reply..."})
+    monkeypatch.setattr(rc, "_set_email_status_and_status", lambda *a, **k: True)
+    captured_state = {}
+    monkeypatch.setattr(rc, "update_json_state", lambda path, fn, **k: captured_state.setdefault("fn", fn))
+    captured_card = {}
+    monkeypatch.setattr(rc, "patch_card_message", lambda mid, card: captured_card.setdefault("card", card))
+
+    rc.handle_reply_callback({"choice": "have_rights", "key": "k1", "region": "BR", "upc": "999"}, message_id="m1")
+
+    body_text = " ".join(el.get("text", {}).get("content", "") for el in captured_card["card"]["elements"] if "text" in el)
+    assert "Could NOT thread" in body_text
+
+    state = {"notices": {"k1": {}}}
+    captured_state["fn"](state)
+    assert state["notices"]["k1"]["thread_warning"] == "⚠️ Could NOT thread this reply..."

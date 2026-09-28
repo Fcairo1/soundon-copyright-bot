@@ -432,6 +432,10 @@ def _process_spotify_reply(value, custom_message="", notify_chat_id=None, event_
                 mark = "Failed ❌"
             status_value = f"{mark} – {reply_type} – {timestamp}"
             region = value.get("region")
+            # Surface a failed/degraded threading attempt loudly — a silent
+            # standalone (non-threaded) draft is exactly the recurring problem
+            # this was built to stop happening invisibly.
+            thread_warning = result.get("thread_warning", "") if mode == "draft" else ""
             # H1.1: The draft has ALREADY been created by send_reply() above
             # (send_reply returns a result dict; it does not raise on the happy
             # path). A tracker write-back failure must NOT be reported as a
@@ -493,6 +497,8 @@ def _process_spotify_reply(value, custom_message="", notify_chat_id=None, event_
                             tracker_warning = (
                                 "⚠️ Could not record this in the tracker — status not updated."
                             )
+            if thread_warning:
+                tracker_warning = f"{tracker_warning}\n\n{thread_warning}" if tracker_warning else thread_warning
             send_preview_url = result.get("send_preview_url", "") if isinstance(result, dict) else ""
             print(json.dumps({
                 "spotify_reply": reply_type,
@@ -1104,9 +1110,47 @@ def _read_tracker_fresh(region: str):
     return rows, row_numbers
 
 
+def _post_card_to_destination(card: dict, *, chat_id: str = "", open_id: str = "", email: str = "") -> dict:
+    """Post an interactive card straight to a chat_id/open_id/email, trying
+    each in that order. Used by the on-demand `/card` resend for metadata and
+    rights-confirmation notices so it reaches the REQUESTER, not each notice
+    type's fixed regional ops owner (mirrors dm_action_card.send_dm_action_card's
+    own destination-priority order for the normal-claim case)."""
+    from copyright_alert.bot_runtime import _post_api
+    from copyright_alert.dm_action_card import resolve_open_id
+
+    content = json.dumps(card, ensure_ascii=False)
+    open_id = open_id or (resolve_open_id(email) if email else "")
+    attempts = []
+    if chat_id:
+        attempts.append(("chat_id", chat_id))
+    if open_id:
+        attempts.append(("open_id", open_id))
+    if email and "@" in email:
+        attempts.append(("email", email))
+
+    for id_type, rid in attempts:
+        try:
+            resp = _post_api(
+                f"/im/v1/messages?receive_id_type={id_type}",
+                {"receive_id": rid, "msg_type": "interactive", "content": content},
+            )
+            if resp.get("code") == 0:
+                return {"ok": True, "message_id": ((resp.get("data") or {}).get("message_id") or "")}
+        except Exception as exc:
+            print(f"_post_card_to_destination via {id_type} failed: {exc!r}", flush=True)
+    return {"ok": False, "message_id": ""}
+
+
 def _handle_card_command(command_text, message_id, target_chat_id="", target_open_id="", region_hint=None):
     """Handle `/card <UPC> [region]`: look up the UPC in the trackers and DM the
     invoking operator a private Spotify action card for that case.
+
+    Checks all 3 occurrence types, in order: normal infringement claim (the
+    main tracker), Spotify metadata/misrepresentation notice, then Spotify
+    rights-confirmation notice — resending the CORRECT card shape for
+    whichever one actually matches, instead of always building the generic
+    Agree/Investigating/Dispute claim card.
 
     Works in a DM (card goes to the current p2p chat) and in a group chat (card
     is DM'd to the operator via their open_id). Runs in a background thread.
@@ -1168,8 +1212,43 @@ def _handle_card_command(command_text, message_id, target_chat_id="", target_ope
                 break
 
         if not found:
+            md_rec = metadata_notice.find_notice_by_upc(upc)
+            if md_rec:
+                md_fields = md_rec.get("fields") or {}
+                card = metadata_notice.build_metadata_notice_card(
+                    md_fields, md_rec.get("region", "BR"), resolved=bool(md_rec.get("resolved")),
+                    resolved_by=md_rec.get("resolved_by", ""), resolved_at=md_rec.get("resolved_at", ""),
+                )
+                result = _post_card_to_destination(card, chat_id=target_chat_id, open_id=target_open_id)
+                if result.get("ok"):
+                    reply_post(message_id, "/card", [
+                        f"📋 UPC `{upc}` is a **Spotify metadata/misrepresentation notice** "
+                        f"({md_rec.get('region', 'BR')}) — resent that card.",
+                    ])
+                else:
+                    reply_post(message_id, "/card", [f"⚠️ Found the metadata notice for `{upc}` but could not deliver the card."])
+                return
+
+            rc_rec = rights_confirmation_notice.find_notice_by_upc(upc)
+            if rc_rec:
+                rc_fields = rc_rec.get("fields") or {}
+                card = rights_confirmation_notice.build_rights_confirmation_dm_card(
+                    rc_fields, rc_rec.get("region", "BR"), resolved_status=rc_rec.get("resolved_status", ""),
+                    thread_warning=rc_rec.get("thread_warning", ""),
+                )
+                result = _post_card_to_destination(card, chat_id=target_chat_id, open_id=target_open_id)
+                if result.get("ok"):
+                    reply_post(message_id, "/card", [
+                        f"📋 UPC `{upc}` is a **Spotify rights-confirmation notice** "
+                        f"({rc_rec.get('region', 'BR')}) — resent that card.",
+                    ])
+                else:
+                    reply_post(message_id, "/card", [f"⚠️ Found the rights-confirmation notice for `{upc}` but could not deliver the card."])
+                return
+
             reply_post(message_id, "/card", [
-                f"❌ UPC `{upc}` was not found in any tracker (BR / SPLA / US).",
+                f"❌ UPC `{upc}` was not found in any tracker (Infringement Claims / "
+                "Metadata Corrections / Rights Confirmation, BR / SPLA / US).",
                 "Double-check the UPC, or run `/scan` if this is a brand-new claim.",
             ])
             return

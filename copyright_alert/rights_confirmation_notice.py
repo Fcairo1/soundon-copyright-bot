@@ -316,6 +316,25 @@ def get_notice(key: str) -> dict:
     return (_load_state().get("notices") or {}).get(key, {})
 
 
+def find_notice_by_upc(upc: str) -> dict:
+    """Most-recently-seen tracked notice for this UPC, or {} if none.
+
+    Used by persistent_callback.py's on-demand `/card <UPC>` command so it can
+    resend the RIGHT card type for a UPC that isn't a normal infringement
+    claim (see also metadata_notice.find_notice_by_upc).
+    """
+    upc = str(upc or "").strip()
+    if not upc:
+        return {}
+    best = {}
+    for rec in (_load_state().get("notices") or {}).values():
+        if str(rec.get("upc", "")).strip() != upc:
+            continue
+        if not best or rec.get("first_seen", "") >= best.get("first_seen", ""):
+            best = rec
+    return best
+
+
 # ── Group card (posted to the SAME group as normal infringement claims) ─────
 def build_rights_confirmation_group_card(fields: dict, region: str, aeolus_row: dict) -> dict:
     def v(val):
@@ -366,7 +385,8 @@ def post_rights_confirmation_group_card(fields: dict, region: str, aeolus_row: d
 
 
 # ── DM action card (private, to the region's product-ops owner) ─────────────
-def build_rights_confirmation_dm_card(fields: dict, region: str, *, resolved_status: str = "") -> dict:
+def build_rights_confirmation_dm_card(fields: dict, region: str, *, resolved_status: str = "",
+                                       thread_warning: str = "") -> dict:
     def v(val):
         return val if val and val != "N/A" else "N/A"
 
@@ -377,9 +397,11 @@ def build_rights_confirmation_dm_card(fields: dict, region: str, *, resolved_sta
         elements = [
             {"tag": "div", "text": {"tag": "lark_md", "content":
                 f"**{v(fields.get('title'))}**\n✅ **{resolved_status}**"}},
-            {"tag": "note", "elements": [{"tag": "plain_text", "content":
-                f"Region {region} · UPC {upc_value} · {v(fields.get('ref_id'))}"}]},
         ]
+        if thread_warning:
+            elements.append({"tag": "div", "text": {"tag": "lark_md", "content": f"**{thread_warning}**"}})
+        elements.append({"tag": "note", "elements": [{"tag": "plain_text", "content":
+            f"Region {region} · UPC {upc_value} · {v(fields.get('ref_id'))}"}]})
     else:
         elements = [
             {"tag": "div", "text": {"tag": "lark_md", "content":
@@ -605,15 +627,24 @@ def handle_reply_callback(value: dict, *, message_id: str = "", explanation: str
 
     _set_email_status_and_status(region, upc, email_status, status_value)
 
-    def _mark(state):
+    # Surface a failed/degraded threading attempt loudly, same as the normal
+    # infringement-claim reply flow — a silent standalone (non-threaded) draft
+    # is exactly the recurring problem this was built to stop happening
+    # invisibly.
+    thread_warning = result.get("thread_warning", "") if isinstance(result, dict) else ""
+
+    def _mark(state, _status=status_value, _warn=thread_warning):
         r = state["notices"].get(key)
         if r is not None:
             r["answered"] = True
+            r["resolved_status"] = _status
+            r["thread_warning"] = _warn
     update_json_state(STATE_FILE, _mark, default=lambda: {"notices": {}})
 
     if message_id:
         try:
-            card = build_rights_confirmation_dm_card(fields, region, resolved_status=status_value)
+            card = build_rights_confirmation_dm_card(fields, region, resolved_status=status_value,
+                                                       thread_warning=thread_warning)
             patch_card_message(message_id, card)
         except Exception as exc:
             print(f"  ⚠ Could not patch rights-confirmation card {message_id}: {exc!r}", flush=True)
