@@ -64,6 +64,7 @@ from copyright_alert.handle_callback import (
 )
 from copyright_alert import lark_auth, spotify_reply
 from copyright_alert import metadata_notice
+from copyright_alert import rights_confirmation_notice
 from copyright_alert.run_alert import BOT_APP_ID, BOT_SECRET
 
 
@@ -870,6 +871,29 @@ def handle_card_action(data):
             except Exception as exc:
                 print(f"metadata_notice callback error: {exc!r}", flush=True)
                 return _toast(f"Failed to mark Actioned: {exc}", "error")
+
+        # ── Spotify rights-confirmation notice: "We have rights" / "We do not" ─
+        if isinstance(value, dict) and value.get("action") == rights_confirmation_notice.CALLBACK_ACTION:
+            if event_id and not _acquire_event_lock(event_id):
+                print(f"Skipping duplicate rights-confirmation action for event_id: {event_id}", flush=True)
+                return _toast("This button click was already processed.", "warn")
+            rc_message_id = (
+                value.get("message_id")
+                or (getattr(context, "open_message_id", None) if context else None)
+                or ctx_payload.get("open_message_id")
+                or ""
+            )
+            explanation = str(form_value.get("explanation") or "").strip()
+            choice = str(value.get("choice") or "")
+            worker = threading.Thread(
+                target=rights_confirmation_notice.handle_reply_callback,
+                args=(value,),
+                kwargs={"message_id": rc_message_id, "explanation": explanation},
+                daemon=True,
+            )
+            worker.start()
+            label = "We have rights" if choice == "have_rights" else "We do not have rights"
+            return _toast(f"Creating reply draft ({label})... check your DMs.", "success")
 
         clicked_status = value.get("status")
         current_status = (value.get("current_status") or "").strip()

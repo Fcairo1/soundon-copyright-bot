@@ -157,6 +157,7 @@ SPOTIFY_DM_STATE_FILE = "copyright_alert/spotify_dm_sent.json"
 # of truth lives in tag_managers; do not reintroduce a local calendar-day value.
 from copyright_alert.tag_managers import business_days_remaining_brt, REPLY_DEADLINE_WORKDAYS  # noqa: E402
 from copyright_alert import metadata_notice  # noqa: E402
+from copyright_alert import rights_confirmation_notice  # noqa: E402
 from copyright_alert import takedown_stream_tracker  # noqa: E402
 from copyright_alert import claim_events  # noqa: E402
 from copyright_alert import marketshare_tracker  # noqa: E402
@@ -526,6 +527,19 @@ def _parse_candidate(msg_id, subject, date, thread_id, seen_threads, summary):
             return ("skip", "metadata notice")
     except Exception as exc:
         log(f"     ⚠ metadata-notice routing error (continuing as normal claim): {exc!r}")
+
+    # Spotify "rights confirmation" notices (asking whether SoundOn holds the
+    # rights to DELIVER a release, not a third-party claim) come from the SAME
+    # sender as real infringement claims, so this check must run after the
+    # metadata-notice check but before the normal claim-entry extraction below.
+    try:
+        if rights_confirmation_notice.is_rights_confirmation_notice(body, subject, meta):
+            log("     ⚠️ Spotify rights-confirmation notice — routing to group+DM handler")
+            result = rights_confirmation_notice.handle_rights_confirmation_notice(body, subject, meta, msg_id=msg_id)
+            log(f"     rights-confirmation notice: {result}")
+            return ("skip", "rights confirmation notice")
+    except Exception as exc:
+        log(f"     ⚠ rights-confirmation routing error (continuing as normal claim): {exc!r}")
 
     entries = extract_claim_entries(body, subject, meta)
     identifiers = []
@@ -1957,6 +1971,16 @@ def main(region=None):
     except Exception as e:
         log(f"  ✗ Metadata-notice section error: {e!r}")
         results["metadata_notices"] = {"error": repr(e)}
+
+    # G2) Spotify rights-confirmation notices — daily re-send of the DM for any
+    # notice whose tracker row still has a blank Email Status. Same
+    # region-agnostic, idempotent-per-day shape as G above.
+    try:
+        section("PART G2 — Spotify rights-confirmation notices (daily re-send)")
+        results["rights_confirmation_notices"] = rights_confirmation_notice.resend_unanswered_notices()
+    except Exception as e:
+        log(f"  ✗ Rights-confirmation section error: {e!r}")
+        results["rights_confirmation_notices"] = {"error": repr(e)}
 
     # H) ACR takedown stream tracker — for ACR-tab cases marked Takedown on the
     # dashboard, refresh the original track's Aeolus streams and write the
