@@ -673,7 +673,38 @@ def handle_reply_callback(value: dict, *, message_id: str = "", explanation: str
     else:
         return f"unknown choice: {choice!r}"
 
-    _set_email_status_and_status(region, upc, email_status, status_value)
+    ok = bool(result.get("ok")) if isinstance(result, dict) else bool(result)
+    error_detail = str(result.get("error") or "") if isinstance(result, dict) else ""
+    dm_message_id = (rec or {}).get("message_id", "")
+    group_message_id = (rec or {}).get("group_message_id", "")
+    if source == "group":
+        group_message_id = message_id or group_message_id
+    else:
+        dm_message_id = message_id or dm_message_id
+
+    if not ok:
+        # The draft was never actually created — never mark this "resolved"
+        # (that would hide a real failure behind a false ✅, and block the
+        # retry this needs: the JSON "answered" flag isn't touched, so the
+        # notice stays eligible for the daily resend and for another click).
+        # Confirmed real 2026-09-29: an expired Lark Mail JWT crashed the
+        # whole callback thread uncaught here, silently — from the operator's
+        # side it looked exactly like the click did nothing at all.
+        print(f"  ✗ rights-confirmation reply failed for {key} ({choice}): {error_detail}", flush=True)
+        failure_note = f"⚠️ **Could not create the reply draft** — {error_detail or 'unknown error'}. Try the button again."
+        for mid, builder, extra_args in (
+            (dm_message_id, build_rights_confirmation_dm_card, {}),
+            (group_message_id, build_rights_confirmation_group_card, {"aeolus_row": aeolus_row}),
+        ):
+            if not mid:
+                continue
+            try:
+                card = builder(fields, region, **extra_args)
+                card["elements"].insert(0, {"tag": "div", "text": {"tag": "lark_md", "content": failure_note}})
+                patch_card_message(mid, card)
+            except Exception as exc:
+                print(f"  ⚠ Could not patch failure notice onto {mid}: {exc!r}", flush=True)
+        return f"{choice}:{key}:failed"
 
     # Surface a failed/degraded threading attempt loudly, same as the normal
     # infringement-claim reply flow — a silent standalone (non-threaded) draft
@@ -690,16 +721,18 @@ def handle_reply_callback(value: dict, *, message_id: str = "", explanation: str
             r["thread_warning"] = _warn
     update_json_state(STATE_FILE, _mark, default=lambda: {"notices": {}})
 
+    # Isolated from the draft-creation success above: a tracker write-back
+    # failure (e.g. the same expired-token class of error) must never be
+    # reported as a draft failure, and must never crash this thread — the
+    # draft already exists either way.
+    try:
+        _set_email_status_and_status(region, upc, email_status, status_value)
+    except Exception as exc:
+        print(f"  ⚠ Rights-confirmation tracker write-back failed (draft still created): {exc!r}", flush=True)
+
     # Patch whichever card was actually clicked (message_id points at that
     # one), then also patch the OTHER card so neither is left showing stale
     # buttons once the decision is made from either side.
-    dm_message_id = (rec or {}).get("message_id", "")
-    group_message_id = (rec or {}).get("group_message_id", "")
-    if source == "group":
-        group_message_id = message_id or group_message_id
-    else:
-        dm_message_id = message_id or dm_message_id
-
     if dm_message_id:
         try:
             patch_card_message(dm_message_id, build_rights_confirmation_dm_card(
@@ -733,8 +766,7 @@ def handle_reply_callback(value: dict, *, message_id: str = "", explanation: str
         except Exception as exc:
             print(f"  ⚠ Could not notify ops of group resolution: {exc!r}", flush=True)
 
-    ok = bool(result.get("ok")) if isinstance(result, dict) else bool(result)
-    return f"{choice}:{key}:{'ok' if ok else 'failed'}"
+    return f"{choice}:{key}:ok"
 
 
 if __name__ == "__main__":

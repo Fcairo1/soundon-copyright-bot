@@ -312,3 +312,38 @@ def test_handle_reply_callback_surfaces_thread_warning_on_card_and_state(monkeyp
     state = {"notices": {"k1": {}}}
     captured_state["fn"](state)
     assert state["notices"]["k1"]["thread_warning"] == "⚠️ Could NOT thread this reply..."
+
+
+def test_handle_reply_callback_failed_draft_does_not_mark_resolved(monkeypatch):
+    # Real bug reported 2026-09-29: an expired Lark Mail JWT made
+    # _reply_have_rights fail, and the uncaught path made the whole callback
+    # thread crash silently — from the operator's side, clicking looked like
+    # it did nothing at all. A failure must be visible and retryable, never
+    # silently treated as resolved.
+    monkeypatch.setattr(rc, "get_notice", lambda key: {
+        "fields": {"title": "T", "ref_id": "ref:1"}, "source_email_message_id": "msg1",
+        "aeolus_row": {}, "message_id": "dm_msg_1", "group_message_id": "group_msg_1",
+    })
+    monkeypatch.setattr(rc, "_reply_have_rights", lambda *a, **k: {
+        "ok": False, "error": "LarkMailDraftError('lark-cli +reply did not return a draft_id: {}')"})
+    monkeypatch.setattr(rc, "_set_email_status_and_status",
+                         lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not write tracker on failure")))
+    monkeypatch.setattr(rc, "update_json_state",
+                         lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not mark resolved on failure")))
+    patched = {}
+    monkeypatch.setattr(rc, "patch_card_message", lambda mid, card: patched.setdefault(mid, card))
+
+    result = rc.handle_reply_callback(
+        {"choice": "have_rights", "key": "k1", "region": "BR", "upc": "999", "source": "dm"}, message_id="dm_msg_1")
+
+    assert result == "have_rights:k1:failed"
+    assert set(patched.keys()) == {"dm_msg_1", "group_msg_1"}
+    # The failure notice is prepended but the real buttons must still be
+    # there — the operator needs to be able to retry once the underlying
+    # issue (e.g. an expired token) is fixed.
+    dm_card = patched["dm_msg_1"]
+    body_text = " ".join(el.get("text", {}).get("content", "") for el in dm_card["elements"] if "text" in el)
+    assert "Could not create the reply draft" in body_text
+    assert "draft_id" in body_text  # the real error detail is surfaced, not swallowed
+    actions = [e for e in dm_card["elements"] if e.get("tag") == "action"]
+    assert actions and {a["value"]["choice"] for a in actions[0]["actions"]} == {"have_rights", "no_rights"}
