@@ -1206,7 +1206,7 @@ def _handle_card_command(command_text, message_id, target_chat_id="", target_ope
             rc_fields = rc_rec.get("fields") or {}
             card = rights_confirmation_notice.build_rights_confirmation_dm_card(
                 rc_fields, rc_rec.get("region", "BR"), resolved_status=rc_rec.get("resolved_status", ""),
-                thread_warning=rc_rec.get("thread_warning", ""),
+                thread_warning=rc_rec.get("thread_warning", ""), draft_url=rc_rec.get("draft_url", ""),
             )
             result = _post_card_to_destination(card, chat_id=target_chat_id, open_id=target_open_id)
             if result.get("ok"):

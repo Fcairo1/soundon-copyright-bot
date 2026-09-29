@@ -337,7 +337,8 @@ def find_notice_by_upc(upc: str) -> dict:
 
 # ── Group card (posted to the SAME group as normal infringement claims) ─────
 def build_rights_confirmation_group_card(fields: dict, region: str, aeolus_row: dict, *,
-                                          resolved_status: str = "", thread_warning: str = "") -> dict:
+                                          resolved_status: str = "", thread_warning: str = "",
+                                          draft_url: str = "") -> dict:
     """BD/Label Manager can act straight from this group card — the same 2
     buttons as the DM card, since they're usually faster to respond than the
     regional ops DM owner (added per user request 2026-09-29)."""
@@ -376,6 +377,16 @@ def build_rights_confirmation_group_card(fields: dict, region: str, aeolus_row: 
 
     if resolved_status:
         elements.append({"tag": "div", "text": {"tag": "lark_md", "content": f"✅ **{resolved_status}**"}})
+        if draft_url:
+            elements.append({"tag": "div", "text": {"tag": "lark_md", "content":
+                "A reply draft was created in the `soundon-copyright` mailbox. The regional ops owner can review and send it."}})
+            elements.append({"tag": "action", "actions": [{
+                "tag": "button", "text": {"tag": "plain_text", "content": "🔗 Review & Send Draft"},
+                "type": "default", "url": draft_url,
+            }]})
+        elif resolved_status:
+            elements.append({"tag": "div", "text": {"tag": "lark_md", "content":
+                "⚠️ The draft URL was not returned — check the `soundon-copyright` mailbox drafts folder."}})
         if thread_warning:
             elements.append({"tag": "div", "text": {"tag": "lark_md", "content": f"**{thread_warning}**"}})
     else:
@@ -415,7 +426,7 @@ def post_rights_confirmation_group_card(fields: dict, region: str, aeolus_row: d
 
 # ── DM action card (private, to the region's product-ops owner) ─────────────
 def build_rights_confirmation_dm_card(fields: dict, region: str, *, resolved_status: str = "",
-                                       thread_warning: str = "") -> dict:
+                                       thread_warning: str = "", draft_url: str = "") -> dict:
     def v(val):
         return val if val and val != "N/A" else "N/A"
 
@@ -427,6 +438,16 @@ def build_rights_confirmation_dm_card(fields: dict, region: str, *, resolved_sta
             {"tag": "div", "text": {"tag": "lark_md", "content":
                 f"**{v(fields.get('title'))}**\n✅ **{resolved_status}**"}},
         ]
+        if draft_url:
+            elements.append({"tag": "div", "text": {"tag": "lark_md", "content":
+                "A reply draft was created in the `soundon-copyright` mailbox. Click below to review and send it."}})
+            elements.append({"tag": "action", "actions": [{
+                "tag": "button", "text": {"tag": "plain_text", "content": "🔗 Review & Send Draft"},
+                "type": "default", "url": draft_url,
+            }]})
+        elif resolved_status:
+            elements.append({"tag": "div", "text": {"tag": "lark_md", "content":
+                "⚠️ The draft URL was not returned — please open the `soundon-copyright` mailbox drafts folder manually."}})
         if thread_warning:
             elements.append({"tag": "div", "text": {"tag": "lark_md", "content": f"**{thread_warning}**"}})
         elements.append({"tag": "note", "elements": [{"tag": "plain_text", "content":
@@ -713,12 +734,13 @@ def handle_reply_callback(value: dict, *, message_id: str = "", explanation: str
     thread_warning = result.get("thread_warning", "") if isinstance(result, dict) else ""
     draft_url = result.get("send_preview_url", "") if isinstance(result, dict) else ""
 
-    def _mark(state, _status=status_value, _warn=thread_warning):
+    def _mark(state, _status=status_value, _warn=thread_warning, _url=draft_url):
         r = state["notices"].get(key)
         if r is not None:
             r["answered"] = True
             r["resolved_status"] = _status
             r["thread_warning"] = _warn
+            r["draft_url"] = _url
     update_json_state(STATE_FILE, _mark, default=lambda: {"notices": {}})
 
     # Isolated from the draft-creation success above: a tracker write-back
@@ -736,13 +758,13 @@ def handle_reply_callback(value: dict, *, message_id: str = "", explanation: str
     if dm_message_id:
         try:
             patch_card_message(dm_message_id, build_rights_confirmation_dm_card(
-                fields, region, resolved_status=status_value, thread_warning=thread_warning))
+                fields, region, resolved_status=status_value, thread_warning=thread_warning, draft_url=draft_url))
         except Exception as exc:
             print(f"  ⚠ Could not patch rights-confirmation DM card {dm_message_id}: {exc!r}", flush=True)
     if group_message_id:
         try:
             patch_card_message(group_message_id, build_rights_confirmation_group_card(
-                fields, region, aeolus_row, resolved_status=status_value, thread_warning=thread_warning))
+                fields, region, aeolus_row, resolved_status=status_value, thread_warning=thread_warning, draft_url=draft_url))
         except Exception as exc:
             print(f"  ⚠ Could not patch rights-confirmation group card {group_message_id}: {exc!r}", flush=True)
 

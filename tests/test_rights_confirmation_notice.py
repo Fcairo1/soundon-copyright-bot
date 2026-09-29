@@ -347,3 +347,55 @@ def test_handle_reply_callback_failed_draft_does_not_mark_resolved(monkeypatch):
     assert "draft_id" in body_text  # the real error detail is surfaced, not swallowed
     actions = [e for e in dm_card["elements"] if e.get("tag") == "action"]
     assert actions and {a["value"]["choice"] for a in actions[0]["actions"]} == {"have_rights", "no_rights"}
+
+
+def test_resolved_dm_card_shows_review_and_send_draft_button():
+    # Real gap reported 2026-09-29: the resolved card showed a checkmark but
+    # no way to actually open the draft — unlike the normal infringement-
+    # claim flow's "🔗 Review & Send Draft" button.
+    card = rc.build_rights_confirmation_dm_card(
+        {"upc": "999", "title": "T", "ref_id": "ref:1"}, "BR",
+        resolved_status="We have rights", draft_url="https://mail.example/draft1",
+    )
+    actions = [e for e in card["elements"] if e.get("tag") == "action"]
+    assert actions
+    btn = actions[0]["actions"][0]
+    assert btn["url"] == "https://mail.example/draft1"
+    assert "Review & Send Draft" in btn["text"]["content"]
+
+
+def test_resolved_dm_card_warns_when_no_draft_url():
+    card = rc.build_rights_confirmation_dm_card(
+        {"upc": "999", "title": "T", "ref_id": "ref:1"}, "BR", resolved_status="We have rights")
+    assert not [e for e in card["elements"] if e.get("tag") == "action"]
+    body_text = " ".join(el.get("text", {}).get("content", "") for el in card["elements"] if "text" in el)
+    assert "drafts folder manually" in body_text
+
+
+def test_resolved_group_card_shows_review_and_send_draft_button():
+    card = rc.build_rights_confirmation_group_card(
+        {"upc": "999", "title": "T", "ref_id": "ref:1"}, "BR", {},
+        resolved_status="We have rights", draft_url="https://mail.example/draft1",
+    )
+    actions = [e for e in card["elements"] if e.get("tag") == "action"]
+    assert actions and actions[0]["actions"][0]["url"] == "https://mail.example/draft1"
+
+
+def test_handle_reply_callback_success_passes_draft_url_to_patched_cards(monkeypatch):
+    monkeypatch.setattr(rc, "get_notice", lambda key: {
+        "fields": {"title": "T", "ref_id": "ref:1"}, "source_email_message_id": "msg1",
+        "aeolus_row": {}, "message_id": "dm_msg_1", "group_message_id": "group_msg_1",
+    })
+    monkeypatch.setattr(rc, "_reply_have_rights", lambda *a, **k: {"ok": True, "send_preview_url": "https://mail.example/draft1"})
+    monkeypatch.setattr(rc, "_set_email_status_and_status", lambda *a, **k: True)
+    monkeypatch.setattr(rc, "update_json_state", lambda *a, **k: None)
+    patched = {}
+    monkeypatch.setattr(rc, "patch_card_message", lambda mid, card: patched.setdefault(mid, card))
+    monkeypatch.setattr(rc, "_send_to_ops", lambda *a, **k: {"ok": True})
+
+    rc.handle_reply_callback({"choice": "have_rights", "key": "k1", "region": "BR", "upc": "999", "source": "dm"},
+                              message_id="dm_msg_1")
+
+    for card in patched.values():
+        actions = [e for e in card["elements"] if e.get("tag") == "action"]
+        assert actions and actions[0]["actions"][0]["url"] == "https://mail.example/draft1"
