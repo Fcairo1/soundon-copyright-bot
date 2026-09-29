@@ -51,6 +51,8 @@ COUNTRY_TO_REGION = {
     "MX": "SPLA", "CL": "SPLA", "CO": "SPLA", "AR": "SPLA", "ES": "SPLA", "PR": "SPLA", "PE": "SPLA",
 }
 REGION_ORDER = ("BR", "US", "SPLA")
+REGION_FLAG = {"BR": "🇧🇷", "US": "🇺🇸", "SPLA": "🌎"}
+TOP_N_COMBINED = 5
 
 DECISION_HEADER_ALIASES = ("Review Result", "Decision")
 TITLE_HEADER = "SO Song Title"
@@ -261,66 +263,82 @@ def build_recovery_lines() -> List[str]:
     return lines
 
 
+def _combined_top_n(data: Dict[str, object], n: int = TOP_N_COMBINED) -> List[Dict[str, object]]:
+    """Flatten needs_enforcement (already capped top-N per region) across all
+    regions and take the overall top N by streams. Safe: an item in the global
+    top N must already be in its own region's top-N-per-region list, so no
+    region's real top pick can be missed by this flattening."""
+    all_items = [e for items in data["needs_enforcement"].values() for e in items]
+    all_items.sort(key=lambda e: -e["streams"])
+    return all_items[:n]
+
+
 def _enforcement_section_md(data: Dict[str, object]) -> str:
-    lines = ["**🚩 Needs enforcement — top 5 by streams, per region**"]
-    any_region = False
-    for region in REGION_ORDER:
-        items = data["needs_enforcement"].get(region, [])
-        if not items:
-            continue
-        any_region = True
-        total = data["enforcement_counts"].get(region, len(items))
-        lines.append(f"\n**{region} — {total} flagged**")
-        for e in items:
-            label = f" [{e['label']}]" if e["label"] else ""
-            lines.append(f"{e['title']} — {e['artist']}{label} · {e['streams']:,} streams")
-    if not any_region:
-        lines.append("None flagged this cycle.")
+    """Combined (not per-region) top-N ranked list — the design the user
+    approved 2026-09-28 after live-testing both a per-region-with-collapsibles
+    layout (collapsed panels render with no visible expand affordance in real
+    Lark — looks broken, not "tap to open") and this simpler flat ranking."""
+    top = _combined_top_n(data)
+    if not top:
+        return "**🚩 Top enforcement targets**\nNone flagged this cycle."
+    lines = ["**🚩 Top enforcement targets**"]
+    for i, e in enumerate(top, start=1):
+        flag = REGION_FLAG.get(e["region"], "")
+        label = f" [{e['label']}]" if e["label"] else ""
+        lines.append(f"**{i}.** {e['title']} — {e['artist']}{label} {flag} · {e['streams']:,} streams")
     return "\n".join(lines)
+
+
+def _stat_tile(value: str, label: str) -> dict:
+    return {"tag": "column", "width": "weighted", "weight": 1, "background_style": "grey", "elements": [
+        {"tag": "div", "text": {"tag": "lark_md", "content": f"**{value}**\n{label}"}}
+    ]}
 
 
 def build_card(tab_name: str, data: Dict[str, object], recovery_lines: List[str]) -> dict:
     offline = data["offline_top"]
-    offline_md = (
-        f"**✅ Taken offline this cycle — {data['offline_total']}**\n"
-        + (f"{offline['title']} ↔ {offline['matched_title']}, {offline['matched_artist']} · "
-           f"{offline['streams']:,} streams · now offline"
-           + (f"\n+ {data['offline_total'] - 1} more taken offline" if data["offline_total"] > 1 else "")
-           if offline else "None taken offline this cycle.")
+    offline_line = (
+        f"✅ **{data['offline_total']} taken offline** this cycle" if data["offline_total"]
+        else "✅ **None taken offline** this cycle"
     )
-    recovery_md = "**📈 Original-track recovery**\n" + (
-        "\n".join(recovery_lines) if recovery_lines
-        else "No takedowns tracked long enough yet to show a streams change."
-    )
-    escalated_md = (
-        f"**⚠️ Escalated to account managers**\n{data['escalated']} additional-review case(s), "
-        "direction unclear · age not yet tracked"
-    )
+    escalated_line = f"⚠️ **{data['escalated']} escalated** to account managers"
+
+    elements = [
+        {"tag": "column_set", "flex_mode": "none", "columns": [
+            _stat_tile(f"{data['total_reviewed']:,}", "Reviewed"),
+            _stat_tile(f"{data['flagged_total']} 🚩", "Flagged"),
+            _stat_tile(f"{data['escalated']} ⚠️", "Escalated"),
+        ]},
+        {"tag": "column_set", "flex_mode": "none", "columns": [
+            _stat_tile(f"{REGION_FLAG.get(r, '')} {r}".strip(), f"{data['enforcement_counts'].get(r, 0)} flagged")
+            for r in REGION_ORDER
+        ]},
+        {"tag": "hr"},
+        {"tag": "div", "text": {"tag": "lark_md", "content": _enforcement_section_md(data)}},
+        {"tag": "action", "actions": [{
+            "tag": "button", "text": {"tag": "plain_text", "content": "Review and file takedowns in the dashboard"},
+            "type": "primary", "url": DASHBOARD_URL,
+        }]},
+        {"tag": "hr"},
+        {"tag": "div", "text": {"tag": "lark_md", "content": f"{offline_line}  ·  {escalated_line}"}},
+    ]
+    # Recovery tracking is real but usually empty (nothing checked long enough
+    # yet) — only take up card space once there's something to show.
+    if recovery_lines:
+        elements.append({"tag": "hr"})
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content":
+            "**📈 Original-track recovery**\n" + "\n".join(recovery_lines)}})
+    elements.append({"tag": "note", "elements": [
+        {"tag": "plain_text", "content": "Posts automatically when a new scan cycle appears · full per-region breakdown in the dashboard"}
+    ]})
+
     return {
         "config": {"wide_screen_mode": True},
         "header": {
             "template": "red",
             "title": {"tag": "plain_text", "content": f"🛡️ ACRCloud scan digest — {tab_name} cycle"},
         },
-        "elements": [
-            {"tag": "div", "text": {"tag": "lark_md", "content": (
-                f"**Scan overview**\n{data['total_reviewed']:,} reviewed · "
-                f"{data['flagged_total']} flagged (other party) · {data['escalated']} escalated"
-            )}},
-            {"tag": "hr"},
-            {"tag": "div", "text": {"tag": "lark_md", "content": _enforcement_section_md(data)}},
-            {"tag": "action", "actions": [{
-                "tag": "button", "text": {"tag": "plain_text", "content": "Review and file takedowns in the dashboard"},
-                "type": "primary", "url": DASHBOARD_URL,
-            }]},
-            {"tag": "hr"},
-            {"tag": "div", "text": {"tag": "lark_md", "content": offline_md}},
-            {"tag": "hr"},
-            {"tag": "div", "text": {"tag": "lark_md", "content": recovery_md}},
-            {"tag": "hr"},
-            {"tag": "div", "text": {"tag": "lark_md", "content": escalated_md}},
-            {"tag": "note", "elements": [{"tag": "plain_text", "content": "Posts automatically when a new scan cycle appears"}]},
-        ],
+        "elements": elements,
     }
 
 

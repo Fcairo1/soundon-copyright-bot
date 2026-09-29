@@ -179,3 +179,54 @@ def test_build_recovery_lines_from_real_column_layout():
         ad_module.read_tab = orig
     assert len(lines) == 2
     assert "Track B" in lines[0]
+
+
+def test_combined_top_n_ranks_across_regions_not_per_region():
+    # US's single huge entry must outrank everything else globally, even
+    # though it's alone in its region — approved 2026-09-28: one combined
+    # ranked list instead of top-5-per-region, after per-region collapsible
+    # panels turned out to render with no visible expand affordance in Lark.
+    data = {"needs_enforcement": {
+        "US": [{"title": "Big US hit", "artist": "A", "label": "", "streams": 16_320_256, "region": "US"}],
+        "BR": [{"title": "BR track", "artist": "B", "label": "", "streams": 487_791, "region": "BR"},
+               {"title": "BR track 2", "artist": "C", "label": "", "streams": 300_453, "region": "BR"}],
+        "SPLA": [{"title": "SPLA track", "artist": "D", "label": "", "streams": 5_532_547, "region": "SPLA"}],
+    }}
+    top = ad._combined_top_n(data, n=3)
+    assert [e["title"] for e in top] == ["Big US hit", "SPLA track", "BR track"]
+
+
+def test_enforcement_section_md_includes_region_flag_and_rank():
+    data = {"needs_enforcement": {"BR": [
+        {"title": "Track", "artist": "Artist", "label": "Label", "streams": 1000, "region": "BR"}
+    ]}}
+    md = ad._enforcement_section_md(data)
+    assert "**1.**" in md
+    assert "🇧🇷" in md
+    assert "[Label]" in md
+
+
+def test_build_card_stat_tiles_and_region_badges_have_own_background(monkeypatch):
+    # Regression test for the real bug found 2026-09-28: background_style on
+    # the whole column_set merges all tiles into one flat strip instead of
+    # separate cards — it must be set on each column individually.
+    data = ad.build_digest_data([AUG3_HEADER])
+    card = ad.build_card("Aug3", data, [])
+    column_sets = [e for e in card["elements"] if e.get("tag") == "column_set"]
+    assert len(column_sets) == 2  # stat tiles row + region badges row
+    for cs in column_sets:
+        assert "background_style" not in cs  # never on the container
+        for col in cs["columns"]:
+            assert col.get("background_style") == "grey"  # always per-column
+
+
+def test_build_card_omits_recovery_section_when_empty_includes_when_present():
+    data = ad.build_digest_data([AUG3_HEADER])
+    card_empty = ad.build_card("Aug3", data, [])
+    text_empty = " ".join(e.get("text", {}).get("content", "") for e in card_empty["elements"] if "text" in e)
+    assert "Original-track recovery" not in text_empty
+
+    card_with_recovery = ad.build_card("Aug3", data, ["Track X: +500 streams (+10.0%) since takedown"])
+    text_with = " ".join(e.get("text", {}).get("content", "") for e in card_with_recovery["elements"] if "text" in e)
+    assert "Original-track recovery" in text_with
+    assert "Track X" in text_with
