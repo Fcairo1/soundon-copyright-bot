@@ -984,28 +984,84 @@ def handle_metadata_notice(body, subject="", meta=None, msg_id="") -> dict:
 
 
 # ── Daily re-send loop ───────────────────────────────────────────────────────
+def _open_statuses_by_region(regions) -> dict:
+    """{region: {upc: is_still_open}} from the real tracker sheet's Status
+    column. "Still open" = blank or DEFAULT_METADATA_STATUS ("🔍 Investigating")
+    — anything else means ops changed it by hand (however they track
+    resolution day to day), which counts as handled even though this feature
+    has no dedicated "Resolved" status of its own. Read once per region, not
+    once per notice, to stay well clear of the timeout pattern that bit the
+    marketshare/artist backfills earlier."""
+    result = {}
+    for region in regions:
+        try:
+            header, data_rows, _ = _read_metadata_tracker_rows(region)
+        except Exception as exc:
+            print(f"  ⚠ Could not read {region} tracker for resend resolution check: {exc!r}", flush=True)
+            continue
+        if not header or "UPC" not in header or "Status" not in header:
+            continue
+        upc_i, status_i = header.index("UPC"), header.index("Status")
+        by_upc = {}
+        for r in data_rows:
+            upc = r[upc_i].strip() if len(r) > upc_i else ""
+            if not upc:
+                continue
+            status = r[status_i].strip() if len(r) > status_i else ""
+            is_open = (not status) or status == DEFAULT_METADATA_STATUS
+            # If the same UPC has multiple rows, one manually-resolved row is
+            # enough to call the UPC handled.
+            by_upc[upc] = by_upc.get(upc, True) and is_open
+        result[region] = by_upc
+    return result
+
+
 def resend_unresolved_notices() -> dict:
     """Re-send the DM for every unresolved notice not yet re-sent today (BRT).
 
     The per-day guard (``last_dm_sent < today``) makes this safe to call from
     each region's daily workflow: only the first run of the day re-sends a given
     notice; subsequent same-day runs skip it.
+
+    Also stops nagging once ops resolve a case directly on the tracker sheet
+    (via _open_statuses_by_region) — the only resolution path previously
+    checked was the DM's own "✅ Actioned" button, so a case ops handled by
+    editing the sheet (the normal day-to-day workflow) kept getting re-sent
+    daily forever. Confirmed real: user reported 100+ stale re-sends for
+    already-solved cases 2026-09-29.
     """
     state = _load_state()
     notices = state.get("notices") or {}
     today = _today_brt()
     summary = {"total": len(notices), "resent": 0, "skipped_today": 0,
-               "skipped_resolved": 0, "failed": 0}
+               "skipped_resolved": 0, "skipped_resolved_via_sheet": 0, "failed": 0}
+
+    pending_regions = {rec.get("region", "BR") for rec in notices.values() if not rec.get("resolved")}
+    open_by_region = _open_statuses_by_region(pending_regions)
 
     for key, rec in notices.items():
         if rec.get("resolved"):
             summary["skipped_resolved"] += 1
             continue
+
+        region = rec.get("region", "BR")
+        upc = str(rec.get("fields", {}).get("upc", "") or rec.get("upc", "")).strip()
+        still_open = open_by_region.get(region, {}).get(upc, True)
+        if not still_open:
+            def _mark_resolved_via_sheet(st, _key=key):
+                r = st["notices"].get(_key)
+                if r is not None:
+                    r["resolved"] = True
+                    r["resolved_by"] = "sheet"
+                    r["resolved_at"] = _now_brt_iso()
+            update_json_state(STATE_FILE, _mark_resolved_via_sheet, default=lambda: {"notices": {}})
+            summary["skipped_resolved_via_sheet"] += 1
+            continue
+
         if rec.get("last_dm_sent") == today:
             summary["skipped_today"] += 1
             continue
 
-        region = rec.get("region", "BR")
         fields = rec.get("fields", {})
         send = _send_notice_dm(fields, region)
 

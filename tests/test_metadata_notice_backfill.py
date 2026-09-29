@@ -352,3 +352,53 @@ def test_find_notice_by_upc_returns_most_recent_match(monkeypatch):
 def test_find_notice_by_upc_no_match_returns_empty(monkeypatch):
     monkeypatch.setattr(mn, "_load_state", lambda: {"notices": {}})
     assert mn.find_notice_by_upc("999") == {}
+
+
+def test_open_statuses_by_region_blank_and_investigating_are_open(monkeypatch):
+    rows = [_row("111", status=""), _row("222", status=mn.DEFAULT_METADATA_STATUS),
+            _row("333", status="Confirmed fixed with label")]
+    monkeypatch.setattr(mn, "_read_metadata_tracker_rows", lambda region: (HEADER, rows, "sid"))
+
+    result = mn._open_statuses_by_region({"BR"})
+    assert result["BR"]["111"] is True
+    assert result["BR"]["222"] is True
+    assert result["BR"]["333"] is False
+
+
+def test_resend_stops_nagging_once_sheet_status_changed_by_ops(monkeypatch):
+    # Real bug reported 2026-09-29: 100+ stale re-sends for cases ops had
+    # already resolved by editing the tracker sheet directly — the resend
+    # loop only ever checked the DM's own "Actioned" click, never the sheet.
+    monkeypatch.setattr(mn, "_load_state", lambda: {"notices": {
+        "k1": {"region": "BR", "fields": {"upc": "111"}, "resolved": False, "last_dm_sent": ""},
+        "k2": {"region": "BR", "fields": {"upc": "222"}, "resolved": False, "last_dm_sent": ""},
+    }})
+    monkeypatch.setattr(mn, "_read_metadata_tracker_rows", lambda region: (
+        HEADER, [_row("111", status="Confirmed fixed with label"), _row("222", status="")], "sid"
+    ))
+    sent = []
+    monkeypatch.setattr(mn, "_send_notice_dm", lambda fields, region: sent.append(fields["upc"]) or {"ok": True, "message_id": "m1"})
+    updates = []
+    monkeypatch.setattr(mn, "update_json_state", lambda path, fn, **k: updates.append(fn))
+
+    summary = mn.resend_unresolved_notices()
+    assert summary["skipped_resolved_via_sheet"] == 1
+    assert summary["resent"] == 1
+    assert sent == ["222"]  # only the still-open one gets a DM
+
+
+def test_resend_treats_investigating_status_as_still_open(monkeypatch):
+    monkeypatch.setattr(mn, "_load_state", lambda: {"notices": {
+        "k1": {"region": "BR", "fields": {"upc": "111"}, "resolved": False, "last_dm_sent": ""},
+    }})
+    monkeypatch.setattr(mn, "_read_metadata_tracker_rows", lambda region: (
+        HEADER, [_row("111", status=mn.DEFAULT_METADATA_STATUS)], "sid"
+    ))
+    sent = []
+    monkeypatch.setattr(mn, "_send_notice_dm", lambda fields, region: sent.append(fields["upc"]) or {"ok": True, "message_id": "m1"})
+    monkeypatch.setattr(mn, "update_json_state", lambda *a, **k: None)
+
+    summary = mn.resend_unresolved_notices()
+    assert summary["skipped_resolved_via_sheet"] == 0
+    assert summary["resent"] == 1
+    assert sent == ["111"]
