@@ -1146,11 +1146,13 @@ def _handle_card_command(command_text, message_id, target_chat_id="", target_ope
     """Handle `/card <UPC> [region]`: look up the UPC in the trackers and DM the
     invoking operator a private Spotify action card for that case.
 
-    Checks all 3 occurrence types, in order: normal infringement claim (the
-    main tracker), Spotify metadata/misrepresentation notice, then Spotify
-    rights-confirmation notice — resending the CORRECT card shape for
-    whichever one actually matches, instead of always building the generic
-    Agree/Investigating/Dispute claim card.
+    Checks the specialized trackers FIRST — Spotify metadata/misrepresentation
+    notice, then Spotify rights-confirmation notice — and only falls back to
+    the main claims tracker if neither matches. A UPC can have a stale row in
+    the main tracker from before this specialized routing existed (the known
+    backlog) AND a real row in a specialized tracker; checking claims first
+    would let that stale row silently shadow the correct card type forever
+    (confirmed real 2026-09-29).
 
     Works in a DM (card goes to the current p2p chat) and in a group chat (card
     is DM'd to the operator via their open_id). Runs in a background thread.
@@ -1173,6 +1175,47 @@ def _handle_card_command(command_text, message_id, target_chat_id="", target_ope
                 "Example: `/card 0850053152337` or `/card 0850053152337 US`",
                 "Regions: BR, SPLA, US (auto-detected across all trackers if omitted).",
             ])
+            return
+
+        # Check the specialized trackers FIRST, before the main claims tracker.
+        # A UPC that's a real metadata/rights-confirmation case can ALSO have
+        # a stale row in the main claims tracker (e.g. the backlog of cases
+        # misclassified before this routing existed) — if the claims-tracker
+        # search ran first, that legacy row would silently shadow the correct
+        # card type forever. Confirmed real 2026-09-29: UPC 5064079652602 has
+        # both, and /card kept returning the wrong (generic claim) card.
+        md_rec = metadata_notice.find_notice_by_upc(upc)
+        if md_rec:
+            md_fields = md_rec.get("fields") or {}
+            card = metadata_notice.build_metadata_notice_card(
+                md_fields, md_rec.get("region", "BR"), resolved=bool(md_rec.get("resolved")),
+                resolved_by=md_rec.get("resolved_by", ""), resolved_at=md_rec.get("resolved_at", ""),
+            )
+            result = _post_card_to_destination(card, chat_id=target_chat_id, open_id=target_open_id)
+            if result.get("ok"):
+                reply_post(message_id, "/card", [
+                    f"📋 UPC `{upc}` is a **Spotify metadata/misrepresentation notice** "
+                    f"({md_rec.get('region', 'BR')}) — resent that card.",
+                ])
+            else:
+                reply_post(message_id, "/card", [f"⚠️ Found the metadata notice for `{upc}` but could not deliver the card."])
+            return
+
+        rc_rec = rights_confirmation_notice.find_notice_by_upc(upc)
+        if rc_rec:
+            rc_fields = rc_rec.get("fields") or {}
+            card = rights_confirmation_notice.build_rights_confirmation_dm_card(
+                rc_fields, rc_rec.get("region", "BR"), resolved_status=rc_rec.get("resolved_status", ""),
+                thread_warning=rc_rec.get("thread_warning", ""),
+            )
+            result = _post_card_to_destination(card, chat_id=target_chat_id, open_id=target_open_id)
+            if result.get("ok"):
+                reply_post(message_id, "/card", [
+                    f"📋 UPC `{upc}` is a **Spotify rights-confirmation notice** "
+                    f"({rc_rec.get('region', 'BR')}) — resent that card.",
+                ])
+            else:
+                reply_post(message_id, "/card", [f"⚠️ Found the rights-confirmation notice for `{upc}` but could not deliver the card."])
             return
 
         if region_flag:
@@ -1212,40 +1255,6 @@ def _handle_card_command(command_text, message_id, target_chat_id="", target_ope
                 break
 
         if not found:
-            md_rec = metadata_notice.find_notice_by_upc(upc)
-            if md_rec:
-                md_fields = md_rec.get("fields") or {}
-                card = metadata_notice.build_metadata_notice_card(
-                    md_fields, md_rec.get("region", "BR"), resolved=bool(md_rec.get("resolved")),
-                    resolved_by=md_rec.get("resolved_by", ""), resolved_at=md_rec.get("resolved_at", ""),
-                )
-                result = _post_card_to_destination(card, chat_id=target_chat_id, open_id=target_open_id)
-                if result.get("ok"):
-                    reply_post(message_id, "/card", [
-                        f"📋 UPC `{upc}` is a **Spotify metadata/misrepresentation notice** "
-                        f"({md_rec.get('region', 'BR')}) — resent that card.",
-                    ])
-                else:
-                    reply_post(message_id, "/card", [f"⚠️ Found the metadata notice for `{upc}` but could not deliver the card."])
-                return
-
-            rc_rec = rights_confirmation_notice.find_notice_by_upc(upc)
-            if rc_rec:
-                rc_fields = rc_rec.get("fields") or {}
-                card = rights_confirmation_notice.build_rights_confirmation_dm_card(
-                    rc_fields, rc_rec.get("region", "BR"), resolved_status=rc_rec.get("resolved_status", ""),
-                    thread_warning=rc_rec.get("thread_warning", ""),
-                )
-                result = _post_card_to_destination(card, chat_id=target_chat_id, open_id=target_open_id)
-                if result.get("ok"):
-                    reply_post(message_id, "/card", [
-                        f"📋 UPC `{upc}` is a **Spotify rights-confirmation notice** "
-                        f"({rc_rec.get('region', 'BR')}) — resent that card.",
-                    ])
-                else:
-                    reply_post(message_id, "/card", [f"⚠️ Found the rights-confirmation notice for `{upc}` but could not deliver the card."])
-                return
-
             reply_post(message_id, "/card", [
                 f"❌ UPC `{upc}` was not found in any tracker (Infringement Claims / "
                 "Metadata Corrections / Rights Confirmation, BR / SPLA / US).",
