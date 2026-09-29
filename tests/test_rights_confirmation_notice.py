@@ -144,6 +144,26 @@ def test_dm_card_has_two_buttons_with_distinct_choices():
     actions = [e for e in card["elements"] if e.get("tag") == "action"][0]["actions"]
     choices = {a["value"]["choice"] for a in actions}
     assert choices == {"have_rights", "no_rights"}
+    assert all(a["value"]["source"] == "dm" for a in actions)
+
+
+def test_group_card_has_buttons_and_explanation_input_when_unresolved():
+    aeolus_row = {"bd_manager_list": '["mariana.vieira"]', "operation_manager_list": ""}
+    card = rc.build_rights_confirmation_group_card(
+        {"upc": "999", "title": "T", "ref_id": "ref:1"}, "BR", aeolus_row)
+    actions = [e for e in card["elements"] if e.get("tag") == "action"][0]["actions"]
+    choices = {a["value"]["choice"] for a in actions}
+    assert choices == {"have_rights", "no_rights"}
+    assert all(a["value"]["source"] == "group" for a in actions)
+    assert any(e.get("tag") == "input" and e.get("name") == "explanation" for e in card["elements"])
+
+
+def test_group_card_hides_buttons_once_resolved():
+    card = rc.build_rights_confirmation_group_card(
+        {"upc": "999", "title": "T", "ref_id": "ref:1"}, "BR", {}, resolved_status="We have rights")
+    assert not [e for e in card["elements"] if e.get("tag") == "action"]
+    body_text = " ".join(el.get("text", {}).get("content", "") for el in card["elements"] if "text" in el)
+    assert "We have rights" in body_text
 
 
 def test_handle_reply_callback_have_rights_writes_status_and_marks_answered(monkeypatch):
@@ -176,6 +196,52 @@ def test_handle_reply_callback_no_rights(monkeypatch):
     result = rc.handle_reply_callback({"choice": "no_rights", "key": "k1", "region": "BR", "upc": "999"})
     assert updates[0] == rc.STATUS_NO_RIGHTS
     assert result == "no_rights:k1:ok"
+
+
+def test_handle_reply_callback_from_group_patches_both_cards_and_notifies_ops(monkeypatch):
+    monkeypatch.setattr(rc, "get_notice", lambda key: {
+        "fields": {"title": "T", "ref_id": "ref:1"},
+        "source_email_message_id": "msg1",
+        "aeolus_row": {"bd_manager_list": '["mariana.vieira"]'},
+        "message_id": "dm_msg_1",       # the standing ops DM card
+        "group_message_id": "group_msg_1",
+    })
+    monkeypatch.setattr(rc, "_reply_have_rights", lambda *a, **k: {"ok": True, "send_preview_url": "https://mail/draft1"})
+    monkeypatch.setattr(rc, "_set_email_status_and_status", lambda *a, **k: True)
+    monkeypatch.setattr(rc, "update_json_state", lambda *a, **k: None)
+
+    patched = {}
+    monkeypatch.setattr(rc, "patch_card_message", lambda mid, card: patched.setdefault(mid, card))
+    notified = {}
+    monkeypatch.setattr(rc, "_send_to_ops", lambda region, card, **k: notified.setdefault("card", card) or {"ok": True})
+
+    result = rc.handle_reply_callback(
+        {"choice": "have_rights", "key": "k1", "region": "BR", "upc": "999", "source": "group"},
+        message_id="group_msg_1", explanation="we own it",
+    )
+
+    assert set(patched.keys()) == {"dm_msg_1", "group_msg_1"}
+    assert "We have rights" in notified["card"]["elements"][0]["text"]["content"]
+    assert "https://mail/draft1" in notified["card"]["elements"][1]["text"]["content"]
+    assert result == "have_rights:k1:ok"
+
+
+def test_handle_reply_callback_from_dm_does_not_notify_ops(monkeypatch):
+    monkeypatch.setattr(rc, "get_notice", lambda key: {
+        "fields": {"title": "T", "ref_id": "ref:1"}, "source_email_message_id": "msg1",
+        "aeolus_row": {}, "group_message_id": "group_msg_1",
+    })
+    monkeypatch.setattr(rc, "_reply_no_rights", lambda *a, **k: {"ok": True})
+    monkeypatch.setattr(rc, "_set_email_status_and_status", lambda *a, **k: True)
+    monkeypatch.setattr(rc, "update_json_state", lambda *a, **k: None)
+    patched = {}
+    monkeypatch.setattr(rc, "patch_card_message", lambda mid, card: patched.setdefault(mid, card))
+    monkeypatch.setattr(rc, "_send_to_ops", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not notify ops")))
+
+    rc.handle_reply_callback({"choice": "no_rights", "key": "k1", "region": "BR", "upc": "999", "source": "dm"},
+                              message_id="dm_msg_1")
+    # ops's own DM card (the one clicked) and the group card both get patched
+    assert set(patched.keys()) == {"dm_msg_1", "group_msg_1"}
 
 
 def test_handle_notice_skips_already_tracked(monkeypatch):

@@ -336,7 +336,11 @@ def find_notice_by_upc(upc: str) -> dict:
 
 
 # ── Group card (posted to the SAME group as normal infringement claims) ─────
-def build_rights_confirmation_group_card(fields: dict, region: str, aeolus_row: dict) -> dict:
+def build_rights_confirmation_group_card(fields: dict, region: str, aeolus_row: dict, *,
+                                          resolved_status: str = "", thread_warning: str = "") -> dict:
+    """BD/Label Manager can act straight from this group card — the same 2
+    buttons as the DM card, since they're usually faster to respond than the
+    regional ops DM owner (added per user request 2026-09-29)."""
     def v(val):
         return val if val and val != "N/A" else "N/A"
 
@@ -345,6 +349,54 @@ def build_rights_confirmation_group_card(fields: dict, region: str, aeolus_row: 
     bd_mentions = _mention_people(aeolus_row.get("bd_manager_list"), region=region)
     label_mentions = _mention_people(aeolus_row.get("operation_manager_list"), region=region)
     tag_line = " ".join(m for m in (bd_mentions, label_mentions) if m) or "_(no BD/Label Manager on file)_"
+    key = notice_key(fields)
+
+    elements = [
+        {"tag": "div", "text": {"tag": "lark_md", "content":
+            f"**{v(fields.get('title'))}**\nArtist(s): {v(fields.get('artist'))}\nLabel: {v(fields.get('label'))}"}},
+        {"tag": "div", "text": {"tag": "lark_md", "content":
+            "Spotify is asking us to confirm SoundOn has the **necessary rights to deliver** this "
+            "content — not a third-party ownership claim. Please provide proof that we can deliver "
+            "this and that we have authorization to distribute the material."}},
+        {"tag": "hr"},
+        {
+            "tag": "column_set", "flex_mode": "none", "background_style": "grey",
+            "columns": [
+                {"tag": "column", "width": "weighted", "weight": 1, "elements": [
+                    {"tag": "div", "text": {"tag": "lark_md", "content": f"**UPC**\n{upc_display}"}}]},
+                {"tag": "column", "width": "weighted", "weight": 1, "elements": [
+                    {"tag": "div", "text": {"tag": "lark_md", "content": f"**Spotify Claim**\n{v(fields.get('claim_number'))}"}}]},
+                {"tag": "column", "width": "weighted", "weight": 1, "elements": [
+                    {"tag": "div", "text": {"tag": "lark_md", "content": f"**Received**\n{v(fields.get('date_received'))}"}}]},
+            ],
+        },
+        {"tag": "hr"},
+        {"tag": "div", "text": {"tag": "lark_md", "content": tag_line}},
+    ]
+
+    if resolved_status:
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": f"✅ **{resolved_status}**"}})
+        if thread_warning:
+            elements.append({"tag": "div", "text": {"tag": "lark_md", "content": f"**{thread_warning}**"}})
+    else:
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content":
+            "**Explanation / label contact details** *(required if we have rights)*"}})
+        elements.append({"tag": "input", "name": "explanation",
+                          "placeholder": {"tag": "plain_text", "content": "why we have the rights + label contact info"}})
+        elements.append({
+            "tag": "action",
+            "actions": [
+                {"tag": "button", "text": {"tag": "plain_text", "content": "✅ We have rights"}, "type": "primary",
+                 "value": {"action": CALLBACK_ACTION, "choice": "have_rights", "source": "group",
+                           "key": key, "upc": upc_value, "region": region}},
+                {"tag": "button", "text": {"tag": "plain_text", "content": "🚫 We do not have rights"}, "type": "danger",
+                 "value": {"action": CALLBACK_ACTION, "choice": "no_rights", "source": "group",
+                           "key": key, "upc": upc_value, "region": region}},
+            ],
+        })
+
+    elements.append({"tag": "note", "elements": [{"tag": "plain_text", "content":
+        f"Spotify Content Protection · Region {region} · {v(fields.get('ref_id'))}"}]})
 
     return {
         "config": {"wide_screen_mode": True},
@@ -352,30 +404,7 @@ def build_rights_confirmation_group_card(fields: dict, region: str, aeolus_row: 
             "template": "blue",
             "title": {"tag": "plain_text", "content": "⚠️ Spotify Rights Confirmation Required"},
         },
-        "elements": [
-            {"tag": "div", "text": {"tag": "lark_md", "content":
-                f"**{v(fields.get('title'))}**\nArtist(s): {v(fields.get('artist'))}\nLabel: {v(fields.get('label'))}"}},
-            {"tag": "div", "text": {"tag": "lark_md", "content":
-                "Spotify is asking us to confirm SoundOn has the **necessary rights to deliver** this "
-                "content — not a third-party ownership claim. Please provide proof that we can deliver "
-                "this and that we have authorization to distribute the material."}},
-            {"tag": "hr"},
-            {
-                "tag": "column_set", "flex_mode": "none", "background_style": "grey",
-                "columns": [
-                    {"tag": "column", "width": "weighted", "weight": 1, "elements": [
-                        {"tag": "div", "text": {"tag": "lark_md", "content": f"**UPC**\n{upc_display}"}}]},
-                    {"tag": "column", "width": "weighted", "weight": 1, "elements": [
-                        {"tag": "div", "text": {"tag": "lark_md", "content": f"**Spotify Claim**\n{v(fields.get('claim_number'))}"}}]},
-                    {"tag": "column", "width": "weighted", "weight": 1, "elements": [
-                        {"tag": "div", "text": {"tag": "lark_md", "content": f"**Received**\n{v(fields.get('date_received'))}"}}]},
-                ],
-            },
-            {"tag": "hr"},
-            {"tag": "div", "text": {"tag": "lark_md", "content": tag_line}},
-            {"tag": "note", "elements": [{"tag": "plain_text", "content":
-                f"Spotify Content Protection · Region {region} · {v(fields.get('ref_id'))}"}]},
-        ],
+        "elements": elements,
     }
 
 
@@ -419,9 +448,9 @@ def build_rights_confirmation_dm_card(fields: dict, region: str, *, resolved_sta
                 "tag": "action",
                 "actions": [
                     {"tag": "button", "text": {"tag": "plain_text", "content": "✅ We have rights"}, "type": "primary",
-                     "value": {"action": CALLBACK_ACTION, "choice": "have_rights", "key": key, "upc": upc_value, "region": region}},
+                     "value": {"action": CALLBACK_ACTION, "choice": "have_rights", "source": "dm", "key": key, "upc": upc_value, "region": region}},
                     {"tag": "button", "text": {"tag": "plain_text", "content": "🚫 We do not have rights"}, "type": "danger",
-                     "value": {"action": CALLBACK_ACTION, "choice": "no_rights", "key": key, "upc": upc_value, "region": region}},
+                     "value": {"action": CALLBACK_ACTION, "choice": "no_rights", "source": "dm", "key": key, "upc": upc_value, "region": region}},
                 ],
             },
             {"tag": "note", "elements": [{"tag": "plain_text", "content":
@@ -435,12 +464,14 @@ def build_rights_confirmation_dm_card(fields: dict, region: str, *, resolved_sta
     }
 
 
-def _send_rights_confirmation_dm(fields: dict, region: str) -> dict:
+def _send_to_ops(region: str, card: dict, *, log_context: str = "") -> dict:
+    """Post an interactive card to the region's product-ops owner, trying
+    chat_id / open_id / email in that order (same fallback order used
+    everywhere else this project DMs a fixed regional contact)."""
     from copyright_alert.bot_runtime import _post_api
     from copyright_alert.dm_action_card import resolve_open_id
 
     ops = _ops_context_for_region(region)
-    card = build_rights_confirmation_dm_card(fields, region)
     content = json.dumps(card, ensure_ascii=False)
 
     recipient_email = ops.get("ops_dm_email") or ""
@@ -465,12 +496,17 @@ def _send_rights_confirmation_dm(fields: dict, region: str) -> dict:
             if resp.get("code") == 0:
                 mid = ((resp.get("data") or {}).get("message_id")) or ""
                 print(f"  ✓ Rights-confirmation DM sent via {id_type} ({rid}) → {mid} "
-                      f"[region {region} · UPC {fields.get('upc')}]", flush=True)
+                      f"[region {region}{' · ' + log_context if log_context else ''}]", flush=True)
                 return {"ok": True, "message_id": mid}
             print(f"  ✗ Rights-confirmation DM via {id_type} code={resp.get('code')} msg={resp.get('msg')}", flush=True)
         except Exception as exc:
             print(f"  ✗ Rights-confirmation DM via {id_type} failed: {exc!r}", flush=True)
     return {"ok": False, "message_id": ""}
+
+
+def _send_rights_confirmation_dm(fields: dict, region: str) -> dict:
+    card = build_rights_confirmation_dm_card(fields, region)
+    return _send_to_ops(region, card, log_context=f"UPC {fields.get('upc')}")
 
 
 # ── Reply drafts (threaded, via spotify_reply's generic _send_reply) ────────
@@ -528,6 +564,14 @@ def handle_rights_confirmation_notice(body, subject="", meta=None, msg_id="") ->
     def _insert(state):
         state["notices"][key] = {
             "key": key, "region": region, "fields": fields, "upc": upc,
+            # Only the two fields build_rights_confirmation_group_card actually
+            # needs, saved so the group card can be rebuilt/patched later
+            # (e.g. when a manager resolves it from the group, or ops resolves
+            # it from the DM and the group card needs to reflect that too).
+            "aeolus_row": {
+                "bd_manager_list": aeolus_row.get("bd_manager_list"),
+                "operation_manager_list": aeolus_row.get("operation_manager_list"),
+            },
             "source_email_message_id": msg_id or "",
             "first_seen": _now_brt_iso(), "last_seen": _now_brt_iso(),
             "last_dm_sent": _today_brt() if dm.get("ok") else "",
@@ -606,11 +650,13 @@ def handle_reply_callback(value: dict, *, message_id: str = "", explanation: str
     key = str((value or {}).get("key", "") or "").strip()
     region = str((value or {}).get("region", "") or "BR").strip() or "BR"
     upc = str((value or {}).get("upc", "") or "").strip()
+    source = str((value or {}).get("source", "") or "dm").strip()  # "dm" or "group"
     if not key:
         return "no key"
 
     rec = get_notice(key)
     fields = (rec or {}).get("fields", {})
+    aeolus_row = (rec or {}).get("aeolus_row", {})
     source_email_message_id = (rec or {}).get("source_email_message_id", "")
     title = fields.get("title", "N/A")
     ref_id = fields.get("ref_id", "N/A")
@@ -619,9 +665,11 @@ def handle_reply_callback(value: dict, *, message_id: str = "", explanation: str
     if choice == "have_rights":
         result = _reply_have_rights(source_email_message_id, upc, title, spotify_uri, explanation, ref_id)
         status_value, email_status = STATUS_HAVE_RIGHTS, f"Sent ✅ – have rights – {_now_brt_iso()}"
+        outcome_label = "We have rights"
     elif choice == "no_rights":
         result = _reply_no_rights(source_email_message_id, upc, title, ref_id)
         status_value, email_status = STATUS_NO_RIGHTS, f"Sent ✅ – no rights – {_now_brt_iso()}"
+        outcome_label = "We do not have rights"
     else:
         return f"unknown choice: {choice!r}"
 
@@ -632,6 +680,7 @@ def handle_reply_callback(value: dict, *, message_id: str = "", explanation: str
     # is exactly the recurring problem this was built to stop happening
     # invisibly.
     thread_warning = result.get("thread_warning", "") if isinstance(result, dict) else ""
+    draft_url = result.get("send_preview_url", "") if isinstance(result, dict) else ""
 
     def _mark(state, _status=status_value, _warn=thread_warning):
         r = state["notices"].get(key)
@@ -641,13 +690,48 @@ def handle_reply_callback(value: dict, *, message_id: str = "", explanation: str
             r["thread_warning"] = _warn
     update_json_state(STATE_FILE, _mark, default=lambda: {"notices": {}})
 
-    if message_id:
+    # Patch whichever card was actually clicked (message_id points at that
+    # one), then also patch the OTHER card so neither is left showing stale
+    # buttons once the decision is made from either side.
+    dm_message_id = (rec or {}).get("message_id", "")
+    group_message_id = (rec or {}).get("group_message_id", "")
+    if source == "group":
+        group_message_id = message_id or group_message_id
+    else:
+        dm_message_id = message_id or dm_message_id
+
+    if dm_message_id:
         try:
-            card = build_rights_confirmation_dm_card(fields, region, resolved_status=status_value,
-                                                       thread_warning=thread_warning)
-            patch_card_message(message_id, card)
+            patch_card_message(dm_message_id, build_rights_confirmation_dm_card(
+                fields, region, resolved_status=status_value, thread_warning=thread_warning))
         except Exception as exc:
-            print(f"  ⚠ Could not patch rights-confirmation card {message_id}: {exc!r}", flush=True)
+            print(f"  ⚠ Could not patch rights-confirmation DM card {dm_message_id}: {exc!r}", flush=True)
+    if group_message_id:
+        try:
+            patch_card_message(group_message_id, build_rights_confirmation_group_card(
+                fields, region, aeolus_row, resolved_status=status_value, thread_warning=thread_warning))
+        except Exception as exc:
+            print(f"  ⚠ Could not patch rights-confirmation group card {group_message_id}: {exc!r}", flush=True)
+
+    # A manager resolving it from the group card is new information ops
+    # hasn't seen yet (their own action-request DM is patched above, but
+    # that's passive — proactively tell them a decision was already made).
+    if source == "group":
+        notice_card = {
+            "config": {"wide_screen_mode": True},
+            "header": {"template": "green", "title": {"tag": "plain_text", "content": "✅ Rights confirmation resolved"}},
+            "elements": [
+                {"tag": "div", "text": {"tag": "lark_md", "content":
+                    f"**{title}** — UPC {upc}\nA manager confirmed in the group: **{outcome_label}**."}},
+                {"tag": "div", "text": {"tag": "lark_md", "content":
+                    f"Reply draft ready: {draft_url}" if draft_url else "Reply draft could not be created — check the logs."}},
+                {"tag": "note", "elements": [{"tag": "plain_text", "content": f"Region {region} · {ref_id}"}]},
+            ],
+        }
+        try:
+            _send_to_ops(region, notice_card, log_context=f"UPC {upc} resolved via group")
+        except Exception as exc:
+            print(f"  ⚠ Could not notify ops of group resolution: {exc!r}", flush=True)
 
     ok = bool(result.get("ok")) if isinstance(result, dict) else bool(result)
     return f"{choice}:{key}:{'ok' if ok else 'failed'}"
