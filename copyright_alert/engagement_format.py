@@ -51,6 +51,12 @@ def format_compact(value) -> str:
     return str(int(round(n)))
 
 
+def is_high(value) -> bool:
+    """True for tracks at/above the high-streaming threshold (cards get restyled)."""
+    n = parse_count(value)
+    return n is not None and n >= HIGH_STREAMS
+
+
 def tier_badge(value) -> str:
     """🔥 for high-streaming tracks, ⭐ for mid, "" otherwise."""
     n = parse_count(value)

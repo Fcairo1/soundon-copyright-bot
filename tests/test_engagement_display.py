@@ -201,3 +201,83 @@ def test_refresh_checks_least_recently_checked_first_under_cap(monkeypatch):
     monkeypatch.setattr(ra, "batch_query_engagement_by_upc", lambda upcs: queried.append(list(upcs)) or {})
     result = et.run_daily_sync("BR", dry_run=True, is_open=lambda s, a, r: True)
     assert queried == [["222", "333"]] and result["pending_next_run"] == 1
+
+
+# --- priority sort: old rules keep priority, streams layer on top ---------------------
+
+from copyright_alert.run_alert import CARD_HEADER_DEFAULT, CARD_HEADER_HIGH, HIGH_BANNER_MARKER  # noqa: E402
+
+TODAY = date(2026, 10, 7)
+
+
+def _order(items, streams=None, tiers=None):
+    return [it[0] for it in sorted(items, key=lambda it: tm.priority_key(it, TODAY, streams, tiers))]
+
+
+def test_overdue_stays_ahead_of_not_yet_due_even_for_huge_streams():
+    items = [("big", "t", "2026-10-06"), ("late", "t", "2026-08-01")]   # big: just received; late: long overdue
+    streams = {"big": streams_info(now=5_000_000), "late": streams_info(now=100)}
+    assert _order(items, streams) == ["late", "big"]
+
+
+def test_high_streaming_lifts_within_same_sla_band_only():
+    items = [("a", "t", "2026-08-01"), ("b", "t", "2026-08-01"), ("c", "t", "2026-09-20")]  # all overdue
+    streams = {"a": streams_info(now=500), "b": streams_info(now=2_000_000), "c": streams_info(now=100)}
+    assert _order(items, streams)[0] == "b"          # the 🔥 one leads its band
+    assert _order(items, streams)[1:] == ["a", "c"]   # rest keep the old order (more overdue first)
+
+
+def test_claimant_tier_breaks_ties_before_streams_for_non_high_tracks():
+    items = [("indie", "t", "2026-08-01"), ("major", "t", "2026-08-01"), ("internal", "t", "2026-08-01")]
+    streams = {"indie": streams_info(now=50_000), "major": streams_info(now=900), "internal": streams_info(now=60_000)}
+    tiers = {"indie": 3, "major": 1, "internal": 4}
+    assert _order(items, streams, tiers) == ["major", "indie", "internal"]
+
+
+def test_streams_break_ties_when_everything_else_is_equal():
+    items = [("low", "t", "2026-08-01"), ("mid", "t", "2026-08-01")]
+    streams = {"low": streams_info(now=300), "mid": streams_info(now=40_000)}
+    assert _order(items, streams, {"low": 2, "mid": 2}) == ["mid", "low"]
+
+
+def test_reminder_sorted_and_callout_only_when_high_streaming_present(monkeypatch):
+    monkeypatch.setattr(tm, "today_brt", lambda: TODAY)
+    managers = {"m": {"display": "M", "items": [("small", "Small", "2026-08-01"), ("huge", "Huge", "2026-08-01")]}}
+    streams = {"small": streams_info(now=300), "huge": streams_info(now=3_000_000)}
+    text = json.dumps(tm.build_tag_card(managers, [], region="BR", streams_by_upc=streams), ensure_ascii=False)
+    assert text.index("Huge") < text.index("Small")
+    assert "1 high-streaming claim**" in text
+    calm = json.dumps(tm.build_tag_card(managers, [], region="BR", streams_by_upc={"small": streams_info(now=300),
+                                        "huge": streams_info(now=500)}), ensure_ascii=False)
+    assert "high-streaming claim" not in calm
+
+
+def test_reminder_keeps_sheet_order_without_metadata(monkeypatch):
+    monkeypatch.setattr(tm, "today_brt", lambda: TODAY)
+    managers = {"m": {"display": "M", "items": [("a", "Alpha", "2026-10-06"), ("b", "Beta", "2026-08-01")]}}
+    text = json.dumps(tm.build_tag_card(managers, [], region="BR"), ensure_ascii=False)
+    assert text.index("Alpha") < text.index("Beta")
+
+
+# --- high-streaming card restyle --------------------------------------------------------
+
+def test_high_streaming_card_gets_purple_header_and_banner():
+    card = build_card(_ef(), {"album_title": "Song", "sptf_30d_str": "250000"})
+    assert (card["header"]["template"], card["header"]["title"]["content"]) == CARD_HEADER_HIGH
+    banners = [el for el in card["elements"] if HIGH_BANNER_MARKER in json.dumps(el, ensure_ascii=False)]
+    assert len(banners) == 1 and "250K" in json.dumps(banners[0], ensure_ascii=False)
+
+
+def test_normal_card_keeps_default_header_and_has_no_banner():
+    card = build_card(_ef(), {"album_title": "Song", "sptf_30d_str": "5000"})
+    assert (card["header"]["template"], card["header"]["title"]["content"]) == CARD_HEADER_DEFAULT
+    assert HIGH_BANNER_MARKER not in json.dumps(card, ensure_ascii=False)
+
+
+def test_card_restyle_is_idempotent_and_reverts_when_streams_drop():
+    card = build_card(_ef(), {"album_title": "Song", "sptf_30d_str": "250000"})
+    apply_streams_to_card(card, streams_info(now=300_000, baseline=250_000, refreshed=True))
+    assert json.dumps(card, ensure_ascii=False).count(HIGH_BANNER_MARKER) == 1
+    apply_streams_to_card(card, streams_info(now=40_000, baseline=250_000, refreshed=True))
+    assert (card["header"]["template"], card["header"]["title"]["content"]) == CARD_HEADER_DEFAULT
+    assert HIGH_BANNER_MARKER not in json.dumps(card, ensure_ascii=False)
