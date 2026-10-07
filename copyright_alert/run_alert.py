@@ -24,6 +24,7 @@ from pathlib import Path
 
 from copyright_alert.state_io import atomic_write_json, update_json_state
 from copyright_alert.major_label_detector import MAJOR_LABEL_HEADERS, classify_claimant, tracker_values
+from copyright_alert.engagement_format import parse_count, streams_info, streams_line
 from copyright_alert.lark_auth import request_json_with_auth_retry
 from copyright_alert.manager_exclusions import is_manager_excluded
 from copyright_alert.upc_exclusions import is_upc_excluded
@@ -1741,6 +1742,56 @@ def _region_from_aeolus_row(row) -> str:
 
 
 
+STREAMS_ELEMENT_MARKER = "🎧 Spotify streams (30d)"
+
+
+def _streams_from_ar(ar):
+    """Streams payload from an Aeolus row: `sptf_now` is the daily-refreshed
+    figure (engagement_tracker), `sptf_30d_str` the at-claim snapshot."""
+    ar = ar or {}
+    return streams_info(
+        now=ar.get("sptf_now"),
+        baseline=ar.get("sptf_30d_str"),
+        refreshed=parse_count(ar.get("sptf_now")) is not None,
+    )
+
+
+def _streams_element(streams):
+    return {
+        "tag": "column_set",
+        "flex_mode": "none",
+        "background_style": "grey",
+        "columns": [
+            {"tag": "column", "width": "weighted", "weight": 1, "elements": [
+                {"tag": "div", "text": {"tag": "lark_md",
+                                        "content": f"**{STREAMS_ELEMENT_MARKER}**\n{streams_line(streams)}"}}
+            ]},
+        ],
+    }
+
+
+def apply_streams_to_card(card, streams):
+    """Insert (or replace) the Spotify-streams row on a group card.
+
+    Idempotent and safe on persisted/legacy cards: any existing streams row is
+    removed first, then the fresh one is placed right above the Point of
+    Contact section (falling back to just before the status buttons).
+    """
+    if not isinstance(card, dict) or not isinstance(card.get("elements"), list):
+        return card
+    elements = [el for el in card["elements"] if STREAMS_ELEMENT_MARKER not in json.dumps(el, ensure_ascii=False)]
+    insert_at = None
+    for i, el in enumerate(elements):
+        if "Point of Contact" in json.dumps(el, ensure_ascii=False):
+            insert_at = i - 1 if i > 0 and elements[i - 1].get("tag") == "hr" else i
+            break
+    if insert_at is None:
+        insert_at = next((i for i, el in enumerate(elements) if el.get("tag") == "action"), len(elements))
+    elements.insert(insert_at, _streams_element(streams))
+    card["elements"] = elements
+    return card
+
+
 def build_card(
     ef,
     ar,
@@ -1892,7 +1943,7 @@ def build_card(
             ]}
         ]
     }
-    return card
+    return apply_streams_to_card(card, _streams_from_ar(ar))
 
 
 def build_posted_group_card(

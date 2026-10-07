@@ -52,9 +52,16 @@ from copyright_alert.manager_exclusions import (
     filter_manager_pairs,
 )
 from copyright_alert.upc_exclusions import is_upc_excluded
+from copyright_alert.engagement_format import parse_count, streams_info, streams_suffix
 from copyright_alert.lark_auth import extract_sheet_values, sheet_values_api
 
 ADMIN_ACTION_HEADER = "Admin Action Taken"
+# Spotify 30d streams: refreshed daily by engagement_tracker; the baseline
+# column is the at-claim snapshot used as a fallback.
+NOW_STREAMS_HEADER = "Spotify 30d Streams (Now)"
+BASELINE_STREAMS_HEADER = "sptf_30d_str"
+# Wide enough to reach the appended "(Now)" columns (A:Z stopped short of them).
+TRACKER_READ_RANGE = "A:BZ"
 PENDING_STATUSES = {
     "",
     "Investigating",
@@ -312,6 +319,8 @@ def collect_pending(values):
     title_i = idx.get("Title")
     received_i = idx.get("Date Received")
     admin_i = idx.get(ADMIN_ACTION_HEADER)
+    now_streams_i = idx.get(NOW_STREAMS_HEADER)
+    baseline_streams_i = idx.get(BASELINE_STREAMS_HEADER)
 
     managers = {}        # username -> {"display": str, "items": [(upc, title, received), ...]}
     pending_rows = []
@@ -329,20 +338,32 @@ def collect_pending(values):
             continue
         title = _cell(row, title_i) or "(untitled)"
         received = _cell(row, received_i)
+        now_raw = _cell(row, now_streams_i)
+        streams = streams_info(
+            now=now_raw, baseline=_cell(row, baseline_streams_i),
+            refreshed=parse_count(now_raw) is not None,
+        )
         pending_rows.append({"row": r, "upc": upc, "title": title,
-                             "received": received, "status": status or "(empty)"})
+                             "received": received, "status": status or "(empty)",
+                             "streams": streams})
         log(f"  Pending row {r}: UPC {upc} title={title!r} received={received!r} "
             f"status={status or '(empty)'} — resolving managers …")
         people = resolve_managers_for_row(row, idx)
         if not people:
             log(f"    ⚠ No manager could be resolved for row {r} (UPC {upc}).")
-            no_manager_rows.append({"row": r, "upc": upc, "title": title, "received": received})
+            no_manager_rows.append({"row": r, "upc": upc, "title": title, "received": received,
+                                    "streams": streams})
         for uname, display in people:
             entry = managers.setdefault(uname, {"display": display, "items": []})
             triple = (upc, title, received)
             if triple not in entry["items"]:
                 entry["items"].append(triple)
     return managers, pending_rows, no_manager_rows
+
+
+def streams_by_upc(pending_rows):
+    """{upc: streams payload} for build_tag_card, from collect_pending's rows."""
+    return {r["upc"]: r["streams"] for r in pending_rows if r.get("streams")}
 
 
 def _md_escape(text: str) -> str:
@@ -366,13 +387,16 @@ def _manager_label(username: str, display_name: str, region: str = None) -> str:
     return f'<at email="{username}@{MENTION_DOMAIN}">{display_name}</at>'
 
 
-def build_tag_card(managers, no_manager_rows=None, region=None):
+def build_tag_card(managers, no_manager_rows=None, region=None, streams_by_upc=None):
     """Build an interactive card that names each manager with their UPCs.
 
     Layout (per manager):
         @Manager Name — please provide an update on these infringement claims:
         • [UPC1](admin_url) — Title 1
         • [UPC2](admin_url) — Title 2
+
+    When ``streams_by_upc`` is given, each line ends with the track's Spotify
+    30d streams ("🎧 1.2M 🔥") so managers can see which claims matter most.
 
     Callers should pass ``region`` explicitly whenever they know it. US group
     cards intentionally render manager names as plain text (no Lark @mention).
@@ -386,6 +410,7 @@ def build_tag_card(managers, no_manager_rows=None, region=None):
 
     today = today_brt()
     no_manager_rows = no_manager_rows or []
+    streams_by_upc = streams_by_upc or {}
 
     region = (region or _current_region()).upper()
 
@@ -400,7 +425,8 @@ def build_tag_card(managers, no_manager_rows=None, region=None):
         for upc, title, received in info["items"]:
             url = ADMIN_UPC_URL_TEMPLATE.format(upc=upc)
             sla = _format_sla_suffix(received, today)
-            upc_lines.append(f"• [{upc}]({url}) — {_md_escape(title)} — {sla}")
+            upc_lines.append(f"• [{upc}]({url}) — {_md_escape(title)} — {sla}"
+                             + (streams_suffix(streams_by_upc.get(upc)) if streams_by_upc else ""))
         elements.append({
             "tag": "div",
             "text": {"tag": "lark_md", "content": "\n".join(upc_lines)},
@@ -419,7 +445,8 @@ def build_tag_card(managers, no_manager_rows=None, region=None):
             received = item.get("received") or ""
             url = ADMIN_UPC_URL_TEMPLATE.format(upc=upc)
             sla = _format_sla_suffix(received, today)
-            no_manager_lines.append(f"• [{upc}]({url}) — {_md_escape(title)} — {sla}")
+            no_manager_lines.append(f"• [{upc}]({url}) — {_md_escape(title)} — {sla}"
+                                    + (streams_suffix(streams_by_upc.get(upc)) if streams_by_upc else ""))
         elements.append({
             "tag": "div",
             "text": {"tag": "lark_md", "content": "\n".join(no_manager_lines)},
@@ -491,7 +518,7 @@ def main():
     log(f"Tracker: {TRACKER_SHEET_URL}")
     log(f"Alert group: {TARGET_CHAT_ID}")
 
-    values = read_sheet_values("A:Z")
+    values = read_sheet_values(TRACKER_READ_RANGE)
     managers, pending_rows, no_manager_rows = collect_pending(values)
 
     log(f"\nPending rows: {len(pending_rows)} | Managers to tag: {len(managers)}")
@@ -507,7 +534,7 @@ def main():
         log("\n✓ Nothing pending to tag. No message posted.")
         return {"pending_rows": len(pending_rows), "managers": 0, "no_manager_rows": 0, "posted": False}
 
-    card = build_tag_card(managers, no_manager_rows)
+    card = build_tag_card(managers, no_manager_rows, streams_by_upc=streams_by_upc(pending_rows))
 
     if dry_run:
         log("\n[DRY-RUN] Card that WOULD be posted:")
