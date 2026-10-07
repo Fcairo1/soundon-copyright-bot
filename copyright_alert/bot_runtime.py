@@ -666,6 +666,7 @@ def manual_scan_region(region: str, max_messages: int = 80) -> dict:
                 summary["skipped_duplicate"] += 1
                 continue
 
+            ar = ra.enrich_with_engagement_once(ar)
             card = ra.build_card(ef, ar, region=region)
             LAST_CARD_FILE.write_text(json.dumps(card, ensure_ascii=False, indent=2), encoding="utf-8")
             success, posted_message_id = ra.post_card(card, ar, upc=upc, context=f"{region} manual scan group post")

@@ -24,6 +24,7 @@ from pathlib import Path
 
 from copyright_alert.state_io import atomic_write_json, update_json_state
 from copyright_alert.major_label_detector import MAJOR_LABEL_HEADERS, classify_claimant, tracker_values
+from copyright_alert.engagement_format import format_compact, is_high, parse_count, streams_info, streams_line
 from copyright_alert.lark_auth import request_json_with_auth_retry
 from copyright_alert.manager_exclusions import is_manager_excluded
 from copyright_alert.upc_exclusions import is_upc_excluded
@@ -1741,6 +1742,84 @@ def _region_from_aeolus_row(row) -> str:
 
 
 
+STREAMS_ELEMENT_MARKER = "🎧 Spotify streams (30d)"
+HIGH_BANNER_MARKER = "🔥 **High-streaming track**"
+# Normal alert header vs. the restyled one for tracks above the high-streaming
+# threshold. Purple is unused by every other bot card (red alert, orange
+# reminder, blue digest, green resolved, yellow metadata), so it reads as
+# "different" at a glance in the group feed.
+CARD_HEADER_DEFAULT = ("red", "🚨 Copyright Infringement Alert")
+CARD_HEADER_HIGH = ("purple", "🔥 High-Streaming Track — Copyright Infringement Alert")
+
+
+def _streams_from_ar(ar):
+    """Streams payload from an Aeolus row: `sptf_now` is the daily-refreshed
+    figure (engagement_tracker), `sptf_30d_str` the at-claim snapshot."""
+    ar = ar or {}
+    return streams_info(
+        now=ar.get("sptf_now"),
+        baseline=ar.get("sptf_30d_str"),
+        refreshed=parse_count(ar.get("sptf_now")) is not None,
+    )
+
+
+def _streams_element(streams):
+    return {
+        "tag": "column_set",
+        "flex_mode": "none",
+        "background_style": "grey",
+        "columns": [
+            {"tag": "column", "width": "weighted", "weight": 1, "elements": [
+                {"tag": "div", "text": {"tag": "lark_md",
+                                        "content": f"**{STREAMS_ELEMENT_MARKER}**\n{streams_line(streams)}"}}
+            ]},
+        ],
+    }
+
+
+def apply_streams_to_card(card, streams):
+    """Insert (or replace) the Spotify-streams row on a group card.
+
+    Idempotent and safe on persisted/legacy cards: any existing streams row is
+    removed first, then the fresh one is placed right above the Point of
+    Contact section (falling back to just before the status buttons).
+    """
+    if not isinstance(card, dict) or not isinstance(card.get("elements"), list):
+        return card
+    elements = [el for el in card["elements"] if STREAMS_ELEMENT_MARKER not in json.dumps(el, ensure_ascii=False)]
+    insert_at = None
+    for i, el in enumerate(elements):
+        if "Point of Contact" in json.dumps(el, ensure_ascii=False):
+            insert_at = i - 1 if i > 0 and elements[i - 1].get("tag") == "hr" else i
+            break
+    if insert_at is None:
+        insert_at = next((i for i, el in enumerate(elements) if el.get("tag") == "action"), len(elements))
+    elements.insert(insert_at, _streams_element(streams))
+    card["elements"] = elements
+    return _apply_high_streaming_style(card, streams)
+
+
+def _apply_high_streaming_style(card, streams):
+    """Restyle the card (purple header + banner) when the track is above the
+    high-streaming threshold; revert to the normal look when it isn't, so a
+    card whose numbers later drop doesn't stay highlighted. Idempotent."""
+    elements = [el for el in card["elements"] if HIGH_BANNER_MARKER not in json.dumps(el, ensure_ascii=False)]
+    header = card.get("header")
+    high = is_high((streams or {}).get("now"))
+    if isinstance(header, dict):
+        template, title = CARD_HEADER_HIGH if high else CARD_HEADER_DEFAULT
+        header["template"] = template
+        header["title"] = {"tag": "plain_text", "content": title}
+    if high:
+        banner = {"tag": "div", "text": {"tag": "lark_md", "content": (
+            f"{HIGH_BANNER_MARKER} — {format_compact(streams['now'])} Spotify streams (30d). "
+            "Prioritize this claim.")}}
+        at = next((i for i, el in enumerate(elements) if "Artist(s)" in json.dumps(el, ensure_ascii=False)), 0)
+        elements.insert(at, banner)
+    card["elements"] = elements
+    return card
+
+
 def build_card(
     ef,
     ar,
@@ -1892,7 +1971,7 @@ def build_card(
             ]}
         ]
     }
-    return card
+    return apply_streams_to_card(card, _streams_from_ar(ar))
 
 
 def build_posted_group_card(

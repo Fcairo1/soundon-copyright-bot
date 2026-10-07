@@ -74,6 +74,7 @@ from copyright_alert.run_alert import (  # noqa: E402
     RETRACTION_SIGNAL_PHRASE,
     save_posted_card,
     build_card,
+    apply_streams_to_card,
     post_card,
     patch_card_message,
     append_tracker_row,
@@ -161,6 +162,8 @@ from copyright_alert import rights_confirmation_notice  # noqa: E402
 from copyright_alert import takedown_stream_tracker  # noqa: E402
 from copyright_alert import claim_events  # noqa: E402
 from copyright_alert import marketshare_tracker  # noqa: E402
+from copyright_alert import engagement_tracker  # noqa: E402
+from copyright_alert.engagement_format import parse_count, streams_info  # noqa: E402
 from copyright_alert import acr_digest  # noqa: E402
 
 
@@ -1708,6 +1711,8 @@ def _reconstruct_card_from_row(row, idx, message_id="", region=""):
             [a.strip() for a in artists.split(",") if a.strip()], ensure_ascii=False),
         "bd_manager_list": None,
         "operation_manager_list": None,
+        "sptf_30d_str": cell("sptf_baseline"),
+        "sptf_now": cell("sptf_now"),
     }
     status = cell("status") or ""
     return build_card(ef, ar, current_status=status, lark_message_id=message_id, region=region)
@@ -1785,6 +1790,20 @@ def _replace_card_message_via_lark_cli(old_message_id, card, *, row_num=None, id
     return new_message_id
 
 
+def _streams_for_row(row, idx, upc):
+    """Spotify streams payload for a tracker row: this run's fresh refresh
+    (engagement_tracker.LATEST) first, then the sheet's refreshed column, then
+    the at-claim snapshot."""
+    now = (engagement_tracker.LATEST.get(upc) or {}).get("sptf_now")
+    if now is None:
+        now = _cell(row, idx.get("sptf_now"))
+    return streams_info(
+        now=now,
+        baseline=_cell(row, idx.get("sptf_baseline")),
+        refreshed=parse_count(now) is not None,
+    )
+
+
 def countdown_refresh(values):
     """PART 1F — Refresh the daily countdown badge on each open group card."""
     section("PART 1F — COUNTDOWN CARD REFRESH")
@@ -1810,6 +1829,8 @@ def countdown_refresh(values):
         "uid": _header_index(headers, "UID"),
         "admin_action": _header_index(headers, ADMIN_ACTION_HEADER),
         "retracted": _header_index(headers, RETRACTED_HEADER),
+        "sptf_baseline": _header_index(headers, engagement_tracker.BASELINE_SPOTIFY_HEADER),
+        "sptf_now": _header_index(headers, engagement_tracker.NOW_SPOTIFY_HEADER),
     }
     today = date.today()
     refreshed = 0
@@ -1846,6 +1867,9 @@ def countdown_refresh(values):
             card = _reconstruct_card_from_row(row, idx, card_msg_id)
         if not card:
             continue
+        # Keep the Spotify-streams row current on the posted card (also adds it
+        # to cards that were posted before this row existed).
+        card = apply_streams_to_card(card, _streams_for_row(row, idx, _cell(row, idx["upc"])))
         patched = build_card_with_countdown(card, days_remaining)
         try:
             ok = patch_card_message(card_msg_id, patched)
@@ -1952,6 +1976,18 @@ def main(region=None):
     except Exception as e:
         log(f"  ✗ Action-alert section error: {e!r}")
         results["action_alert"] = {"error": repr(e)}
+
+    # D) Engagement refresh — re-query Spotify + TikTok 30d numbers for every
+    # open case and write them to the "(Now)" tracker columns, so the countdown
+    # refresh below (and the Wed/Fri manager reminders) show current figures.
+    try:
+        section("PART 1D2 — Engagement refresh (Spotify + TikTok, open cases)")
+        results["engagement_refresh"] = engagement_tracker.run_daily_sync_safe(
+            ACTIVE_REGION, is_open=_is_open_for_ops
+        )
+    except Exception as e:
+        log(f"  ✗ Engagement-refresh section error: {e!r}")
+        results["engagement_refresh"] = {"error": repr(e)}
 
     # E) DM action cards for day-1+ open cases
     try:

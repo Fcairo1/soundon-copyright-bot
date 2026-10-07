@@ -52,9 +52,17 @@ from copyright_alert.manager_exclusions import (
     filter_manager_pairs,
 )
 from copyright_alert.upc_exclusions import is_upc_excluded
+from copyright_alert.engagement_format import is_high, parse_count, streams_info, streams_suffix
 from copyright_alert.lark_auth import extract_sheet_values, sheet_values_api
 
 ADMIN_ACTION_HEADER = "Admin Action Taken"
+# Spotify 30d streams: refreshed daily by engagement_tracker; the baseline
+# column is the at-claim snapshot used as a fallback.
+NOW_STREAMS_HEADER = "Spotify 30d Streams (Now)"
+CLAIMANT_TIER_HEADER = "Claimant Tier"
+BASELINE_STREAMS_HEADER = "sptf_30d_str"
+# Wide enough to reach the appended "(Now)" columns (A:Z stopped short of them).
+TRACKER_READ_RANGE = "A:BZ"
 PENDING_STATUSES = {
     "",
     "Investigating",
@@ -173,13 +181,20 @@ def business_days_remaining_brt(detected) -> int:
     return _net_workdays(today_brt(), deadline)
 
 
-def _format_sla_suffix(received_raw: str, today: date) -> str:
-    """Build the trailing piece of a UPC line: '⏳ X days remaining' / '🔴 overdue'."""
+def _sla_remaining(received_raw: str, today: date):
+    """Workdays left to the reply deadline (negative = overdue); None if the
+    received date can't be parsed."""
     received = _parse_date_received(received_raw)
     if not received:
+        return None
+    return _net_workdays(today, _add_workdays(received, SLA_WORKDAYS))
+
+
+def _format_sla_suffix(received_raw: str, today: date) -> str:
+    """Build the trailing piece of a UPC line: '⏳ X days remaining' / '🔴 overdue'."""
+    remaining = _sla_remaining(received_raw, today)
+    if remaining is None:
         return "⏳ deadline unknown"
-    deadline = _add_workdays(received, SLA_WORKDAYS)
-    remaining = _net_workdays(today, deadline)
     if remaining > 0:
         unit = "day" if remaining == 1 else "days"
         return f"⏳ {remaining} {unit} remaining"
@@ -312,6 +327,9 @@ def collect_pending(values):
     title_i = idx.get("Title")
     received_i = idx.get("Date Received")
     admin_i = idx.get(ADMIN_ACTION_HEADER)
+    now_streams_i = idx.get(NOW_STREAMS_HEADER)
+    baseline_streams_i = idx.get(BASELINE_STREAMS_HEADER)
+    tier_i = idx.get(CLAIMANT_TIER_HEADER)
 
     managers = {}        # username -> {"display": str, "items": [(upc, title, received), ...]}
     pending_rows = []
@@ -329,20 +347,76 @@ def collect_pending(values):
             continue
         title = _cell(row, title_i) or "(untitled)"
         received = _cell(row, received_i)
+        now_raw = _cell(row, now_streams_i)
+        streams = streams_info(
+            now=now_raw, baseline=_cell(row, baseline_streams_i),
+            refreshed=parse_count(now_raw) is not None,
+        )
         pending_rows.append({"row": r, "upc": upc, "title": title,
-                             "received": received, "status": status or "(empty)"})
+                             "received": received, "status": status or "(empty)",
+                             "streams": streams, "tier": _cell(row, tier_i)})
         log(f"  Pending row {r}: UPC {upc} title={title!r} received={received!r} "
             f"status={status or '(empty)'} — resolving managers …")
         people = resolve_managers_for_row(row, idx)
         if not people:
             log(f"    ⚠ No manager could be resolved for row {r} (UPC {upc}).")
-            no_manager_rows.append({"row": r, "upc": upc, "title": title, "received": received})
+            no_manager_rows.append({"row": r, "upc": upc, "title": title, "received": received,
+                                    "streams": streams, "tier": _cell(row, tier_i)})
         for uname, display in people:
             entry = managers.setdefault(uname, {"display": display, "items": []})
             triple = (upc, title, received)
             if triple not in entry["items"]:
                 entry["items"].append(triple)
     return managers, pending_rows, no_manager_rows
+
+
+def streams_by_upc(pending_rows):
+    """{upc: streams payload} for build_tag_card, from collect_pending's rows."""
+    return {r["upc"]: r["streams"] for r in pending_rows if r.get("streams")}
+
+
+def tier_by_upc(pending_rows):
+    """{upc: claimant tier (int)} for build_tag_card's priority sort."""
+    out = {}
+    for r in pending_rows:
+        try:
+            out[r["upc"]] = int(str(r.get("tier") or "").strip())
+        except ValueError:
+            continue
+    return out
+
+
+def _tier_rank(tier) -> int:
+    """Existing claimant-priority rule: tier 1 (major) first … unknown after
+    the known tiers, tier 4 (internal self-claim) last."""
+    if tier == 4:
+        return 5
+    return tier if isinstance(tier, int) else 3
+
+
+def priority_key(item, today: date, streams_by_upc=None, tier_by_upc=None):
+    """Sort key (ascending = more urgent) for one (upc, title, received) item.
+
+    Layered so the existing rules keep their priority and streams only break
+    ties / lift the rare very big tracks inside their urgency band:
+      1. SLA band — overdue, then due within 2 workdays, then the rest
+      2. 🔥 high-streaming first (rare, so it never crowds out the old order)
+      3. claimant tier — 1 (major) … 3 (unknown) … 4 (internal) last
+      4. Spotify streams, highest first
+      5. most days overdue first
+    """
+    upc, _title, received = item[0], item[1], item[2]
+    remaining = _sla_remaining(received, today)
+    if remaining is None:
+        band, overdue = 2, 0
+    elif remaining < 0:
+        band, overdue = 0, -remaining
+    elif remaining <= 2:
+        band, overdue = 1, 0
+    else:
+        band, overdue = 2, 0
+    now = ((streams_by_upc or {}).get(upc) or {}).get("now")
+    return (band, 0 if is_high(now) else 1, _tier_rank((tier_by_upc or {}).get(upc)), -(now or 0), -overdue)
 
 
 def _md_escape(text: str) -> str:
@@ -366,13 +440,18 @@ def _manager_label(username: str, display_name: str, region: str = None) -> str:
     return f'<at email="{username}@{MENTION_DOMAIN}">{display_name}</at>'
 
 
-def build_tag_card(managers, no_manager_rows=None, region=None):
+def build_tag_card(managers, no_manager_rows=None, region=None, streams_by_upc=None, tier_by_upc=None):
     """Build an interactive card that names each manager with their UPCs.
 
     Layout (per manager):
         @Manager Name — please provide an update on these infringement claims:
         • [UPC1](admin_url) — Title 1
         • [UPC2](admin_url) — Title 2
+
+    When ``streams_by_upc`` / ``tier_by_upc`` are given, each line ends with the
+    track's Spotify 30d streams ("🎧 1.2M 🔥") and every manager's list is sorted
+    by priority_key (SLA first, then 🔥, claimant tier, streams). Without them
+    the original sheet order is kept.
 
     Callers should pass ``region`` explicitly whenever they know it. US group
     cards intentionally render manager names as plain text (no Lark @mention).
@@ -386,8 +465,25 @@ def build_tag_card(managers, no_manager_rows=None, region=None):
 
     today = today_brt()
     no_manager_rows = no_manager_rows or []
+    streams_by_upc = streams_by_upc or {}
+    tier_by_upc = tier_by_upc or {}
+    prioritize = bool(streams_by_upc or tier_by_upc)
+
+    def ordered(items):
+        if not prioritize:
+            return items
+        return sorted(items, key=lambda it: priority_key(it, today, streams_by_upc, tier_by_upc))
 
     region = (region or _current_region()).upper()
+
+    high_upcs = {
+        upc for upc, info in streams_by_upc.items() if is_high((info or {}).get("now"))
+    } & ({it[0] for info in managers.values() for it in info["items"]}
+         | {r.get("upc") for r in no_manager_rows})
+    if high_upcs:
+        elements.insert(0, {"tag": "div", "text": {"tag": "lark_md", "content": (
+            f"🔥 **{len(high_upcs)} high-streaming claim{'s' if len(high_upcs) != 1 else ''}** "
+            "in this list — marked 🔥 below.")}})
 
     for uname, info in managers.items():
         mention = _manager_label(uname, info["display"], region)
@@ -397,10 +493,11 @@ def build_tag_card(managers, no_manager_rows=None, region=None):
                      "content": f"{mention} — please provide an update on these infringement claims:"},
         })
         upc_lines = []
-        for upc, title, received in info["items"]:
+        for upc, title, received in ordered(info["items"]):
             url = ADMIN_UPC_URL_TEMPLATE.format(upc=upc)
             sla = _format_sla_suffix(received, today)
-            upc_lines.append(f"• [{upc}]({url}) — {_md_escape(title)} — {sla}")
+            upc_lines.append(f"• [{upc}]({url}) — {_md_escape(title)} — {sla}"
+                             + (streams_suffix(streams_by_upc.get(upc)) if streams_by_upc else ""))
         elements.append({
             "tag": "div",
             "text": {"tag": "lark_md", "content": "\n".join(upc_lines)},
@@ -413,13 +510,13 @@ def build_tag_card(managers, no_manager_rows=None, region=None):
             "text": {"tag": "lark_md", "content": "**⚠️ No Manager Assigned**"},
         })
         no_manager_lines = []
-        for item in no_manager_rows:
-            upc = item.get("upc") or "N/A"
-            title = item.get("title") or "(untitled)"
-            received = item.get("received") or ""
+        no_mgr_items = ordered([(r.get("upc") or "N/A", r.get("title") or "(untitled)", r.get("received") or "")
+                                for r in no_manager_rows])
+        for upc, title, received in no_mgr_items:
             url = ADMIN_UPC_URL_TEMPLATE.format(upc=upc)
             sla = _format_sla_suffix(received, today)
-            no_manager_lines.append(f"• [{upc}]({url}) — {_md_escape(title)} — {sla}")
+            no_manager_lines.append(f"• [{upc}]({url}) — {_md_escape(title)} — {sla}"
+                                    + (streams_suffix(streams_by_upc.get(upc)) if streams_by_upc else ""))
         elements.append({
             "tag": "div",
             "text": {"tag": "lark_md", "content": "\n".join(no_manager_lines)},
@@ -491,7 +588,7 @@ def main():
     log(f"Tracker: {TRACKER_SHEET_URL}")
     log(f"Alert group: {TARGET_CHAT_ID}")
 
-    values = read_sheet_values("A:Z")
+    values = read_sheet_values(TRACKER_READ_RANGE)
     managers, pending_rows, no_manager_rows = collect_pending(values)
 
     log(f"\nPending rows: {len(pending_rows)} | Managers to tag: {len(managers)}")
@@ -507,7 +604,8 @@ def main():
         log("\n✓ Nothing pending to tag. No message posted.")
         return {"pending_rows": len(pending_rows), "managers": 0, "no_manager_rows": 0, "posted": False}
 
-    card = build_tag_card(managers, no_manager_rows)
+    card = build_tag_card(managers, no_manager_rows, streams_by_upc=streams_by_upc(pending_rows),
+                          tier_by_upc=tier_by_upc(pending_rows))
 
     if dry_run:
         log("\n[DRY-RUN] Card that WOULD be posted:")
