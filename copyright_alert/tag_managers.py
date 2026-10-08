@@ -52,7 +52,7 @@ from copyright_alert.manager_exclusions import (
     filter_manager_pairs,
 )
 from copyright_alert.upc_exclusions import is_upc_excluded
-from copyright_alert.engagement_format import is_high, parse_count, streams_info, streams_suffix
+from copyright_alert.engagement_format import importance, is_high, parse_count, streams_info, streams_suffix
 from copyright_alert.lark_auth import extract_sheet_values, sheet_values_api
 
 ADMIN_ACTION_HEADER = "Admin Action Taken"
@@ -415,8 +415,8 @@ def priority_key(item, today: date, streams_by_upc=None, tier_by_upc=None):
         band, overdue = 1, 0
     else:
         band, overdue = 2, 0
-    now = ((streams_by_upc or {}).get(upc) or {}).get("now")
-    return (band, 0 if is_high(now) else 1, _tier_rank((tier_by_upc or {}).get(upc)), -(now or 0), -overdue)
+    peak = importance((streams_by_upc or {}).get(upc))
+    return (band, 0 if is_high(peak) else 1, _tier_rank((tier_by_upc or {}).get(upc)), -(peak or 0), -overdue)
 
 
 def _md_escape(text: str) -> str:
@@ -477,7 +477,7 @@ def build_tag_card(managers, no_manager_rows=None, region=None, streams_by_upc=N
     region = (region or _current_region()).upper()
 
     high_upcs = {
-        upc for upc, info in streams_by_upc.items() if is_high((info or {}).get("now"))
+        upc for upc, info in streams_by_upc.items() if is_high(importance(info))
     } & ({it[0] for info in managers.values() for it in info["items"]}
          | {r.get("upc") for r in no_manager_rows})
     if high_upcs:

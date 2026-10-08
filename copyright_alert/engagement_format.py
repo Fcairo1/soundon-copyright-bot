@@ -69,8 +69,8 @@ def tier_badge(value) -> str:
     return ""
 
 
-def trend_text(now, baseline) -> str:
-    """"↑ 8% since claim" / "↓ 12% since claim" / "" (flat or not comparable)."""
+def trend_pct(now, baseline) -> str:
+    """"↑ 8%" / "↓ 12%" / "" (flat or not comparable)."""
     n, b = parse_count(now), parse_count(baseline)
     if n is None or b is None:
         return ""
@@ -79,7 +79,24 @@ def trend_text(now, baseline) -> str:
     pct = (n - b) / b * 100
     if abs(pct) < 1:
         return ""
-    return f"{'↑' if pct > 0 else '↓'} {abs(pct):.0f}% since claim"
+    return f"{'↑' if pct > 0 else '↓'} {abs(pct):.0f}%"
+
+
+def trend_text(now, baseline) -> str:
+    """"↑ 8% since claim" / "↓ 12% since claim" / "" (flat or not comparable)."""
+    pct = trend_pct(now, baseline)
+    return "" if not pct else pct if pct == "↑ new" else f"{pct} since claim"
+
+
+def importance(info) -> Optional[float]:
+    """Streams used for 🔥/⭐, the card restyle and sorting: the HIGHER of the
+    current figure and the at-claim snapshot. A claimed track is usually taken
+    down while the claim is open, so its 30d streams collapse (e.g. 537K at
+    claim -> 40 now) — but the claim matters because of what the track was
+    doing, so importance must not decay with the takedown."""
+    info = info or {}
+    values = [v for v in (info.get("now"), info.get("baseline")) if v is not None]
+    return max(values) if values else None
 
 
 def streams_info(now=None, baseline=None, refreshed: bool = False) -> dict:
@@ -104,18 +121,22 @@ def streams_line(info: Optional[dict]) -> str:
     current = info.get("now")
     if current is None:
         return "—"
-    parts = [f"{tier_badge(current)} **{format_compact(current)}**".strip()]
-    if info.get("refreshed"):
-        trend = trend_text(current, info.get("baseline"))
-        if trend:
-            parts.append(trend)
-    return " · ".join(parts)
+    badge = tier_badge(importance(info))
+    baseline = info.get("baseline")
+    pct = trend_pct(current, baseline) if info.get("refreshed") else ""
+    if pct and baseline is not None:
+        return f"{badge} **{format_compact(current)}** now · {format_compact(baseline)} at claim ({pct})".strip()
+    return f"{badge} **{format_compact(current)}**".strip()
 
 
 def streams_suffix(info: Optional[dict]) -> str:
     """Reminder-line suffix: " — 🎧 1.2M 🔥" (always present so managers can
     tell "unknown" from "low")."""
     info = info or {}
-    current = info.get("now")
-    badge = tier_badge(current)
-    return f" — 🎧 {format_compact(current)}" + (f" {badge}" if badge else "")
+    current, baseline = info.get("now"), info.get("baseline")
+    badge = tier_badge(importance(info))
+    if info.get("refreshed") and baseline is not None and trend_pct(current, baseline):
+        body = f"{format_compact(baseline)}→{format_compact(current)}"  # at claim → now
+    else:
+        body = format_compact(current)
+    return f" — 🎧 {body}" + (f" {badge}" if badge else "")

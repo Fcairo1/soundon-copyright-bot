@@ -51,7 +51,7 @@ def test_streams_line_only_shows_trend_after_a_real_refresh():
     snapshot_only = streams_info(now=None, baseline=1000, refreshed=False)
     assert streams_line(snapshot_only) == "**1K**"
     refreshed = streams_info(now=1500, baseline=1000, refreshed=True)
-    assert streams_line(refreshed) == "**1.5K** · ↑ 50% since claim"
+    assert streams_line(refreshed) == "**1.5K** now · 1K at claim (↑ 50%)"
     assert streams_line(streams_info()) == "—"
 
 
@@ -94,7 +94,7 @@ def test_apply_streams_replaces_instead_of_duplicating():
     apply_streams_to_card(card, streams_info(now=2000, baseline=1000, refreshed=True))
     apply_streams_to_card(card, streams_info(now=2000, baseline=1000, refreshed=True))
     texts = _streams_texts(card)
-    assert len(texts) == 1 and "2K" in texts[0] and "↑ 100% since claim" in texts[0]
+    assert len(texts) == 1 and "2K" in texts[0] and "2K** now · 1K at claim (↑ 100%)" in texts[0]
 
 
 def test_apply_streams_adds_row_to_legacy_card_without_one():
@@ -123,7 +123,7 @@ def test_reminder_line_shows_refreshed_streams_with_badge(monkeypatch):
     ])
     card = tm.build_tag_card(managers, no_mgr, region="BR", streams_by_upc=tm.streams_by_upc(pending))
     text = json.dumps(card, ensure_ascii=False)
-    assert "🎧 1.5M 🔥" in text
+    assert "🎧 50K→1.5M 🔥" in text   # at claim → now
 
 
 def test_reminder_falls_back_to_at_claim_snapshot(monkeypatch):
@@ -278,6 +278,29 @@ def test_card_restyle_is_idempotent_and_reverts_when_streams_drop():
     card = build_card(_ef(), {"album_title": "Song", "sptf_30d_str": "250000"})
     apply_streams_to_card(card, streams_info(now=300_000, baseline=250_000, refreshed=True))
     assert json.dumps(card, ensure_ascii=False).count(HIGH_BANNER_MARKER) == 1
-    apply_streams_to_card(card, streams_info(now=40_000, baseline=250_000, refreshed=True))
+    apply_streams_to_card(card, streams_info(now=40_000, baseline=60_000, refreshed=True))
     assert (card["header"]["template"], card["header"]["title"]["content"]) == CARD_HEADER_DEFAULT
     assert HIGH_BANNER_MARKER not in json.dumps(card, ensure_ascii=False)
+
+
+# --- importance = peak(at-claim, now): taken-down big tracks keep their priority ----------
+
+def test_taken_down_big_track_keeps_fire_badge_restyle_and_shows_both_numbers():
+    # Real pattern from the US tracker: 1.1M at claim, ~100 now (takedown collapses the 30d window).
+    info = streams_info(now=102, baseline=1_103_084, refreshed=True)
+    assert streams_line(info) == "🔥 **102** now · 1.1M at claim (↓ 100%)"
+    assert streams_suffix(info) == " — 🎧 1.1M→102 🔥"
+    card = build_card(_ef(), {"album_title": "Song", "sptf_30d_str": "1103084", "sptf_now": "102"})
+    assert (card["header"]["template"], card["header"]["title"]["content"]) == CARD_HEADER_HIGH
+    assert "1.1M Spotify streams (30d at claim)" in json.dumps(card, ensure_ascii=False)
+
+
+def test_priority_uses_peak_not_current_streams():
+    items = [("small", "t", "2026-08-01"), ("takendown", "t", "2026-08-01")]
+    streams = {"small": streams_info(now=5_000, baseline=5_000, refreshed=True),
+               "takendown": streams_info(now=40, baseline=537_074, refreshed=True)}
+    assert _order(items, streams)[0] == "takendown"
+
+
+def test_trend_text_new_has_no_since_claim_suffix():
+    assert trend_text(50, 0) == "↑ new"
