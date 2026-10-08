@@ -323,7 +323,7 @@ def load_failed_message_ids():
         return []
 
 
-def save_checkpoint(message_id, failed_message_ids=None):
+def save_checkpoint(message_id, failed_message_ids=None, message_date=None):
     """Persist the incremental high-water mark and the failed-retry list.
 
     ``failed_message_ids`` must be the *current* full retry list (a list of
@@ -336,8 +336,15 @@ def save_checkpoint(message_id, failed_message_ids=None):
         return
     if failed_message_ids is None:
         failed_message_ids = load_failed_message_ids()
+    # last_message_date lets a later run tell "the checkpoint message vanished"
+    # (deleted/moved) from "the backlog outgrew the fetch window". Keep the
+    # stored date while the checkpoint ID is unchanged (held or no-op runs).
+    prior = load_checkpoint_state()
+    if message_date is None and prior.get("last_message_id") == message_id:
+        message_date = prior.get("last_message_date")
     payload = {
         "last_message_id": message_id,
+        "last_message_date": message_date or None,
         "failed_message_ids": failed_message_ids or [],
         "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
@@ -435,6 +442,32 @@ def search_inbox_messages(query, *, sender=None, start_time=None, end_time=None,
     return items
 
 
+# Filled by fetch_messages_raw: per-query counts and, for any query that hit the
+# fetch cap, the date of its oldest message (= how far back that query reaches).
+LAST_FETCH_STATS = {"queries": {}, "coverage_start": None}
+
+# Set by --accept-checkpoint-gap: advance a checkpoint that cannot be found even
+# though a query was truncated. An operator decision, for a stuck legacy checkpoint.
+ACCEPT_CHECKPOINT_GAP = False
+
+
+def should_hold_checkpoint(checkpoint, reached, coverage_start, saved_date, accept_gap=ACCEPT_CHECKPOINT_GAP):
+    """True when the previous checkpoint was not reached AND mail between it and
+    the fetch window may be unscanned.
+
+    coverage_start: newest "oldest message" among queries that hit the fetch cap
+    (None when no query was truncated, i.e. the window holds everything that
+    matches). saved_date: date of the checkpoint message (None for checkpoints
+    written before it was recorded)."""
+    if not checkpoint or reached or accept_gap:
+        return False
+    if coverage_start is None:
+        return False            # nothing truncated: the checkpoint message is simply gone
+    if saved_date is not None and coverage_start <= saved_date:
+        return False            # window reaches back past the checkpoint's date
+    return True
+
+
 def fetch_messages_raw(checkpoint=None):
     """Fetch inbox messages newest-first in a SINGLE triage call.
 
@@ -494,7 +527,12 @@ def fetch_messages_raw(checkpoint=None):
             return []
 
         data = parsed.get("data") or {}
-        return parsed.get("messages") or data.get("messages") or []
+        msgs = parsed.get("messages") or data.get("messages") or []
+        _record_query_stats(query, msgs, max_fetch)
+        return msgs
+
+    LAST_FETCH_STATS["queries"] = {}
+    LAST_FETCH_STATS["coverage_start"] = None
 
     # 1. Main fetch (Infringement Claim)
     for m in _fetch_messages(TRIAGE_QUERY, is_main=True):
@@ -521,7 +559,24 @@ def fetch_messages_raw(checkpoint=None):
             f"({len(all_messages)} unique message(s) fetched).")
 
     log(f"  Fetched {len(all_messages)} total unique emails (merged).")
+    cs = LAST_FETCH_STATS["coverage_start"]
+    log("  Per-query counts: " + ", ".join(
+        f"{q!r}={c['count']}{' (HIT CAP, oldest ' + c['oldest'] + ')' if c['truncated'] else ''}"
+        for q, c in LAST_FETCH_STATS["queries"].items()) +
+        (f" · truncated queries reach back to {cs.isoformat()}" if cs else " · no query truncated"))
     return all_messages
+
+
+def _record_query_stats(query, msgs, cap):
+    dates = [d for d in (_parse_iso_datetime(m.get("date")) for m in msgs) if d]
+    oldest = min(dates) if dates else None
+    truncated = len(msgs) >= cap
+    LAST_FETCH_STATS["queries"][query] = {
+        "count": len(msgs), "truncated": truncated, "oldest": oldest.isoformat() if oldest else "?",
+    }
+    if truncated and oldest and (LAST_FETCH_STATS["coverage_start"] is None
+                                 or oldest > LAST_FETCH_STATS["coverage_start"]):
+        LAST_FETCH_STATS["coverage_start"] = oldest
 
 
 def _prefilter_skip_reason(subject, thread_id, seen_threads):
@@ -659,6 +714,9 @@ def run_scan():
     # Messages that fail this run are NOT lost: they are persisted to the
     # failed_message_ids retry list and re-processed at the start of next run.
     new_checkpoint = (messages[0].get("message_id") if messages else None) or checkpoint
+    new_checkpoint_date = (messages[0].get("date") if messages else None) or None
+    saved_state = load_checkpoint_state()
+    saved_date = _parse_iso_datetime(saved_state.get("last_message_date"))
     log(f"  Previous checkpoint: {checkpoint or '(none — first run, will process all fetched)'}")
 
     seen_threads = set()
@@ -801,11 +859,15 @@ def run_scan():
             log("     ✗ Card posting failed for this candidate — will retry next run")
             failed_entries[msg_id] = {"message_id": msg_id, "subject": subject, "date": c.get("date", "")}
 
-    if checkpoint and not summary["stopped_at_checkpoint"] and len(messages) >= TRIAGE_HARD_CAP:
-        log(f"  🚨 WARNING: previous checkpoint {checkpoint} was NOT reached even after "
-            f"fetching the {TRIAGE_HARD_CAP}-message hard cap in a single triage call. An "
-            f"unusually large backlog has accumulated; emails older than this window may still "
-            f"be unscanned. Raise TRIAGE_HARD_CAP or run a manual backfill.")
+    unreached = bool(checkpoint) and not summary["stopped_at_checkpoint"]
+    if unreached and should_hold_checkpoint(checkpoint, False, LAST_FETCH_STATS["coverage_start"],
+                                            saved_date, accept_gap=ACCEPT_CHECKPOINT_GAP):
+        log(f"  🚨 WARNING: previous checkpoint {checkpoint} was NOT reached and a query hit the "
+            f"{TRIAGE_HARD_CAP}-message cap (window reaches back only to "
+            f"{LAST_FETCH_STATS['coverage_start'].isoformat()}; checkpoint message date: "
+            f"{saved_date.isoformat() if saved_date else 'unknown — legacy checkpoint'}). "
+            f"Mail older than this window may still be unscanned. If the checkpoint message was "
+            f"deleted and you have confirmed nothing was missed, rerun with --accept-checkpoint-gap.")
         # J3: Do NOT advance the checkpoint here — hold it at its previous value.
         # We fetched the full hard cap and still never reached the old checkpoint,
         # so mail between the fetch window and the old checkpoint has NOT been
@@ -813,7 +875,14 @@ def run_scan():
         # orphan those emails (the exact 31-case bug). Keeping the old checkpoint
         # lets the next run try again to close the gap.
         new_checkpoint = checkpoint
+        new_checkpoint_date = saved_state.get("last_message_date")
         log(f"  ↩ Holding checkpoint at {checkpoint} (not advancing) so unscanned mail is not orphaned.")
+    elif unreached:
+        reason = ("--accept-checkpoint-gap was given" if ACCEPT_CHECKPOINT_GAP else
+                  "no query was truncated, so the window holds every matching message" if LAST_FETCH_STATS["coverage_start"] is None
+                  else "the fetch window reaches back past the checkpoint's date")
+        log(f"  ⚠ Previous checkpoint {checkpoint} was not found (message deleted or moved?). "
+            f"Advancing anyway: {reason}.")
 
     # G2: Attach/increment attempt counters and drop entries that have exhausted
     # their retry budget so a permanently-failing message is not retried forever.
@@ -840,7 +909,7 @@ def run_scan():
             )
         except Exception as exc:
             log(f"  ⚠ Could not DM ops about dropped retries: {exc!r}")
-    save_checkpoint(new_checkpoint, failed_message_ids=failed_list)
+    save_checkpoint(new_checkpoint, failed_message_ids=failed_list, message_date=new_checkpoint_date)
     log(f"\n  Scan summary: {json.dumps(summary, ensure_ascii=False)}")
     return summary
 
@@ -1952,6 +2021,12 @@ def _build_arg_parser():
         choices=VALID_PARTS,
         help="Skip the named workflow parts.",
     )
+    parser.add_argument(
+        "--accept-checkpoint-gap",
+        action="store_true",
+        help="Advance a checkpoint whose message can no longer be found even though a query was "
+             "truncated. Only after confirming no mail was missed (see the hold warning in the log).",
+    )
     return parser
 
 
@@ -2192,4 +2267,5 @@ if __name__ == "__main__":
     region = args.region or os.environ.get("COPYRIGHT_REGION") or None
     if region:
         region = region.strip()
+    ACCEPT_CHECKPOINT_GAP = args.accept_checkpoint_gap
     main(region, only=args.only, skip=args.skip)
