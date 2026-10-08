@@ -334,6 +334,8 @@ def labeled_value(text, *labels, default="N/A"):
     return value if value else default
 
 def fetch_email(msg_id):
+    from copyright_alert import lark_auth as _lark_auth  # local: avoid import-order surprises
+    _lark_auth.ensure_jwt_fresh("run_alert fetch_email")
     cmd = [
         "lark-cli", "mail", "+message",
         "--mailbox", MAILBOX,

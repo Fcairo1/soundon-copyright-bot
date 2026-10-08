@@ -485,26 +485,112 @@ def extract_sheet_values(payload: dict) -> list:
     return []
 
 
+# Extra places a fresher AIME JWT can show up (the platform has been seen
+# rewriting `.env` while aime_env_refresh.json stayed days stale).
+_ENV_FILE_CANDIDATES = (ROOT / "copyright_alert" / ".env", ROOT / ".env")
+
+
+def _jwts_from_env_files() -> dict:
+    found: dict = {}
+    for path in _ENV_FILE_CANDIDATES:
+        try:
+            if not path.exists():
+                continue
+            for line in path.read_text(encoding="utf-8").splitlines():
+                key, sep, value = line.strip().partition("=")
+                key = key.strip().removeprefix("export ").strip()
+                if sep and key in _JWT_ENV_KEYS:
+                    value = value.strip().strip("'\"")
+                    if value:
+                        found.setdefault(key, []).append(value)
+        except OSError:
+            continue
+    return found
+
+
 def _refresh_aime_credentials() -> int:
-    """Legacy fallback: re-load non-expired AIME JWT credentials when present."""
+    """Legacy fallback: re-load non-expired AIME JWT credentials when present.
+
+    Candidates come from aime_env_refresh.json and from JWT entries in `.env`;
+    _prefer_candidate_credential only accepts a strictly newer, non-expired one."""
     updated = 0
     try:
-        if not _ENV_REFRESH_FILE.exists():
+        candidates = []   # (source label, key, value)
+        if _ENV_REFRESH_FILE.exists():
+            with _ENV_REFRESH_FILE.open("r", encoding="utf-8") as f:
+                snapshot = json.load(f) or {}
+            if isinstance(snapshot.get("keys"), dict):
+                snapshot = snapshot.get("keys") or {}
+            candidates += [("aime_env_refresh.json", k, v) for k, v in snapshot.items()]
+        else:
             print("⚠ credential refresh: aime_env_refresh.json missing", flush=True)
-            return 0
-        with _ENV_REFRESH_FILE.open("r", encoding="utf-8") as f:
-            snapshot = json.load(f) or {}
-        if isinstance(snapshot.get("keys"), dict):
-            snapshot = snapshot.get("keys") or {}
-        for k, v in snapshot.items():
+        for k, values in _jwts_from_env_files().items():
+            candidates += [(".env", k, v) for v in values]
+        # best (latest-expiring) candidate per key wins
+        candidates.sort(key=lambda c: _jwt_expiry(c[2]) if isinstance(c[2], str) else 0, reverse=True)
+        for source, k, v in candidates:
             if _prefer_candidate_credential(os.environ.get(k, ""), v):
                 os.environ[k] = v
                 updated += 1
-            elif "JWT" in k and _jwt_expiry(v) and _jwt_expiry(v) <= int(time.time()) + 60:
-                print(f"⚠ credential refresh skipped expired {k} from aime_env_refresh.json", flush=True)
+            elif "JWT" in k and isinstance(v, str) and _jwt_expiry(v) and _jwt_expiry(v) <= int(time.time()) + 60:
+                print(f"⚠ credential refresh skipped expired {k} from {source}", flush=True)
     except Exception as exc:  # pragma: no cover
         print(f"⚠ credential refresh failed: {exc!r}", flush=True)
     return updated
+
+
+_JWT_ENV_KEYS = ("AIME_USER_CLOUD_JWT", "USER_CLOUD_JWT", "IRIS_USER_CLOUD_JWT")
+# Refresh when the in-process JWT has less than this left (a daily scan can run
+# for hours, so "not expired yet at startup" is not enough).
+JWT_REFRESH_MARGIN_SEC = int(os.getenv("LARK_JWT_REFRESH_MARGIN_SEC", "1800"))
+_JWT_PREFLIGHT_MIN_INTERVAL_SEC = 60
+_jwt_preflight_last_attempt = 0.0
+
+
+def _best_env_jwt_expiry() -> int:
+    exps = [_jwt_expiry(os.environ.get(k, "")) for k in _JWT_ENV_KEYS if os.environ.get(k)]
+    return max([e for e in exps if e], default=0)
+
+
+def ensure_jwt_fresh(context: str = "jwt-preflight", margin_sec: Optional[int] = None) -> bool:
+    """Proactively reload the AIME JWT before a mail/lark-cli step.
+
+    A daily scan can run for hours, so a JWT that was valid at process start can
+    expire mid-run; `request_json_with_auth_retry` only repairs Lark OpenAPI calls
+    *after* a failure, while the `lark-cli` subprocess steps (mail search / triage /
+    fetch) had no refresh at all. Child processes inherit os.environ, so reloading
+    it here from aime_env_refresh.json (only if that snapshot holds a strictly newer,
+    non-expired JWT — see _prefer_candidate_credential) fixes every later subprocess.
+
+    Returns True when a JWT with more than the margin left is in the environment
+    (or none is configured, i.e. OAuth-only); False when it is expiring/expired and
+    no fresher snapshot exists — in that case a (throttled) operator alert is sent.
+    Cheap when the token is healthy; refresh attempts are rate-limited so a call
+    per message can't hammer the snapshot file or the alert channel.
+    """
+    global _jwt_preflight_last_attempt
+    margin = JWT_REFRESH_MARGIN_SEC if margin_sec is None else margin_sec
+    if not any(os.environ.get(k) for k in _JWT_ENV_KEYS):
+        return True
+    now = time.time()
+    if _best_env_jwt_expiry() > now + margin:
+        return True
+    if now - _jwt_preflight_last_attempt < _JWT_PREFLIGHT_MIN_INTERVAL_SEC:
+        return _best_env_jwt_expiry() > now + 60
+    _jwt_preflight_last_attempt = now
+    updated = _refresh_aime_credentials()
+    expires_at = _best_env_jwt_expiry()
+    left = expires_at - int(time.time())
+    if left > margin:
+        print(f"↻ {context}: AIME JWT was near expiry; reloaded {updated} key(s) from snapshot "
+              f"(now valid ~{left // 60} min).", flush=True)
+        return True
+    ok = left > 60
+    print(f"⚠ {context}: AIME JWT has ~{max(left, 0) // 60} min left and no fresher snapshot is "
+          f"available (reloaded {updated} key(s)); mail steps may fail. Run refresh_lark_jwt.py "
+          f"from a fresh AIME shell.", flush=True)
+    send_stale_token_alert(context, json.dumps({"jwt_seconds_left": left, "snapshot_keys_reloaded": updated}))
+    return ok
 
 
 def send_stale_token_alert(context: str, detail: str) -> bool:

@@ -38,6 +38,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 from copyright_alert.lark_auth import extract_sheet_values, request_json_with_auth_retry, sheet_values_api
+from copyright_alert import lark_auth
 from copyright_alert.major_label_detector import MAJOR_LABEL_HEADERS
 from copyright_alert.paths import inner_skill
 
@@ -231,6 +232,9 @@ def log(msg=""):
 
 
 def section(title):
+    # Every PART starts here: make sure the AIME JWT (used by the lark-cli mail
+    # steps) hasn't expired during an earlier, possibly hours-long, part.
+    lark_auth.ensure_jwt_fresh(f"daily_workflow {title[:40]}")
     log("\n" + "=" * 72)
     log(title)
     log("=" * 72)
@@ -395,6 +399,7 @@ def search_inbox_messages(query, *, sender=None, start_time=None, end_time=None,
             filter_payload["create_time"] = create_time
 
         data = {"query": query, "filter": filter_payload}
+        lark_auth.ensure_jwt_fresh("daily_workflow mail search")
         cmd = [
             "lark-cli", "mail", "user_mailboxes", "search",
             "--params", json.dumps(params, ensure_ascii=False),
@@ -465,6 +470,7 @@ def fetch_messages_raw(checkpoint=None):
     seen_ids = set()
 
     def _fetch_messages(query, is_main=False):
+        lark_auth.ensure_jwt_fresh("daily_workflow mail triage")
         cmd = [
             "lark-cli", "mail", "+triage",
             "--mailbox", MAILBOX,
