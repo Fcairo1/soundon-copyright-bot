@@ -27,6 +27,7 @@ processes every new qualifying email within the checkpoint window.
 All output is written to both stdout and copyright_alert/logs/daily_<ts>.log.
 """
 
+import argparse
 import json
 import os
 import re
@@ -233,6 +234,40 @@ def section(title):
     log("\n" + "=" * 72)
     log(title)
     log("=" * 72)
+
+
+VALID_PARTS = (
+    "1A",
+    "1A.1",
+    "1A.2",
+    "1B",
+    "1C",
+    "1D",
+    "1D2",
+    "1E",
+    "1F",
+    "G",
+    "G2",
+    "H",
+    "I",
+    "J",
+    "K",
+)
+
+
+class PartSelector:
+    def __init__(self, only=None, skip=None):
+        self.only = set(only or [])
+        self.skip = set(skip or [])
+
+    def should_run(self, part):
+        if self.only and part not in self.only:
+            log(f"[PART {part}] skipped (--only filter)")
+            return False
+        if part in self.skip:
+            log(f"[PART {part}] skipped (--skip filter)")
+            return False
+        return True
 
 
 # ── Checkpoint ───────────────────────────────────────────────────────────────
@@ -1887,7 +1922,33 @@ def countdown_refresh(values):
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
-def main(region=None):
+def _build_arg_parser():
+    parser = argparse.ArgumentParser(
+        description="Run the SoundOn copyright daily workflow."
+    )
+    parser.add_argument(
+        "region",
+        nargs="?",
+        help="Region to run (for example: BR, SPLA, US). Defaults to COPYRIGHT_REGION or BR.",
+    )
+    parser.add_argument(
+        "--only",
+        nargs="+",
+        metavar="PART",
+        choices=VALID_PARTS,
+        help="Run only the named workflow parts.",
+    )
+    parser.add_argument(
+        "--skip",
+        nargs="+",
+        metavar="PART",
+        choices=VALID_PARTS,
+        help="Skip the named workflow parts.",
+    )
+    return parser
+
+
+def main(region=None, only=None, skip=None):
     if region:
         configure_region(region)
     log_path = _setup_logging()
@@ -1900,129 +1961,151 @@ def main(region=None):
     log(f"Ops DM owner: {RECIPIENT_OPEN_ID or RECIPIENT_EMAIL}")
     log(f"Checkpoint: {CHECKPOINT_FILE}")
 
+    selector = PartSelector(only=only, skip=skip)
+    run_part = {part: selector.should_run(part) for part in VALID_PARTS}
+
     results = {}
     previous_checkpoint_state = load_checkpoint_state()
     retraction_window_start = previous_checkpoint_state.get("updated_at")
 
     # A) Incremental scan
-    try:
-        results["scan"] = run_scan()
-    except Exception as e:
-        log(f"  ✗ Scan section error: {e!r}")
-        results["scan"] = {"error": repr(e)}
+    if run_part["1A"]:
+        try:
+            results["scan"] = run_scan()
+        except Exception as e:
+            log(f"  ✗ Scan section error: {e!r}")
+            results["scan"] = {"error": repr(e)}
 
     # Sheet sections — ensure required columns first so later passes read accurate headers.
     values = read_sheet_values("A:AF")
-    try:
-        admin_idx, admin_created = ensure_admin_action_column(values)
-        results["admin_column"] = {"index": admin_idx, "created": admin_created}
-    except Exception as e:
-        log(f"  ✗ Admin column section error: {e!r}")
-        results["admin_column"] = {"error": repr(e)}
-        admin_idx = None
-        admin_created = False
+    admin_idx = None
+    admin_created = False
+    retracted_created = False
+    spotify_columns_ok = False
+    major_label_created = []
 
-    try:
-        retracted_idx, retracted_created = ensure_retracted_column(values)
-        results["retracted_column"] = {"index": retracted_idx, "created": retracted_created}
-    except Exception as e:
-        log(f"  ✗ Retracted column section error: {e!r}")
-        results["retracted_column"] = {"error": repr(e)}
-        retracted_created = False
+    if run_part["1D"]:
+        try:
+            admin_idx, admin_created = ensure_admin_action_column(values)
+            results["admin_column"] = {"index": admin_idx, "created": admin_created}
+        except Exception as e:
+            log(f"  ✗ Admin column section error: {e!r}")
+            results["admin_column"] = {"error": repr(e)}
+            admin_idx = None
+            admin_created = False
+
+    if run_part["1A.1"]:
+        try:
+            retracted_idx, retracted_created = ensure_retracted_column(values)
+            results["retracted_column"] = {"index": retracted_idx, "created": retracted_created}
+        except Exception as e:
+            log(f"  ✗ Retracted column section error: {e!r}")
+            results["retracted_column"] = {"error": repr(e)}
+            retracted_created = False
 
     # Ensure the Spotify reply columns exist before retraction / E/F reads.
-    spotify_columns_ok = True
-    try:
-        ensure_spotify_columns(values)
-    except Exception as e:
-        spotify_columns_ok = False
-        log(f"  ✗ Spotify column section error: {e!r}")
+    if run_part["1E"] or run_part["1F"]:
+        try:
+            ensure_spotify_columns(values)
+            spotify_columns_ok = True
+        except Exception as e:
+            spotify_columns_ok = False
+            log(f"  ✗ Spotify column section error: {e!r}")
 
-    try:
-        major_label_indices, major_label_created = ensure_major_label_columns(values)
-        results["major_label_columns"] = {"indices": major_label_indices, "created": major_label_created}
-    except Exception as e:
-        major_label_created = []
-        log(f"  ✗ Major label column section error: {e!r}")
-        results["major_label_columns"] = {"error": repr(e)}
+    if run_part["1A"] or run_part["1A.1"]:
+        try:
+            major_label_indices, major_label_created = ensure_major_label_columns(values)
+            results["major_label_columns"] = {"indices": major_label_indices, "created": major_label_created}
+        except Exception as e:
+            major_label_created = []
+            log(f"  ✗ Major label column section error: {e!r}")
+            results["major_label_columns"] = {"error": repr(e)}
 
     if admin_created or retracted_created or spotify_columns_ok or major_label_created:
         values = read_sheet_values("A:AF")
 
     # A.2) Retraction detection runs after the normal new-claim pass and before
     # later metrics/DM flows so resolved retractions disappear from open counts.
-    try:
-        results["retractions"] = run_retraction_pass(
-            values,
-            since_timestamp=retraction_window_start,
-            notify=True,
-        )
-        if results["retractions"].get("updated"):
-            values = read_sheet_values("A:AF")
-    except Exception as e:
-        log(f"  ✗ Retraction section error: {e!r}")
-        results["retractions"] = {"error": repr(e)}
+    if run_part["1A.2"]:
+        try:
+            results["retractions"] = run_retraction_pass(
+                values,
+                since_timestamp=retraction_window_start,
+                notify=True,
+            )
+            if results["retractions"].get("updated"):
+                values = read_sheet_values("A:AF")
+        except Exception as e:
+            log(f"  ✗ Retraction section error: {e!r}")
+            results["retractions"] = {"error": repr(e)}
 
     # B) Remind about unselected statuses
-    try:
-        results["unselected"] = remind_unselected_status(values)
-    except Exception as e:
-        log(f"  ✗ Unselected-status section error: {e!r}")
-        results["unselected"] = {"error": repr(e)}
+    if run_part["1B"]:
+        try:
+            results["unselected"] = remind_unselected_status(values)
+        except Exception as e:
+            log(f"  ✗ Unselected-status section error: {e!r}")
+            results["unselected"] = {"error": repr(e)}
 
     # C) Action alert
-    try:
-        results["action_alert"] = action_alert(values, results.get("admin_column", {}).get("index"))
-    except Exception as e:
-        log(f"  ✗ Action-alert section error: {e!r}")
-        results["action_alert"] = {"error": repr(e)}
+    if run_part["1C"]:
+        try:
+            results["action_alert"] = action_alert(values, results.get("admin_column", {}).get("index"))
+        except Exception as e:
+            log(f"  ✗ Action-alert section error: {e!r}")
+            results["action_alert"] = {"error": repr(e)}
 
     # D) Engagement refresh — re-query Spotify + TikTok 30d numbers for every
     # open case and write them to the "(Now)" tracker columns, so the countdown
     # refresh below (and the Wed/Fri manager reminders) show current figures.
-    try:
-        section("PART 1D2 — Engagement refresh (Spotify + TikTok, open cases)")
-        results["engagement_refresh"] = engagement_tracker.run_daily_sync_safe(
-            ACTIVE_REGION, is_open=_is_open_for_ops
-        )
-    except Exception as e:
-        log(f"  ✗ Engagement-refresh section error: {e!r}")
-        results["engagement_refresh"] = {"error": repr(e)}
+    if run_part["1D2"]:
+        try:
+            section("PART 1D2 — Engagement refresh (Spotify + TikTok, open cases)")
+            results["engagement_refresh"] = engagement_tracker.run_daily_sync_safe(
+                ACTIVE_REGION, is_open=_is_open_for_ops
+            )
+        except Exception as e:
+            log(f"  ✗ Engagement-refresh section error: {e!r}")
+            results["engagement_refresh"] = {"error": repr(e)}
 
     # E) DM action cards for day-1+ open cases
-    try:
-        results["dm_action_cards"] = dm_action_cards(values)
-    except Exception as e:
-        log(f"  ✗ DM action-card section error: {e!r}")
-        results["dm_action_cards"] = {"error": repr(e)}
+    if run_part["1E"]:
+        try:
+            results["dm_action_cards"] = dm_action_cards(values)
+        except Exception as e:
+            log(f"  ✗ DM action-card section error: {e!r}")
+            results["dm_action_cards"] = {"error": repr(e)}
 
     # F) Countdown card refresh
-    try:
-        results["countdown_refresh"] = countdown_refresh(values)
-    except Exception as e:
-        log(f"  ✗ Countdown-refresh section error: {e!r}")
-        results["countdown_refresh"] = {"error": repr(e)}
+    if run_part["1F"]:
+        try:
+            results["countdown_refresh"] = countdown_refresh(values)
+        except Exception as e:
+            log(f"  ✗ Countdown-refresh section error: {e!r}")
+            results["countdown_refresh"] = {"error": repr(e)}
 
     # G) Spotify metadata/misrepresentation notices — daily re-send of the DM for
     # any notice still not Actioned. Region-agnostic and idempotent per day, so it
     # is safe to run from every region's workflow (only the first run of the day
     # re-sends a given notice).
-    try:
-        section("PART G — Spotify metadata notices (daily re-send)")
-        results["metadata_notices"] = metadata_notice.resend_unresolved_notices()
-    except Exception as e:
-        log(f"  ✗ Metadata-notice section error: {e!r}")
-        results["metadata_notices"] = {"error": repr(e)}
+    if run_part["G"]:
+        try:
+            section("PART G — Spotify metadata notices (daily re-send)")
+            results["metadata_notices"] = metadata_notice.resend_unresolved_notices()
+        except Exception as e:
+            log(f"  ✗ Metadata-notice section error: {e!r}")
+            results["metadata_notices"] = {"error": repr(e)}
 
     # G2) Spotify rights-confirmation notices — daily re-send of the DM for any
     # notice whose tracker row still has a blank Email Status. Same
     # region-agnostic, idempotent-per-day shape as G above.
-    try:
-        section("PART G2 — Spotify rights-confirmation notices (daily re-send)")
-        results["rights_confirmation_notices"] = rights_confirmation_notice.resend_unanswered_notices()
-    except Exception as e:
-        log(f"  ✗ Rights-confirmation section error: {e!r}")
-        results["rights_confirmation_notices"] = {"error": repr(e)}
+    if run_part["G2"]:
+        try:
+            section("PART G2 — Spotify rights-confirmation notices (daily re-send)")
+            results["rights_confirmation_notices"] = rights_confirmation_notice.resend_unanswered_notices()
+        except Exception as e:
+            log(f"  ✗ Rights-confirmation section error: {e!r}")
+            results["rights_confirmation_notices"] = {"error": repr(e)}
 
     # H) ACR takedown stream tracker — for ACR-tab cases marked Takedown on the
     # dashboard, refresh the original track's Aeolus streams and write the
@@ -2033,43 +2116,47 @@ def main(region=None):
     # ~weekly internally via last_checked, so once the first region's run of
     # the day refreshes the rows that are due, the other regions' runs the
     # same day find nothing due and return immediately.
-    try:
-        section("PART H — ACR takedown stream tracker")
-        results["takedown_stream_tracker"] = takedown_stream_tracker.run_daily_refresh()
-    except Exception as e:
-        log(f"  ✗ Takedown-stream-tracker section error: {e!r}")
-        results["takedown_stream_tracker"] = {"error": repr(e)}
+    if run_part["H"]:
+        try:
+            section("PART H — ACR takedown stream tracker")
+            results["takedown_stream_tracker"] = takedown_stream_tracker.run_daily_refresh()
+        except Exception as e:
+            log(f"  ✗ Takedown-stream-tracker section error: {e!r}")
+            results["takedown_stream_tracker"] = {"error": repr(e)}
 
     # I) Claim event log — backfill card_posted times (Lark message create_time)
     # and stamp admin_action_seen for ops-handling-time metrics. Region-specific:
     # each regional run syncs its own tracker. Never raises.
-    try:
-        section("PART I — Claim event log sync")
-        results["claim_event_log"] = claim_events.run_daily_sync_safe(ACTIVE_REGION)
-    except Exception as e:
-        log(f"  ✗ Claim-event-log section error: {e!r}")
-        results["claim_event_log"] = {"error": repr(e)}
+    if run_part["I"]:
+        try:
+            section("PART I — Claim event log sync")
+            results["claim_event_log"] = claim_events.run_daily_sync_safe(ACTIVE_REGION)
+        except Exception as e:
+            log(f"  ✗ Claim-event-log section error: {e!r}")
+            results["claim_event_log"] = {"error": repr(e)}
 
     # J) Marketshare per claimed UPC — backfill the frozen at-claim snapshot
     # and refresh the current figure for open (at_risk) claims. Self-contained
     # (reads its own region config), so region-specific like the scan itself.
-    try:
-        section("PART J — Marketshare sync")
-        results["marketshare"] = marketshare_tracker.run_daily_sync_safe(ACTIVE_REGION)
-    except Exception as e:
-        log(f"  ✗ Marketshare section error: {e!r}")
-        results["marketshare"] = {"error": repr(e)}
+    if run_part["J"]:
+        try:
+            section("PART J — Marketshare sync")
+            results["marketshare"] = marketshare_tracker.run_daily_sync_safe(ACTIVE_REGION)
+        except Exception as e:
+            log(f"  ✗ Marketshare section error: {e!r}")
+            results["marketshare"] = {"error": repr(e)}
 
     # K) ACR scan digest — check for a new scan cycle tab and post the summary
     # card if one appeared. Region-agnostic (the ACR sheet isn't per-region),
     # self-throttled by its own digested-tabs state, so safe to call every day
     # from every regional invocation.
-    try:
-        section("PART K — ACR scan digest")
-        results["acr_digest"] = acr_digest.run_daily_check_safe()
-    except Exception as e:
-        log(f"  ✗ ACR digest section error: {e!r}")
-        results["acr_digest"] = {"error": repr(e)}
+    if run_part["K"]:
+        try:
+            section("PART K — ACR scan digest")
+            results["acr_digest"] = acr_digest.run_daily_check_safe()
+        except Exception as e:
+            log(f"  ✗ ACR digest section error: {e!r}")
+            results["acr_digest"] = {"error": repr(e)}
 
     section("RUN COMPLETE")
     log(json.dumps(results, ensure_ascii=False, indent=2))
@@ -2079,10 +2166,9 @@ def main(region=None):
 
 
 if __name__ == "__main__":
-    # Region may be passed as argv[1] (e.g. "SPLA") or via COPYRIGHT_REGION env.
-    _region = None
-    if len(sys.argv) > 1 and sys.argv[1].strip():
-        _region = sys.argv[1].strip()
-    elif os.environ.get("COPYRIGHT_REGION"):
-        _region = os.environ["COPYRIGHT_REGION"].strip()
-    main(_region)
+    parser = _build_arg_parser()
+    args = parser.parse_args()
+    region = args.region or os.environ.get("COPYRIGHT_REGION") or None
+    if region:
+        region = region.strip()
+    main(region, only=args.only, skip=args.skip)
