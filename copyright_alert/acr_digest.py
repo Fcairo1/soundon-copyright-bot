@@ -56,6 +56,8 @@ TOP_N_COMBINED = 5
 
 DECISION_HEADER_ALIASES = ("Review Result", "Decision")
 TITLE_HEADER = "SO Song Title"
+SONG_ID_HEADER = "SO Song ID"
+DO_NOT_CLAIM_TAB_NAME = "Do Not Claim"
 REGION_HEADER = "SO Region"
 MATCHED_TITLE_HEADER = "Matched Title"
 MATCHED_ARTISTS_HEADER = "Matched Artists"
@@ -155,8 +157,50 @@ def _is_offline(status: str) -> bool:
     return status.strip().lower() == "offline"
 
 
-def build_digest_data(rows: List[List[str]]) -> Dict[str, object]:
-    """rows[0] is the header. Returns the aggregates the card needs."""
+def case_key(song_id: str, song_title: str, matched_isrc: str, matched_title: str) -> str:
+    """Same key the dashboard uses for a (SoundOn song, matched track) pair —
+    acrcloud-dashboard's caseKey()/data._case_key. Keep these in sync."""
+    return f"{(song_id or song_title or '').strip()}|{(matched_isrc or matched_title or '').strip()}"
+
+
+def read_do_not_claim_keys() -> set:
+    """Keys the team marked "Do NOT claim" on the dashboard (an append-only
+    mark/unmark event log in the "Do Not Claim" tab of the Takedown Stream
+    Tracker workbook — see acrcloud-dashboard/no_claim_data.py). A key counts
+    only if its LAST event is a mark. If the tab can't be read the digest
+    still posts (just without the exclusion) rather than going silent."""
+    try:
+        tab = next((t for t in list_tabs(TAKEDOWN_STREAMS_SHEET_URL) if t["name"].strip() == DO_NOT_CLAIM_TAB_NAME), None)
+        if not tab:
+            return set()
+        values = read_tab(TAKEDOWN_STREAMS_SHEET_URL, tab["sheet_id"])
+    except Exception as exc:
+        print(f"  ⚠ ACR digest: could not read the Do Not Claim tab ({exc!r}) — posting without that exclusion", flush=True)
+        return set()
+    if not values:
+        return set()
+    idx = _header_index(values[0])
+    key_i, action_i = idx.get("key"), idx.get("action")
+    if key_i is None or action_i is None:
+        return set()
+    marked = set()
+    for row in values[1:]:
+        key, action = _cell(row, key_i), _cell(row, action_i).lower()
+        if not key:
+            continue
+        if action == "mark":
+            marked.add(key)
+        elif action == "unmark":
+            marked.discard(key)
+    return marked
+
+
+def build_digest_data(rows: List[List[str]], excluded_keys=frozenset()) -> Dict[str, object]:
+    """rows[0] is the header. Returns the aggregates the card needs.
+
+    excluded_keys: (song, matched) pair keys marked "Do NOT claim" — left out
+    of the enforcement list (and its counts) but still counted as offline if
+    they went offline, and reported separately as do_not_claim."""
     header = rows[0]
     idx = _header_index(header)
     decision_i = _find(idx, *DECISION_HEADER_ALIASES)
@@ -164,6 +208,7 @@ def build_digest_data(rows: List[List[str]]) -> Dict[str, object]:
     m_title_i, m_artists_i = idx.get(MATCHED_TITLE_HEADER), idx.get(MATCHED_ARTISTS_HEADER)
     m_label_i, m_isrc_i = idx.get(MATCHED_LABEL_HEADER), idx.get(MATCHED_ISRC_HEADER)
     status_i, streams_i = idx.get(STATUS_HEADER), idx.get(STREAMS_HEADER)
+    song_id_i = idx.get(SONG_ID_HEADER)
 
     # "Reviewed" = every match ACRCloud surfaced in this tab, not just the
     # ones a human has classified — confirmed live on Aug3: only 299 of 2615
@@ -173,6 +218,7 @@ def build_digest_data(rows: List[List[str]]) -> Dict[str, object]:
     escalated = 0
     offline_rows: List[Dict[str, object]] = []
     by_isrc: Dict[str, Dict[str, object]] = {}   # dedupe: same infringing track can appear under several SO rows
+    do_not_claim_keys = set()
 
     for row in rows[1:]:
         decision = _cell(row, decision_i)
@@ -191,9 +237,13 @@ def build_digest_data(rows: List[List[str]]) -> Dict[str, object]:
             "label": _cell(row, m_label_i), "isrc": _cell(row, m_isrc_i),
             "streams": streams, "region": region,
         }
-        key = entry["isrc"] or (entry["title"], entry["artist"])
-        if key not in by_isrc or streams > by_isrc[key]["streams"]:
-            by_isrc[key] = entry
+        pair_key = case_key(_cell(row, song_id_i), _cell(row, title_i), entry["isrc"], entry["title"])
+        if pair_key in excluded_keys:
+            do_not_claim_keys.add(pair_key)
+        else:
+            key = entry["isrc"] or (entry["title"], entry["artist"])
+            if key not in by_isrc or streams > by_isrc[key]["streams"]:
+                by_isrc[key] = entry
 
         if _is_offline(_cell(row, status_i)):
             offline_rows.append({
@@ -228,6 +278,7 @@ def build_digest_data(rows: List[List[str]]) -> Dict[str, object]:
         "enforcement_counts": enforcement_counts,
         "offline_total": len(deduped_offline),
         "offline_top": deduped_offline[0] if deduped_offline else None,
+        "do_not_claim": len(do_not_claim_keys),
     }
 
 
@@ -302,6 +353,9 @@ def build_card(tab_name: str, data: Dict[str, object], recovery_lines: List[str]
         else "✅ **None taken offline** this cycle"
     )
     escalated_line = f"⚠️ **{data['escalated']} escalated** to account managers"
+    do_not_claim = int(data.get("do_not_claim") or 0)
+    if do_not_claim:
+        escalated_line += f"  ·  🚫 **{do_not_claim} marked do not claim**"
 
     elements = [
         {"tag": "column_set", "flex_mode": "none", "columns": [
@@ -362,7 +416,7 @@ def run_daily_check(*, dry_run: bool = False) -> Dict[str, object]:
             result["skipped_invalid"].append({"name": name, "error": "not a valid cycle tab (missing headers or empty)"})
             continue
 
-        data = build_digest_data(rows)
+        data = build_digest_data(rows, excluded_keys=read_do_not_claim_keys())
         recovery_lines = build_recovery_lines()
         card = build_card(name, data, recovery_lines)
         if not dry_run:

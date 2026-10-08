@@ -230,3 +230,79 @@ def test_build_card_omits_recovery_section_when_empty_includes_when_present():
     text_with = " ".join(e.get("text", {}).get("content", "") for e in card_with_recovery["elements"] if "text" in e)
     assert "Original-track recovery" in text_with
     assert "Track X" in text_with
+
+
+# ── "Do NOT claim" marks (set on the dashboard) ──────────────────────────────
+
+def _flagged_row(song_id, song, m_isrc, m_title, streams, status="Online"):
+    return _row(AUG3_HEADER, **{"SO Song ID": song_id, "SO Song Title": song, "SO Region": "BR",
+                                "Matched Title": m_title, "Matched ISRC": m_isrc, "Streamings": str(streams),
+                                "Status": status, "Decision": "Other Party"})
+
+
+def test_case_key_matches_the_dashboards_format():
+    # acrcloud-dashboard: (so_song_id || song) + "|" + (matched_isrc || matched_title)
+    assert ad.case_key("s1", "Song", "ISRC1", "Match") == "s1|ISRC1"
+    assert ad.case_key("", "Song", "", "Match") == "Song|Match"
+
+
+def test_marked_pair_is_left_out_of_enforcement_but_reported():
+    rows = [AUG3_HEADER, _flagged_row("s1", "Song A", "ISRC1", "Match 1", 9000),
+            _flagged_row("s2", "Song B", "ISRC2", "Match 2", 5000)]
+    data = ad.build_digest_data(rows, excluded_keys={"s1|ISRC1"})
+    assert [e["title"] for e in data["needs_enforcement"]["BR"]] == ["Match 2"]
+    assert data["flagged_total"] == 1
+    assert data["do_not_claim"] == 1
+
+
+def test_unmarked_pair_of_the_same_matched_track_still_needs_enforcement():
+    # One infringing track matched against two SoundOn songs; only one pair was
+    # vetoed — the other must still show up (exclusion happens before dedupe).
+    rows = [AUG3_HEADER, _flagged_row("s1", "Song A", "ISRC1", "Match", 9000),
+            _flagged_row("s2", "Song B", "ISRC1", "Match", 4000)]
+    data = ad.build_digest_data(rows, excluded_keys={"s1|ISRC1"})
+    assert data["flagged_total"] == 1
+    assert data["needs_enforcement"]["BR"][0]["streams"] == 4000
+
+
+def test_marked_pair_that_went_offline_still_counts_as_taken_offline():
+    rows = [AUG3_HEADER, _flagged_row("s1", "Song A", "ISRC1", "Match 1", 9000, status="Offline")]
+    data = ad.build_digest_data(rows, excluded_keys={"s1|ISRC1"})
+    assert data["flagged_total"] == 0 and data["offline_total"] == 1
+
+
+def test_no_exclusions_behaves_exactly_as_before():
+    rows = [AUG3_HEADER, _flagged_row("s1", "Song A", "ISRC1", "Match 1", 9000)]
+    data = ad.build_digest_data(rows)
+    assert data["flagged_total"] == 1 and data["do_not_claim"] == 0
+
+
+def test_card_mentions_do_not_claim_only_when_there_are_some():
+    rows = [AUG3_HEADER, _flagged_row("s1", "Song A", "ISRC1", "Match 1", 9000)]
+    with_marks = ad.build_card("Aug3", ad.build_digest_data(rows, excluded_keys={"s1|ISRC1"}), [])
+    without = ad.build_card("Aug3", ad.build_digest_data(rows), [])
+    text = lambda c: " ".join(e.get("text", {}).get("content", "") for e in c["elements"] if "text" in e)
+    assert "marked do not claim" in text(with_marks)
+    assert "do not claim" not in text(without)
+
+
+def _patch_do_not_claim_tab(monkeypatch, values):
+    monkeypatch.setattr(ad, "list_tabs", lambda url: [{"sheet_id": "x1", "name": "Sheet1"}, {"sheet_id": "nc1", "name": "Do Not Claim"}])
+    monkeypatch.setattr(ad, "read_tab", lambda url, sid: values)
+
+
+def test_read_do_not_claim_keys_uses_the_last_event_per_key(monkeypatch):
+    header = ["key", "so_song_id", "matched_isrc", "song", "matched_title", "region", "action", "reason", "marked_by", "ts"]
+    ev = lambda key, action: _row(header, key=key, action=action)
+    _patch_do_not_claim_tab(monkeypatch, [header, ev("a|1", "mark"), ev("b|2", "mark"), ev("a|1", "unmark"), ev("c|3", "mark"), ev("b|2", "unmark"), ev("b|2", "mark")])
+    assert ad.read_do_not_claim_keys() == {"b|2", "c|3"}
+
+
+def test_read_do_not_claim_keys_empty_when_tab_missing(monkeypatch):
+    monkeypatch.setattr(ad, "list_tabs", lambda url: [{"sheet_id": "x1", "name": "Sheet1"}])
+    assert ad.read_do_not_claim_keys() == set()
+
+
+def test_read_do_not_claim_keys_failure_does_not_stop_the_digest(monkeypatch):
+    monkeypatch.setattr(ad, "list_tabs", lambda url: (_ for _ in ()).throw(RuntimeError("lark down")))
+    assert ad.read_do_not_claim_keys() == set()
