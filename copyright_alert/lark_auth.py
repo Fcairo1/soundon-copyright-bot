@@ -485,23 +485,55 @@ def extract_sheet_values(payload: dict) -> list:
     return []
 
 
+# Extra places a fresher AIME JWT can show up (the platform has been seen
+# rewriting `.env` while aime_env_refresh.json stayed days stale).
+_ENV_FILE_CANDIDATES = (ROOT / "copyright_alert" / ".env", ROOT / ".env")
+
+
+def _jwts_from_env_files() -> dict:
+    found: dict = {}
+    for path in _ENV_FILE_CANDIDATES:
+        try:
+            if not path.exists():
+                continue
+            for line in path.read_text(encoding="utf-8").splitlines():
+                key, sep, value = line.strip().partition("=")
+                key = key.strip().removeprefix("export ").strip()
+                if sep and key in _JWT_ENV_KEYS:
+                    value = value.strip().strip("'\"")
+                    if value:
+                        found.setdefault(key, []).append(value)
+        except OSError:
+            continue
+    return found
+
+
 def _refresh_aime_credentials() -> int:
-    """Legacy fallback: re-load non-expired AIME JWT credentials when present."""
+    """Legacy fallback: re-load non-expired AIME JWT credentials when present.
+
+    Candidates come from aime_env_refresh.json and from JWT entries in `.env`;
+    _prefer_candidate_credential only accepts a strictly newer, non-expired one."""
     updated = 0
     try:
-        if not _ENV_REFRESH_FILE.exists():
+        candidates = []   # (source label, key, value)
+        if _ENV_REFRESH_FILE.exists():
+            with _ENV_REFRESH_FILE.open("r", encoding="utf-8") as f:
+                snapshot = json.load(f) or {}
+            if isinstance(snapshot.get("keys"), dict):
+                snapshot = snapshot.get("keys") or {}
+            candidates += [("aime_env_refresh.json", k, v) for k, v in snapshot.items()]
+        else:
             print("⚠ credential refresh: aime_env_refresh.json missing", flush=True)
-            return 0
-        with _ENV_REFRESH_FILE.open("r", encoding="utf-8") as f:
-            snapshot = json.load(f) or {}
-        if isinstance(snapshot.get("keys"), dict):
-            snapshot = snapshot.get("keys") or {}
-        for k, v in snapshot.items():
+        for k, values in _jwts_from_env_files().items():
+            candidates += [(".env", k, v) for v in values]
+        # best (latest-expiring) candidate per key wins
+        candidates.sort(key=lambda c: _jwt_expiry(c[2]) if isinstance(c[2], str) else 0, reverse=True)
+        for source, k, v in candidates:
             if _prefer_candidate_credential(os.environ.get(k, ""), v):
                 os.environ[k] = v
                 updated += 1
-            elif "JWT" in k and _jwt_expiry(v) and _jwt_expiry(v) <= int(time.time()) + 60:
-                print(f"⚠ credential refresh skipped expired {k} from aime_env_refresh.json", flush=True)
+            elif "JWT" in k and isinstance(v, str) and _jwt_expiry(v) and _jwt_expiry(v) <= int(time.time()) + 60:
+                print(f"⚠ credential refresh skipped expired {k} from {source}", flush=True)
     except Exception as exc:  # pragma: no cover
         print(f"⚠ credential refresh failed: {exc!r}", flush=True)
     return updated

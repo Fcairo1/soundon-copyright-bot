@@ -79,3 +79,25 @@ def test_every_workflow_section_runs_the_preflight(monkeypatch):
     monkeypatch.setattr(lark_auth, "ensure_jwt_fresh", lambda ctx, *a, **k: seen.append(ctx) or True)
     daily_workflow.section("PART G — Spotify metadata notices (daily re-send)")
     assert seen and seen[0].startswith("daily_workflow PART G")
+
+
+def test_reloads_fresher_token_from_dot_env_when_snapshot_is_stale(monkeypatch, tmp_path, _isolate):
+    # Real incident: snapshot expired days ago, but `.env` held a newer JWT.
+    monkeypatch.setenv("AIME_USER_CLOUD_JWT", _jwt(time.time() - 3600))
+    _snapshot(tmp_path / "aime_env_refresh.json", _jwt(time.time() - 90000))
+    dotenv = tmp_path / ".env"
+    fresh = _jwt(time.time() + 6 * 3600)
+    dotenv.write_text(f'BOT_SECRET=x\nexport AIME_USER_CLOUD_JWT="{fresh}"\n', encoding="utf-8")
+    monkeypatch.setattr(lark_auth, "_ENV_FILE_CANDIDATES", (dotenv,))
+    assert lark_auth.ensure_jwt_fresh("t") is True
+    assert os.environ["AIME_USER_CLOUD_JWT"] == fresh
+
+
+def test_dot_env_with_older_token_does_not_downgrade(monkeypatch, tmp_path, _isolate):
+    current = _jwt(time.time() + 5 * 3600)
+    monkeypatch.setenv("AIME_USER_CLOUD_JWT", current)
+    dotenv = tmp_path / ".env"
+    dotenv.write_text(f"AIME_USER_CLOUD_JWT={_jwt(time.time() + 1000)}\n", encoding="utf-8")
+    monkeypatch.setattr(lark_auth, "_ENV_FILE_CANDIDATES", (dotenv,))
+    lark_auth._refresh_aime_credentials()
+    assert os.environ["AIME_USER_CLOUD_JWT"] == current
