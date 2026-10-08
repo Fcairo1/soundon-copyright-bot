@@ -24,7 +24,9 @@ from pathlib import Path
 
 from copyright_alert.state_io import atomic_write_json, update_json_state
 from copyright_alert.major_label_detector import MAJOR_LABEL_HEADERS, classify_claimant, tracker_values
-from copyright_alert.engagement_format import format_compact, is_high, parse_count, streams_info, streams_line
+from copyright_alert.engagement_format import (
+    format_compact, importance, is_high, parse_count, streams_info, streams_line,
+)
 from copyright_alert.lark_auth import request_json_with_auth_retry
 from copyright_alert.manager_exclusions import is_manager_excluded
 from copyright_alert.upc_exclusions import is_upc_excluded
@@ -1807,15 +1809,17 @@ def _apply_high_streaming_style(card, streams):
     card whose numbers later drop doesn't stay highlighted. Idempotent."""
     elements = [el for el in card["elements"] if HIGH_BANNER_MARKER not in json.dumps(el, ensure_ascii=False)]
     header = card.get("header")
-    high = is_high((streams or {}).get("now"))
+    high = is_high(importance(streams))
     if isinstance(header, dict):
         template, title = CARD_HEADER_HIGH if high else CARD_HEADER_DEFAULT
         header["template"] = template
         header["title"] = {"tag": "plain_text", "content": title}
     if high:
+        peak = importance(streams)
+        at_claim = streams.get("now") is not None and peak > streams["now"]
         banner = {"tag": "div", "text": {"tag": "lark_md", "content": (
-            f"{HIGH_BANNER_MARKER} — {format_compact(streams['now'])} Spotify streams (30d). "
-            "Prioritize this claim.")}}
+            f"{HIGH_BANNER_MARKER} — {format_compact(peak)} Spotify streams (30d"
+            f"{' at claim' if at_claim else ''}). Prioritize this claim.")}}
         at = next((i for i, el in enumerate(elements) if "Artist(s)" in json.dumps(el, ensure_ascii=False)), 0)
         elements.insert(at, banner)
     card["elements"] = elements
