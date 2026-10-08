@@ -66,8 +66,8 @@ def test_build_digest_data_real_world_shape():
     data = ad.build_digest_data(rows)
     assert data["total_reviewed"] == 5   # every scanned row, not just decision-labeled ones
     assert data["escalated"] == 1
-    assert data["flagged_total"] == 3
-    assert set(data["needs_enforcement"].keys()) == {"US", "BR", "SPLA"}
+    assert data["flagged_total"] == 2   # the Offline one is already down, nothing left to claim
+    assert set(data["needs_enforcement"].keys()) == {"US", "SPLA"}
     assert data["needs_enforcement"]["SPLA"][0]["streams"] == 5532547
     assert data["offline_total"] == 1
     assert data["offline_top"]["matched_title"] == "M2"
@@ -78,7 +78,7 @@ def test_build_digest_data_caps_at_five_per_region_sorted_by_streams():
     for i in range(8):
         rows.append(_row(AUG3_HEADER, **{"SO Song Title": f"T{i}", "SO Region": "BR",
                                          "Matched Title": f"M{i}", "Matched ISRC": f"ISRC{i}",
-                                         "Streamings": str(1000 * (i + 1)), "Decision": "Other Party"}))
+                                         "Streamings": str(1000 * (i + 1)), "Status": "Online", "Decision": "Other Party"}))
     data = ad.build_digest_data(rows)
     assert data["enforcement_counts"]["BR"] == 8
     top = data["needs_enforcement"]["BR"]
@@ -89,9 +89,9 @@ def test_build_digest_data_caps_at_five_per_region_sorted_by_streams():
 def test_build_digest_data_dedupes_by_matched_isrc_keeping_max_streams():
     rows = [AUG3_HEADER]
     rows.append(_row(AUG3_HEADER, **{"SO Song Title": "T1", "SO Region": "US", "Matched Title": "Same",
-                                     "Matched ISRC": "SAME_ISRC", "Streamings": "100", "Decision": "Other Party"}))
+                                     "Matched ISRC": "SAME_ISRC", "Streamings": "100", "Status": "Online", "Decision": "Other Party"}))
     rows.append(_row(AUG3_HEADER, **{"SO Song Title": "T2", "SO Region": "US", "Matched Title": "Same",
-                                     "Matched ISRC": "SAME_ISRC", "Streamings": "500", "Decision": "Other Party"}))
+                                     "Matched ISRC": "SAME_ISRC", "Streamings": "500", "Status": "Online", "Decision": "Other Party"}))
     data = ad.build_digest_data(rows)
     assert data["flagged_total"] == 1
     assert data["needs_enforcement"]["US"][0]["streams"] == 500
@@ -101,7 +101,7 @@ def test_build_digest_data_no_flagged_cases():
     rows = [AUG3_HEADER, _row(AUG3_HEADER, **{"SO Song Title": "T1", "Decision": "No Infringement"})]
     data = ad.build_digest_data(rows)
     assert data["flagged_total"] == 0 and data["needs_enforcement"] == {}
-    assert "None flagged" in ad._enforcement_section_md(data)
+    assert "Nothing to claim" in ad._enforcement_section_md(data)
 
 
 def test_total_reviewed_counts_undecided_rows_too():
@@ -420,3 +420,41 @@ def test_always_td_bottom_line_shows_requested_split_when_known():
     text = _card_text(ad.build_card("Aug19", data, [], waiting=dict(WAITING, always_td_open=2)))
     assert "3 always take down**: 1 requested, 2 to request" in text
     assert "to request (ops)" in _card_text(ad.build_card("Aug19", data, []))
+
+
+# ── Everything counts (all tabs), and "to claim" means Online + not filed yet ──
+
+def test_only_online_cases_not_yet_requested_are_to_claim():
+    rows = [AUG3_HEADER,
+            _flagged_row("s1", "A", "I1", "M1", 900),
+            _flagged_row("s2", "B", "I2", "M2", 800, status=""),          # not checked yet
+            _flagged_row("s3", "C", "I3", "M3", 700, status="Offline"),   # already down
+            _flagged_row("s4", "D", "I4", "M4", 600)]                     # already filed
+    data = ad.build_digest_data(rows, requested_keys={"s4|I4"})
+    assert data["flagged_total"] == 1 and data["offline_total"] == 1
+
+
+def test_merge_keeps_one_row_per_case_prefers_decided_then_newest_and_drops_padding():
+    tab_a = [AUG3_HEADER, _flagged_row("s1", "A", "I1", "M1", 900), _flagged_row("s2", "B", "I2", "M2", 800),
+             [""] * len(AUG3_HEADER)]                                            # padding row
+    undecided = _flagged_row("s1", "A", "I1", "M1", 900)
+    undecided[-1] = ""                                                           # same case rescanned, no decision
+    tab_b = [AUG3_HEADER, undecided, _flagged_row("s3", "C", "I3", "M3", 100)]
+    merged = ad.merge_cycle_rows([tab_a, tab_b])
+    assert len(merged) - 1 == 3                                                  # s1 once, s2, s3; padding dropped
+    data = ad.build_digest_data(merged)
+    assert data["flagged_total"] == 3 and data["total_reviewed"] == 3            # s1 keeps tab A's decision
+
+
+def test_merge_handles_tabs_with_different_column_layouts():
+    merged = ad.merge_cycle_rows([[AUG3_HEADER, _flagged_row("s1", "A", "I1", "M1", 900)],
+                                  [AUG19_HEADER, _td_row("s9", "I9", "111", 500)]])
+    assert ad.build_digest_data(merged, always_td_ids=frozenset({"111"}))["always_td_total"] == 1
+    assert ad.build_digest_data(merged)["flagged_total"] == 2
+
+
+def test_card_says_it_counts_every_cycle():
+    text = _card_text(ad.build_card("Sep22", ad.build_digest_data([AUG3_HEADER]), []))
+    assert "Counts every scan cycle" in text and "latest scan **Sep22**" in text
+    card = ad.build_card("Sep22", ad.build_digest_data([AUG3_HEADER]), [])
+    assert card["header"]["title"]["content"].endswith("all cycles")

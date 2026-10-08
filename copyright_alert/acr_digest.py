@@ -64,6 +64,9 @@ MATCHED_ARTISTS_HEADER = "Matched Artists"
 MATCHED_LABEL_HEADER = "Matched Label"
 MATCHED_ISRC_HEADER = "Matched ISRC"
 STATUS_HEADER = "Status"
+USER_ID_HEADER = "SO User ID"
+OPERATOR_HEADER = "operation_manager_list"
+MERGED_DECISION_HEADER = "Decision"
 STREAMS_HEADER = "Streamings"   # NOTE: distinct from "SO Streamings" (SoundOn's own track)
 
 
@@ -267,12 +270,61 @@ def read_cycle_tab(sheet_url: str, sheet_id: str) -> List[List[str]]:
     return apply_status_overrides(read_tab(sheet_url, sheet_id), read_status_overrides())
 
 
-def build_digest_data(rows: List[List[str]], excluded_keys=frozenset(), always_td_ids=frozenset()) -> Dict[str, object]:
+MERGED_COLUMNS = [TITLE_HEADER, SONG_ID_HEADER, REGION_HEADER, MATCHED_TITLE_HEADER, MATCHED_ARTISTS_HEADER,
+                  MATCHED_LABEL_HEADER, MATCHED_ISRC_HEADER, STATUS_HEADER, STREAMS_HEADER, USER_ID_HEADER,
+                  OPERATOR_HEADER, MERGED_DECISION_HEADER]
+
+
+def merge_cycle_rows(tab_rows: List[List[List[str]]]) -> List[List[str]]:
+    """One table out of every scan tab (oldest first), so the digest counts
+    EVERYTHING instead of one cycle. Tabs have different column layouts, so each
+    row is rebuilt on a fixed set of columns. A (song, matched track) pair that
+    shows up in several tabs is kept once: the row an analyst already decided
+    on wins, and among those the newest tab. Padding rows with no song and no
+    track are dropped, so "Reviewed" is a count of real cases."""
+    best: Dict[str, List[str]] = {}
+    for rows in tab_rows:
+        if not rows:
+            continue
+        idx = _header_index(rows[0])
+        cols = [_find(idx, *DECISION_HEADER_ALIASES) if c == MERGED_DECISION_HEADER else idx.get(c) for c in MERGED_COLUMNS]
+        for raw in rows[1:]:
+            row = [_cell(raw, i) for i in cols]
+            get = lambda name: row[MERGED_COLUMNS.index(name)]
+            key = case_key(get(SONG_ID_HEADER), get(TITLE_HEADER), get(MATCHED_ISRC_HEADER), get(MATCHED_TITLE_HEADER))
+            if key == "|":
+                continue
+            current = best.get(key)
+            if current is not None and current[-1] and not row[-1]:
+                continue
+            best[key] = row
+    return [list(MERGED_COLUMNS)] + list(best.values())
+
+
+def read_all_cycles() -> List[List[str]]:
+    """Merged rows of every valid scan tab in the ACR workbook."""
+    tab_rows = []
+    for tab in list_tabs(ACR_SHEET_URL):
+        try:
+            rows = read_cycle_tab(ACR_SHEET_URL, tab["sheet_id"])
+        except Exception as exc:
+            print(f"  ⚠ ACR digest: could not read tab {tab['name']} ({exc!r}) — leaving it out", flush=True)
+            continue
+        if rows and is_valid_cycle_tab(_header_index(rows[0])):
+            tab_rows.append(rows)
+    return merge_cycle_rows(tab_rows)
+
+
+def build_digest_data(rows: List[List[str]], excluded_keys=frozenset(), always_td_ids=frozenset(),
+                      requested_keys=frozenset()) -> Dict[str, object]:
     """rows[0] is the header. Returns the aggregates the card needs.
 
     excluded_keys: (song, matched) pair keys marked "Do NOT claim" — left out
     of the enforcement list (and its counts) but still counted as offline if
     they went offline, and reported separately as do_not_claim.
+    requested_keys: pairs already filed in the Takedown Stream Tracker — not
+    "to claim" any more. Only Online cases are to claim (same rule as the
+    dashboard's waiting list); offline ones count as taken offline.
     always_td_ids: SoundOn user IDs whose Other Party cases are always taken
     down — those entries are flagged "always_td" (shown with ⚡) and counted
     in always_td_total."""
@@ -284,7 +336,7 @@ def build_digest_data(rows: List[List[str]], excluded_keys=frozenset(), always_t
     m_label_i, m_isrc_i = idx.get(MATCHED_LABEL_HEADER), idx.get(MATCHED_ISRC_HEADER)
     status_i, streams_i = idx.get(STATUS_HEADER), idx.get(STREAMS_HEADER)
     song_id_i = idx.get(SONG_ID_HEADER)
-    user_i = idx.get("SO User ID")
+    user_i = idx.get(USER_ID_HEADER)
 
     # "Reviewed" = every match ACRCloud surfaced in this tab, not just the
     # ones a human has classified — confirmed live on Aug3: only 299 of 2615
@@ -315,16 +367,18 @@ def build_digest_data(rows: List[List[str]], excluded_keys=frozenset(), always_t
             "always_td": bool(always_td_ids) and re.sub(r"\D", "", _cell(row, user_i)) in always_td_ids,
         }
         pair_key = case_key(_cell(row, song_id_i), _cell(row, title_i), entry["isrc"], entry["title"])
-        if pair_key in excluded_keys:
-            do_not_claim_keys.add(pair_key)
-        else:
-            key = entry["isrc"] or (entry["title"], entry["artist"])
-            if key in by_isrc and by_isrc[key]["always_td"]:
-                entry["always_td"] = True
-            if key not in by_isrc or streams > by_isrc[key]["streams"]:
-                by_isrc[key] = entry
-            elif entry["always_td"]:
-                by_isrc[key]["always_td"] = True
+        status = _cell(row, status_i)
+        if status.strip().lower() == "online" and pair_key not in requested_keys:
+            if pair_key in excluded_keys:
+                do_not_claim_keys.add(pair_key)
+            else:
+                key = entry["isrc"] or (entry["title"], entry["artist"])
+                if key in by_isrc and by_isrc[key]["always_td"]:
+                    entry["always_td"] = True
+                if key not in by_isrc or streams > by_isrc[key]["streams"]:
+                    by_isrc[key] = entry
+                elif entry["always_td"]:
+                    by_isrc[key]["always_td"] = True
 
         if _is_offline(_cell(row, status_i)):
             offline_rows.append({
@@ -413,7 +467,7 @@ def _enforcement_section_md(data: Dict[str, object]) -> str:
     Lark — looks broken, not "tap to open") and this simpler flat ranking."""
     top = _combined_top_n(data)
     if not top:
-        return "**🚩 Top enforcement targets**\nNone flagged this cycle."
+        return "**🚩 Top enforcement targets**\nNothing to claim right now."
     lines = ["**🚩 Top enforcement targets**"]
     for i, e in enumerate(top, start=1):
         flag = REGION_FLAG.get(e["region"], "")
@@ -467,7 +521,7 @@ def _waiting_elements(waiting: Dict[str, object]) -> List[dict]:
     return elements
 
 
-def build_card(tab_name: str, data: Dict[str, object], recovery_lines: List[str],
+def build_card(latest_scan: str, data: Dict[str, object], recovery_lines: List[str],
                waiting: Optional[Dict[str, object]] = None) -> dict:
     """waiting (optional, from claim_window.waiting_summary) adds the "Waiting
     on managers" block and, with waiting["weekly"], the Monday re-post variant.
@@ -484,8 +538,8 @@ def build_card(tab_name: str, data: Dict[str, object], recovery_lines: List[str]
         else:
             bottom.append(f"⚡ **{always_td} always take down**: {always_td - open_} requested, {open_} to request")
     bottom.append(
-        f"✅ **{data['offline_total']} taken offline** this cycle" if data["offline_total"]
-        else "✅ **None taken offline** this cycle"
+        f"✅ **{data['offline_total']} taken offline**" if data["offline_total"]
+        else "✅ **None taken offline**"
     )
     if not weekly:
         bottom.append(f"⚠️ **{data['escalated']} escalated** to account managers")
@@ -493,6 +547,8 @@ def build_card(tab_name: str, data: Dict[str, object], recovery_lines: List[str]
         bottom.append(f"🚫 **{do_not_claim} marked do not claim**")
 
     elements: List[dict] = []
+    scope = "Counts every scan cycle" + (f" · latest scan **{latest_scan}**" if latest_scan else "")
+    elements.append({"tag": "div", "text": {"tag": "lark_md", "content": scope}})
     if weekly:
         left = waiting.get("days_left")
         left_txt = f"{left} workday{'s' if left != 1 else ''} left" if isinstance(left, int) and left >= 0 else "window open"
@@ -534,7 +590,7 @@ def build_card(tab_name: str, data: Dict[str, object], recovery_lines: List[str]
         "config": {"wide_screen_mode": True},
         "header": {
             "template": "red",
-            "title": {"tag": "plain_text", "content": f"🛡️ ACRCloud scan digest — {tab_name} cycle"},
+            "title": {"tag": "plain_text", "content": "🛡️ ACRCloud scan digest — all cycles"},
         },
         "elements": elements,
     }
@@ -552,12 +608,30 @@ def _register_claim_window(cycle: str) -> None:
               f"run `python3 -m copyright_alert.claim_window --register \"{cycle}\"`", flush=True)
 
 
+def build_all_cycles_card(latest_scan: str, *, weekly: bool = False, today=None):
+    """(card, data) for everything in the ACR workbook. Claim-window extras are
+    optional: if they can't be read the plain digest still posts."""
+    rows = read_all_cycles()
+    inputs = {"no_claim": read_do_not_claim_keys(), "requested": set(), "accounts": set()}
+    waiting = None
+    try:
+        from copyright_alert import claim_window
+        inputs = claim_window.read_inputs()
+        waiting = claim_window.waiting_summary(rows, inputs, posted=claim_window.today_brt(), today=today, weekly=weekly)
+    except Exception as exc:  # the claim extras must never stop the digest
+        print(f"  ⚠ ACR digest: claim-window extras unavailable ({exc!r}) — posting the plain digest", flush=True)
+    data = build_digest_data(rows, excluded_keys=inputs["no_claim"], always_td_ids=frozenset(inputs["accounts"]),
+                             requested_keys=frozenset(inputs["requested"]))
+    return build_card(latest_scan, data, build_recovery_lines(), waiting=waiting), data
+
+
 def run_daily_check(*, dry_run: bool = False) -> Dict[str, object]:
     state = _load_state()
     digested = set(state.get("digested_tabs") or [])
     tabs = list_tabs(ACR_SHEET_URL)
     result = {"tabs_seen": [t["name"] for t in tabs], "posted": [], "skipped_invalid": [], "already_digested": []}
 
+    new_tabs = []
     for tab in tabs:
         name = tab["name"]
         if name in digested:
@@ -571,24 +645,18 @@ def run_daily_check(*, dry_run: bool = False) -> Dict[str, object]:
         if not rows or not is_valid_cycle_tab(_header_index(rows[0])):
             result["skipped_invalid"].append({"name": name, "error": "not a valid cycle tab (missing headers or empty)"})
             continue
+        new_tabs.append(name)
 
-        always_td_ids, waiting = frozenset(), None
-        try:
-            from copyright_alert import claim_window
-            inputs = claim_window.read_inputs()
-            always_td_ids = frozenset(inputs["accounts"])
-            waiting = claim_window.waiting_summary(rows, inputs, posted=claim_window.today_brt())
-        except Exception as exc:  # the claim extras must never stop the digest
-            print(f"  ⚠ ACR digest: claim-window extras unavailable ({exc!r}) — posting the plain digest", flush=True)
-        data = build_digest_data(rows, excluded_keys=read_do_not_claim_keys(), always_td_ids=always_td_ids)
-        recovery_lines = build_recovery_lines()
-        card = build_card(name, data, recovery_lines, waiting=waiting)
+    if new_tabs:
+        # One digest for everything, however many tabs appeared since last time.
+        latest = new_tabs[-1]
+        card, data = build_all_cycles_card(latest)
         if not dry_run:
-            ra.post_card(card, chat_id=CONTENT_SAFETY_CHAT_ID, context=f"acr_digest:{name}")
-        digested.add(name)
-        result["posted"].append({"name": name, "flagged_total": data["flagged_total"], "escalated": data["escalated"]})
+            ra.post_card(card, chat_id=CONTENT_SAFETY_CHAT_ID, context=f"acr_digest:{latest}")
+        digested.update(new_tabs)
+        result["posted"].append({"name": latest, "tabs": new_tabs, "flagged_total": data["flagged_total"], "escalated": data["escalated"]})
         if not dry_run:
-            _register_claim_window(name)
+            _register_claim_window(latest)
 
     if not dry_run:
         _save_state({"digested_tabs": sorted(digested)})
@@ -610,7 +678,20 @@ def main() -> int:
 
     parser = argparse.ArgumentParser(description="Check for a new ACR scan cycle and post the digest")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--preview", action="store_true",
+                        help="build the digest from ALL tabs now; posts nothing unless --chat is given, "
+                             "and never registers a claim window or marks a cycle as digested")
+    parser.add_argument("--weekly", action="store_true", help="with --preview: the Monday reminder variant")
+    parser.add_argument("--chat", metavar="CHAT_ID", help="with --preview: send the card to this chat (e.g. a test chat)")
     args = parser.parse_args()
+    if args.preview:
+        tabs = [t["name"] for t in list_tabs(ACR_SHEET_URL)]
+        card, data = build_all_cycles_card(tabs[-1] if tabs else "", weekly=args.weekly)
+        if args.chat:
+            ra.post_card(card, chat_id=args.chat, context="acr_digest:preview")
+        print(json.dumps({"sent_to": args.chat, "flagged_total": data["flagged_total"], "reviewed": data["total_reviewed"],
+                          "card": None if args.chat else card}, ensure_ascii=False, indent=2))
+        return 0
     print(json.dumps(run_daily_check(dry_run=args.dry_run), ensure_ascii=False, indent=2))
     return 0
 

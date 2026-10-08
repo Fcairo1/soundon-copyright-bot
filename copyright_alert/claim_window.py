@@ -51,8 +51,8 @@ ACCOUNTS_TAB = "Always TD Accounts"
 WINDOW_COLUMNS = ["cycle", "posted_date", "deadline_date", "alarmed_at", "registered_at"]
 WINDOW_WORKDAYS = 5
 REGIONS = ad.REGION_ORDER
-USER_ID_HEADER = "SO User ID"
-OPERATOR_HEADER = "operation_manager_list"
+USER_ID_HEADER = ad.USER_ID_HEADER
+OPERATOR_HEADER = ad.OPERATOR_HEADER
 BRT = timezone(timedelta(hours=-3))
 
 
@@ -303,17 +303,12 @@ def run_daily_alarm(*, today: Optional[date] = None, dry_run: bool = False) -> D
 
     no_claim, requested = _key_sets()
     accounts = set(parse_account_ids(_read_grid(WORKBOOK_URL, _tab_id(WORKBOOK_URL, ACCOUNTS_TAB), "A2:A500"))) if _tab_id(WORKBOOK_URL, ACCOUNTS_TAB) else set()
-    tabs = {t["name"].strip().lower(): t for t in ad.list_tabs(ad.ACR_SHEET_URL)}
+    rows = ad.read_all_cycles()   # everything still open, not just the window's own tab
 
     for w in due:
         cycle = str(w["cycle"]).strip()
-        tab = tabs.get(cycle.lower())
-        if not tab:
-            result["skipped"].append({"cycle": cycle, "reason": "scan tab not found"})
-            continue
-        rows = ad.read_cycle_tab(ad.ACR_SHEET_URL, tab["sheet_id"])
-        if not rows or not ad.is_valid_cycle_tab(ad._header_index(rows[0])):
-            result["skipped"].append({"cycle": cycle, "reason": "scan tab unreadable"})
+        if len(rows) < 2:
+            result["skipped"].append({"cycle": cycle, "reason": "no scan data readable"})
             continue
         per_region = summarize_cycle(rows, no_claim_keys=no_claim, requested_keys=requested, always_td_ids=accounts)
         done = _alarmed_regions(w["alarmed_at"])
@@ -364,7 +359,7 @@ def run_weekly_reminders(*, today: Optional[date] = None, dry_run: bool = False)
     if today.weekday() != 0:
         return result
     state = _load_weekly_state()
-    tabs = None
+    rows = None
     inputs = None
     for w in read_windows():
         cycle = str(w["cycle"]).strip()
@@ -374,18 +369,17 @@ def run_weekly_reminders(*, today: Optional[date] = None, dry_run: bool = False)
         if state.get(cycle) == today.isoformat():
             result["skipped"].append({"cycle": cycle, "reason": "already posted today"})
             continue
-        tabs = tabs if tabs is not None else {t["name"].strip().lower(): t for t in ad.list_tabs(ad.ACR_SHEET_URL)}
-        tab = tabs.get(cycle.lower())
-        rows = ad.read_cycle_tab(ad.ACR_SHEET_URL, tab["sheet_id"]) if tab else None
-        if not rows or not ad.is_valid_cycle_tab(ad._header_index(rows[0])):
-            result["skipped"].append({"cycle": cycle, "reason": "scan tab not found or unreadable"})
+        rows = rows if rows is not None else ad.read_all_cycles()
+        if len(rows) < 2:
+            result["skipped"].append({"cycle": cycle, "reason": "no scan data readable"})
             continue
         inputs = inputs or read_inputs()
         waiting = waiting_summary(rows, inputs, posted=posted, today=today, weekly=True)
         if not waiting["managers"]:
             result["skipped"].append({"cycle": cycle, "reason": "no manager has cases pending"})
             continue
-        data = ad.build_digest_data(rows, excluded_keys=inputs["no_claim"], always_td_ids=inputs["accounts"])
+        data = ad.build_digest_data(rows, excluded_keys=inputs["no_claim"], always_td_ids=inputs["accounts"],
+                                    requested_keys=inputs["requested"])
         card = ad.build_card(cycle, data, [], waiting=waiting)
         if dry_run:
             result["posted"].append({"cycle": cycle, "managers": len(waiting["managers"]), "dry_run": True})
