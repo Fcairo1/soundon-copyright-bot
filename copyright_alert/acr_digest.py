@@ -396,6 +396,18 @@ def build_card(tab_name: str, data: Dict[str, object], recovery_lines: List[str]
     }
 
 
+def _register_claim_window(cycle: str) -> None:
+    """Start the managers' 5-workday window for this cycle. Never lets a
+    registry hiccup undo a digest that already posted."""
+    try:
+        from copyright_alert import claim_window
+        res = claim_window.register_window(cycle)
+        print(f"  ✓ Claim window for {cycle}: {json.dumps(res, ensure_ascii=False)}", flush=True)
+    except Exception as exc:
+        print(f"  ⚠ Could not register the claim window for {cycle} ({exc!r}) — "
+              f"run `python3 -m copyright_alert.claim_window --register \"{cycle}\"`", flush=True)
+
+
 def run_daily_check(*, dry_run: bool = False) -> Dict[str, object]:
     state = _load_state()
     digested = set(state.get("digested_tabs") or [])
@@ -423,6 +435,8 @@ def run_daily_check(*, dry_run: bool = False) -> Dict[str, object]:
             ra.post_card(card, chat_id=CONTENT_SAFETY_CHAT_ID, context=f"acr_digest:{name}")
         digested.add(name)
         result["posted"].append({"name": name, "flagged_total": data["flagged_total"], "escalated": data["escalated"]})
+        if not dry_run:
+            _register_claim_window(name)
 
     if not dry_run:
         _save_state({"digested_tabs": sorted(digested)})

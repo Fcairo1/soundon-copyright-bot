@@ -306,3 +306,32 @@ def test_read_do_not_claim_keys_empty_when_tab_missing(monkeypatch):
 def test_read_do_not_claim_keys_failure_does_not_stop_the_digest(monkeypatch):
     monkeypatch.setattr(ad, "list_tabs", lambda url: (_ for _ in ()).throw(RuntimeError("lark down")))
     assert ad.read_do_not_claim_keys() == set()
+
+
+def _one_tab_digest(monkeypatch, tmp_path):
+    monkeypatch.setattr(ad, "DIGEST_STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(ad, "list_tabs", lambda url: [{"sheet_id": "s1", "name": "Aug3"}])
+    monkeypatch.setattr(ad, "read_tab", lambda url, sid: [AUG3_HEADER, _row(AUG3_HEADER, **{
+        "SO Song Title": "T1", "SO Region": "BR", "Matched Title": "M1", "Matched ISRC": "I1",
+        "Streamings": "1000", "Decision": "Other Party"})])
+    monkeypatch.setattr(ad, "build_recovery_lines", lambda: [])
+    monkeypatch.setattr(ad, "read_do_not_claim_keys", lambda: set())
+    monkeypatch.setattr(ad.ra, "post_card", lambda card, **k: None)
+
+
+def test_posted_digest_registers_claim_window_once_not_on_dry_run(monkeypatch, tmp_path):
+    _one_tab_digest(monkeypatch, tmp_path)
+    registered = []
+    monkeypatch.setattr(ad, "_register_claim_window", lambda cycle: registered.append(cycle))
+    ad.run_daily_check(dry_run=True)
+    assert registered == []
+    ad.run_daily_check()
+    ad.run_daily_check()   # already digested -> no second registration
+    assert registered == ["Aug3"]
+
+
+def test_claim_window_failure_does_not_break_digest(monkeypatch, tmp_path):
+    _one_tab_digest(monkeypatch, tmp_path)   # conftest blocks live Lark -> registration raises
+    result = ad.run_daily_check()
+    assert [p["name"] for p in result["posted"]] == ["Aug3"]
+    assert (tmp_path / "state.json").exists()

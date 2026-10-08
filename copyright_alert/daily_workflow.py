@@ -256,6 +256,7 @@ VALID_PARTS = (
     "I",
     "J",
     "K",
+    "L",
 )
 
 
@@ -2163,6 +2164,20 @@ def main(region=None, only=None, skip=None):
         except Exception as e:
             log(f"  ✗ ACR digest section error: {e!r}")
             results["acr_digest"] = {"error": repr(e)}
+
+    # L) Claim workflow — mirror the always-take-down account list for the
+    # dashboard, and send the day-5 "claim window closed" alarm to each region's
+    # ops owner once a cycle's 5 workdays are over. Each job is self-guarded and
+    # the alarm is once per cycle+region, so every regional run can call it.
+    if run_part["L"]:
+        try:
+            section("PART L — Claim window (always-TD sync + day-5 alarm)")
+            from copyright_alert import claim_window
+            results["claim_window"] = claim_window.run_daily_jobs()
+            log(f"  claim window: {json.dumps(results['claim_window'], ensure_ascii=False, default=str)}")
+        except Exception as e:
+            log(f"  ✗ Claim window section error: {e!r}")
+            results["claim_window"] = {"error": repr(e)}
 
     section("RUN COMPLETE")
     log(json.dumps(results, ensure_ascii=False, indent=2))
