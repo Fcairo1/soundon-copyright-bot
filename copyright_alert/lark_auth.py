@@ -507,6 +507,60 @@ def _refresh_aime_credentials() -> int:
     return updated
 
 
+_JWT_ENV_KEYS = ("AIME_USER_CLOUD_JWT", "USER_CLOUD_JWT", "IRIS_USER_CLOUD_JWT")
+# Refresh when the in-process JWT has less than this left (a daily scan can run
+# for hours, so "not expired yet at startup" is not enough).
+JWT_REFRESH_MARGIN_SEC = int(os.getenv("LARK_JWT_REFRESH_MARGIN_SEC", "1800"))
+_JWT_PREFLIGHT_MIN_INTERVAL_SEC = 60
+_jwt_preflight_last_attempt = 0.0
+
+
+def _best_env_jwt_expiry() -> int:
+    exps = [_jwt_expiry(os.environ.get(k, "")) for k in _JWT_ENV_KEYS if os.environ.get(k)]
+    return max([e for e in exps if e], default=0)
+
+
+def ensure_jwt_fresh(context: str = "jwt-preflight", margin_sec: Optional[int] = None) -> bool:
+    """Proactively reload the AIME JWT before a mail/lark-cli step.
+
+    A daily scan can run for hours, so a JWT that was valid at process start can
+    expire mid-run; `request_json_with_auth_retry` only repairs Lark OpenAPI calls
+    *after* a failure, while the `lark-cli` subprocess steps (mail search / triage /
+    fetch) had no refresh at all. Child processes inherit os.environ, so reloading
+    it here from aime_env_refresh.json (only if that snapshot holds a strictly newer,
+    non-expired JWT — see _prefer_candidate_credential) fixes every later subprocess.
+
+    Returns True when a JWT with more than the margin left is in the environment
+    (or none is configured, i.e. OAuth-only); False when it is expiring/expired and
+    no fresher snapshot exists — in that case a (throttled) operator alert is sent.
+    Cheap when the token is healthy; refresh attempts are rate-limited so a call
+    per message can't hammer the snapshot file or the alert channel.
+    """
+    global _jwt_preflight_last_attempt
+    margin = JWT_REFRESH_MARGIN_SEC if margin_sec is None else margin_sec
+    if not any(os.environ.get(k) for k in _JWT_ENV_KEYS):
+        return True
+    now = time.time()
+    if _best_env_jwt_expiry() > now + margin:
+        return True
+    if now - _jwt_preflight_last_attempt < _JWT_PREFLIGHT_MIN_INTERVAL_SEC:
+        return _best_env_jwt_expiry() > now + 60
+    _jwt_preflight_last_attempt = now
+    updated = _refresh_aime_credentials()
+    expires_at = _best_env_jwt_expiry()
+    left = expires_at - int(time.time())
+    if left > margin:
+        print(f"↻ {context}: AIME JWT was near expiry; reloaded {updated} key(s) from snapshot "
+              f"(now valid ~{left // 60} min).", flush=True)
+        return True
+    ok = left > 60
+    print(f"⚠ {context}: AIME JWT has ~{max(left, 0) // 60} min left and no fresher snapshot is "
+          f"available (reloaded {updated} key(s)); mail steps may fail. Run refresh_lark_jwt.py "
+          f"from a fresh AIME shell.", flush=True)
+    send_stale_token_alert(context, json.dumps({"jwt_seconds_left": left, "snapshot_keys_reloaded": updated}))
+    return ok
+
+
 def send_stale_token_alert(context: str, detail: str) -> bool:
     """Best-effort operator alert when auth still fails after one refresh retry."""
     # I4: persistent, cross-process throttle FIRST. Keyed by context only (not the
