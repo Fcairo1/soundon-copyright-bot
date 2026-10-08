@@ -195,6 +195,78 @@ def read_do_not_claim_keys() -> set:
     return marked
 
 
+STATUS_CHANGES_TAB_NAME = "Status Changes"
+
+
+def _norm_status(value: str) -> str:
+    v = (value or "").strip().lower()
+    return v.capitalize() if v in ("online", "offline") else ""
+
+
+def read_status_overrides() -> Dict[str, Dict[str, str]]:
+    """Online/Offline corrections made on the dashboard (an append-only log in the
+    "Status Changes" tab of the Takedown Stream Tracker workbook — see
+    acrcloud-dashboard/status_data.py). Latest change per case key wins. Fails
+    open: if the tab can't be read the sheet's own Status is used."""
+    try:
+        tab = next((t for t in list_tabs(TAKEDOWN_STREAMS_SHEET_URL) if t["name"].strip() == STATUS_CHANGES_TAB_NAME), None)
+        if not tab:
+            return {}
+        values = read_tab(TAKEDOWN_STREAMS_SHEET_URL, tab["sheet_id"])
+    except Exception as exc:
+        print(f"  ⚠ ACR digest: could not read the Status Changes tab ({exc!r}) — using the sheet's Status as is", flush=True)
+        return {}
+    if not values:
+        return {}
+    idx = _header_index(values[0])
+    key_i, new_i, old_i = idx.get("key"), idx.get("new_status"), idx.get("old_status")
+    if key_i is None or new_i is None:
+        return {}
+    out: Dict[str, Dict[str, str]] = {}
+    for row in values[1:]:
+        key, status = _cell(row, key_i), _norm_status(_cell(row, new_i))
+        if key and status:
+            out[key] = {"status": status, "old_status": _norm_status(_cell(row, old_i))}
+    return out
+
+
+def effective_status(sheet_status: str, override) -> str:
+    """Same rule as the dashboard (status_data.effective_status): the correction
+    applies unless the cell was edited to a different Online/Offline value since."""
+    if not override:
+        return sheet_status
+    sheet_norm = _norm_status(sheet_status)
+    if sheet_norm and sheet_norm not in (override["status"], override.get("old_status", "")):
+        return sheet_status
+    return override["status"]
+
+
+def apply_status_overrides(rows: List[List[str]], overrides) -> List[List[str]]:
+    """Copy of the grid with the Status column corrected."""
+    if not rows or not overrides:
+        return rows
+    idx = _header_index(rows[0])
+    status_i = idx.get(STATUS_HEADER)
+    if status_i is None:
+        return rows
+    song_id_i, title_i = idx.get(SONG_ID_HEADER), idx.get(TITLE_HEADER)
+    m_isrc_i, m_title_i = idx.get(MATCHED_ISRC_HEADER), idx.get(MATCHED_TITLE_HEADER)
+    out = [rows[0]]
+    for row in rows[1:]:
+        key = case_key(_cell(row, song_id_i), _cell(row, title_i), _cell(row, m_isrc_i), _cell(row, m_title_i))
+        o = overrides.get(key)
+        if o:
+            row = list(row) + [""] * (status_i + 1 - len(row))
+            row[status_i] = effective_status(_cell(row, status_i), o)
+        out.append(row)
+    return out
+
+
+def read_cycle_tab(sheet_url: str, sheet_id: str) -> List[List[str]]:
+    """read_tab + the dashboard's Online/Offline corrections."""
+    return apply_status_overrides(read_tab(sheet_url, sheet_id), read_status_overrides())
+
+
 def build_digest_data(rows: List[List[str]], excluded_keys=frozenset(), always_td_ids=frozenset()) -> Dict[str, object]:
     """rows[0] is the header. Returns the aggregates the card needs.
 
@@ -492,7 +564,7 @@ def run_daily_check(*, dry_run: bool = False) -> Dict[str, object]:
             result["already_digested"].append(name)
             continue
         try:
-            rows = read_tab(ACR_SHEET_URL, tab["sheet_id"])
+            rows = read_cycle_tab(ACR_SHEET_URL, tab["sheet_id"])
         except Exception as exc:
             result["skipped_invalid"].append({"name": name, "error": repr(exc)})
             continue

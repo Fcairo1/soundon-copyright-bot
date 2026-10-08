@@ -311,7 +311,7 @@ def run_daily_alarm(*, today: Optional[date] = None, dry_run: bool = False) -> D
         if not tab:
             result["skipped"].append({"cycle": cycle, "reason": "scan tab not found"})
             continue
-        rows = ad.read_tab(ad.ACR_SHEET_URL, tab["sheet_id"])
+        rows = ad.read_cycle_tab(ad.ACR_SHEET_URL, tab["sheet_id"])
         if not rows or not ad.is_valid_cycle_tab(ad._header_index(rows[0])):
             result["skipped"].append({"cycle": cycle, "reason": "scan tab unreadable"})
             continue
@@ -376,7 +376,7 @@ def run_weekly_reminders(*, today: Optional[date] = None, dry_run: bool = False)
             continue
         tabs = tabs if tabs is not None else {t["name"].strip().lower(): t for t in ad.list_tabs(ad.ACR_SHEET_URL)}
         tab = tabs.get(cycle.lower())
-        rows = ad.read_tab(ad.ACR_SHEET_URL, tab["sheet_id"]) if tab else None
+        rows = ad.read_cycle_tab(ad.ACR_SHEET_URL, tab["sheet_id"]) if tab else None
         if not rows or not ad.is_valid_cycle_tab(ad._header_index(rows[0])):
             result["skipped"].append({"cycle": cycle, "reason": "scan tab not found or unreadable"})
             continue

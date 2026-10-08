@@ -16,3 +16,12 @@ def _block_live_claim_window_io(monkeypatch):
 
     for name in ("_run_lark_sheets", "_tab_id", "_read_grid"):
         monkeypatch.setattr(claim_window, name, _blocked)
+
+
+@pytest.fixture(autouse=True)
+def _no_live_status_overrides(monkeypatch):
+    """The digest/alarm read the dashboard's Online/Offline corrections from a live
+    Lark tab; tests that care patch read_status_overrides themselves."""
+    from copyright_alert import acr_digest
+
+    monkeypatch.setattr(acr_digest, "read_status_overrides", lambda: {})
