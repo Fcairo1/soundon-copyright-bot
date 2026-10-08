@@ -257,6 +257,7 @@ VALID_PARTS = (
     "J",
     "K",
     "L",
+    "M",
 )
 
 
@@ -2253,6 +2254,23 @@ def main(region=None, only=None, skip=None):
         except Exception as e:
             log(f"  ✗ Claim window section error: {e!r}")
             results["claim_window"] = {"error": repr(e)}
+
+    # M) Weekly Spotify Online/Offline check of "Other Party" cases still shown
+    # Online (self-throttled to once per 7 days; needs SPOTIFY_CLIENT_ID/SECRET).
+    # Only moves Online -> Offline; the dashboard and the digest pick it up from
+    # the "Status Changes" tab.
+    if run_part["M"]:
+        try:
+            section("PART M — Weekly Spotify status check")
+            from copyright_alert import spotify_status_check
+            result = spotify_status_check.run_weekly()
+            results["spotify_status_check"] = result
+            log(f"  spotify check: {json.dumps(result, ensure_ascii=False, default=str)[:1500]}")
+            if result.get("offline") and not result.get("dry_run"):
+                send_dm_post("🔎 Weekly Spotify check: tracks now offline", spotify_status_check.summary_lines(result))
+        except Exception as e:
+            log(f"  ✗ Spotify status check error: {e!r}")
+            results["spotify_status_check"] = {"error": repr(e)}
 
     section("RUN COMPLETE")
     log(json.dumps(results, ensure_ascii=False, indent=2))

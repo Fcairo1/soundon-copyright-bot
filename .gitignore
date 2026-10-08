@@ -56,3 +56,4 @@ Thumbs.db
 .vscode/
 *.swp
 *~
+copyright_alert/spotify_status_state.json
