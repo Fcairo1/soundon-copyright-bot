@@ -335,3 +335,88 @@ def test_claim_window_failure_does_not_break_digest(monkeypatch, tmp_path):
     result = ad.run_daily_check()
     assert [p["name"] for p in result["posted"]] == ["Aug3"]
     assert (tmp_path / "state.json").exists()
+
+
+# ── Claim-workflow additions: To claim tile, ⚡ markers, Waiting on managers ──
+
+from datetime import date as _date
+
+
+def _td_header():
+    return AUG19_HEADER
+
+
+def _td_row(song_id, isrc, user, streams, managers="Ana Silva"):
+    return _row(AUG19_HEADER, **{"SO Song ID": song_id, "SO Song Title": f"Song {song_id}", "SO Region": "BR",
+                                 "SO User ID": user, "operation_manager_list": managers, "Matched Title": f"M {isrc}",
+                                 "Matched ISRC": isrc, "Streamings": str(streams), "Status": "Online",
+                                 "Review Result": "Other Party"})
+
+
+def _card_text(card):
+    parts = []
+    for e in card["elements"]:
+        if "text" in e:
+            parts.append(e["text"]["content"])
+        for col in e.get("columns", []):
+            parts += [c["text"]["content"] for c in col["elements"]]
+        for a in e.get("actions", []):
+            parts.append(a["text"]["content"])
+    return "\n".join(parts)
+
+
+WAITING = {"managers": [("Mariana Vieira", 5), ("Felipe Pierro", 2)], "closes": _date(2026, 10, 21),
+           "days_left": 5, "weekly": False, "always_td_open": 1}
+
+
+def test_always_td_cases_are_flagged_and_counted():
+    rows = [AUG19_HEADER, _td_row("s1", "I1", "111", 9000), _td_row("s2", "I2", "222", 5000)]
+    data = ad.build_digest_data(rows, always_td_ids=frozenset({"111"}))
+    assert data["always_td_total"] == 1
+    flags = {e["isrc"]: e["always_td"] for items in data["needs_enforcement"].values() for e in items}
+    assert flags == {"I1": True, "I2": False}
+
+
+def test_card_marks_always_td_in_the_list_and_labels_to_claim():
+    rows = [AUG19_HEADER, _td_row("s1", "I1", "111", 9000)]
+    card = ad.build_card("Aug19", ad.build_digest_data(rows, always_td_ids=frozenset({"111"})), [])
+    text = _card_text(card)
+    assert "⚡ M I1" in text and "always take down" in text
+    assert "To claim" in text and "Flagged" not in text and "1 to claim" in text
+
+
+def test_card_without_waiting_has_no_manager_block():
+    card = ad.build_card("Aug19", ad.build_digest_data([AUG19_HEADER]), [])
+    assert "Waiting on managers" not in _card_text(card)
+
+
+def test_card_waiting_block_tags_managers_with_counts_rule_and_button():
+    card = ad.build_card("Aug19", ad.build_digest_data([AUG19_HEADER]), [], waiting=WAITING)
+    text = _card_text(card)
+    assert '<at email="mariana.vieira@bytedance.com">Mariana Vieira</at> **5**' in text
+    assert "window closes **Wed 21 Oct**" in text
+    assert "All content not marked 🚫 **Do NOT claim** by **Wed 21 Oct** will be claimed." in text
+    assert "Review & mark my cases" in text
+    assert "Weekly update" not in text
+
+
+def test_card_weekly_variant_has_header_line_and_drops_escalated():
+    waiting = dict(WAITING, weekly=True, days_left=2)
+    card = ad.build_card("Aug19", ad.build_digest_data([AUG19_HEADER]), [], waiting=waiting)
+    text = _card_text(card)
+    assert "Weekly update** · 2 workdays left" in text
+    assert "escalated** to account managers" not in text
+
+
+def test_card_nobody_pending_has_no_tags_or_button():
+    waiting = dict(WAITING, managers=[])
+    text = _card_text(ad.build_card("Aug19", ad.build_digest_data([AUG19_HEADER]), [], waiting=waiting))
+    assert "No manager has cases pending" in text and "Review & mark my cases" not in text
+
+
+def test_always_td_bottom_line_shows_requested_split_when_known():
+    rows = [AUG19_HEADER, _td_row("s1", "I1", "111", 9000), _td_row("s2", "I2", "111", 8000), _td_row("s3", "I3", "111", 7000)]
+    data = ad.build_digest_data(rows, always_td_ids=frozenset({"111"}))
+    text = _card_text(ad.build_card("Aug19", data, [], waiting=dict(WAITING, always_td_open=2)))
+    assert "3 always take down**: 1 requested, 2 to request" in text
+    assert "to request (ops)" in _card_text(ad.build_card("Aug19", data, []))

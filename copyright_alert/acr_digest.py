@@ -195,12 +195,15 @@ def read_do_not_claim_keys() -> set:
     return marked
 
 
-def build_digest_data(rows: List[List[str]], excluded_keys=frozenset()) -> Dict[str, object]:
+def build_digest_data(rows: List[List[str]], excluded_keys=frozenset(), always_td_ids=frozenset()) -> Dict[str, object]:
     """rows[0] is the header. Returns the aggregates the card needs.
 
     excluded_keys: (song, matched) pair keys marked "Do NOT claim" — left out
     of the enforcement list (and its counts) but still counted as offline if
-    they went offline, and reported separately as do_not_claim."""
+    they went offline, and reported separately as do_not_claim.
+    always_td_ids: SoundOn user IDs whose Other Party cases are always taken
+    down — those entries are flagged "always_td" (shown with ⚡) and counted
+    in always_td_total."""
     header = rows[0]
     idx = _header_index(header)
     decision_i = _find(idx, *DECISION_HEADER_ALIASES)
@@ -209,6 +212,7 @@ def build_digest_data(rows: List[List[str]], excluded_keys=frozenset()) -> Dict[
     m_label_i, m_isrc_i = idx.get(MATCHED_LABEL_HEADER), idx.get(MATCHED_ISRC_HEADER)
     status_i, streams_i = idx.get(STATUS_HEADER), idx.get(STREAMS_HEADER)
     song_id_i = idx.get(SONG_ID_HEADER)
+    user_i = idx.get("SO User ID")
 
     # "Reviewed" = every match ACRCloud surfaced in this tab, not just the
     # ones a human has classified — confirmed live on Aug3: only 299 of 2615
@@ -236,14 +240,19 @@ def build_digest_data(rows: List[List[str]], excluded_keys=frozenset()) -> Dict[
             "title": _cell(row, m_title_i), "artist": _clean_names(_cell(row, m_artists_i)),
             "label": _cell(row, m_label_i), "isrc": _cell(row, m_isrc_i),
             "streams": streams, "region": region,
+            "always_td": bool(always_td_ids) and re.sub(r"\D", "", _cell(row, user_i)) in always_td_ids,
         }
         pair_key = case_key(_cell(row, song_id_i), _cell(row, title_i), entry["isrc"], entry["title"])
         if pair_key in excluded_keys:
             do_not_claim_keys.add(pair_key)
         else:
             key = entry["isrc"] or (entry["title"], entry["artist"])
+            if key in by_isrc and by_isrc[key]["always_td"]:
+                entry["always_td"] = True
             if key not in by_isrc or streams > by_isrc[key]["streams"]:
                 by_isrc[key] = entry
+            elif entry["always_td"]:
+                by_isrc[key]["always_td"] = True
 
         if _is_offline(_cell(row, status_i)):
             offline_rows.append({
@@ -279,6 +288,7 @@ def build_digest_data(rows: List[List[str]], excluded_keys=frozenset()) -> Dict[
         "offline_total": len(deduped_offline),
         "offline_top": deduped_offline[0] if deduped_offline else None,
         "do_not_claim": len(do_not_claim_keys),
+        "always_td_total": sum(1 for e in by_isrc.values() if e["always_td"]),
     }
 
 
@@ -336,7 +346,10 @@ def _enforcement_section_md(data: Dict[str, object]) -> str:
     for i, e in enumerate(top, start=1):
         flag = REGION_FLAG.get(e["region"], "")
         label = f" [{e['label']}]" if e["label"] else ""
-        lines.append(f"**{i}.** {e['title']} — {e['artist']}{label} {flag} · {e['streams']:,} streams")
+        bolt = "⚡ " if e.get("always_td") else ""
+        lines.append(f"**{i}.** {bolt}{e['title']} — {e['artist']}{label} {flag} · {e['streams']:,} streams")
+    if any(e.get("always_td") for e in top):
+        lines.append("⚡ = always take down (ops requests it, no manager decision)")
     return "\n".join(lines)
 
 
@@ -346,35 +359,94 @@ def _stat_tile(value: str, label: str) -> dict:
     ]}
 
 
-def build_card(tab_name: str, data: Dict[str, object], recovery_lines: List[str]) -> dict:
-    offline = data["offline_top"]
-    offline_line = (
+def _fmt_day(d) -> str:
+    return f"{d:%a} {d.day} {d:%b}"
+
+
+def _mention(name: str) -> str:
+    """Lark @mention for a label manager's display name ('Mariana Vieira' ->
+    mariana.vieira@bytedance.com, same rule tag_managers uses). Tags only
+    notify members of the chat; others still see their name in bold."""
+    from copyright_alert.tag_managers import MENTION_DOMAIN, _username_from_display
+    user = _username_from_display(name)
+    if not user or name == "No manager on file":
+        return f"**{name}**"
+    return f'<at email="{user}@{MENTION_DOMAIN}">{name}</at>'
+
+
+def _waiting_elements(waiting: Dict[str, object]) -> List[dict]:
+    managers = waiting.get("managers") or []
+    closes = waiting["closes"]
+    elements: List[dict] = [{"tag": "hr"}]
+    head = f"**🕒 Waiting on managers** · window closes **{_fmt_day(closes)}**"
+    if managers:
+        tags = "  ·  ".join(f"{_mention(n)} **{c}**" for n, c in managers)
+        body = f"{head}\n{tags}"
+    else:
+        body = f"{head}\nNo manager has cases pending."
+    elements.append({"tag": "div", "text": {"tag": "lark_md", "content": body}})
+    rule = f"All content not marked 🚫 **Do NOT claim** by **{_fmt_day(closes)}** will be claimed."
+    elements.append({"tag": "div", "text": {"tag": "lark_md", "content": rule}})
+    if managers:
+        elements.append({"tag": "action", "actions": [{
+            "tag": "button", "text": {"tag": "plain_text", "content": "Review & mark my cases"},
+            "type": "default", "url": DASHBOARD_URL,
+        }]})
+    return elements
+
+
+def build_card(tab_name: str, data: Dict[str, object], recovery_lines: List[str],
+               waiting: Optional[Dict[str, object]] = None) -> dict:
+    """waiting (optional, from claim_window.waiting_summary) adds the "Waiting
+    on managers" block and, with waiting["weekly"], the Monday re-post variant.
+    Without it the card is the plain digest (e.g. a cycle with no window)."""
+    weekly = bool(waiting and waiting.get("weekly"))
+    do_not_claim = int(data.get("do_not_claim") or 0)
+    always_td = int(data.get("always_td_total") or 0)
+
+    bottom = []
+    if always_td:
+        open_ = waiting.get("always_td_open") if waiting else None
+        if open_ is None:
+            bottom.append(f"⚡ **{always_td} always take down** to request (ops)")
+        else:
+            bottom.append(f"⚡ **{always_td} always take down**: {always_td - open_} requested, {open_} to request")
+    bottom.append(
         f"✅ **{data['offline_total']} taken offline** this cycle" if data["offline_total"]
         else "✅ **None taken offline** this cycle"
     )
-    escalated_line = f"⚠️ **{data['escalated']} escalated** to account managers"
-    do_not_claim = int(data.get("do_not_claim") or 0)
+    if not weekly:
+        bottom.append(f"⚠️ **{data['escalated']} escalated** to account managers")
     if do_not_claim:
-        escalated_line += f"  ·  🚫 **{do_not_claim} marked do not claim**"
+        bottom.append(f"🚫 **{do_not_claim} marked do not claim**")
 
-    elements = [
+    elements: List[dict] = []
+    if weekly:
+        left = waiting.get("days_left")
+        left_txt = f"{left} workday{'s' if left != 1 else ''} left" if isinstance(left, int) and left >= 0 else "window open"
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": f"**Weekly update** · {left_txt}"}})
+    elements += [
         {"tag": "column_set", "flex_mode": "none", "columns": [
             _stat_tile(f"{data['total_reviewed']:,}", "Reviewed"),
-            _stat_tile(f"{data['flagged_total']} 🚩", "Flagged"),
+            _stat_tile(f"{data['flagged_total']} 🚩", "To claim"),
             _stat_tile(f"{data['escalated']} ⚠️", "Escalated"),
         ]},
         {"tag": "column_set", "flex_mode": "none", "columns": [
-            _stat_tile(f"{REGION_FLAG.get(r, '')} {r}".strip(), f"{data['enforcement_counts'].get(r, 0)} flagged")
+            _stat_tile(f"{REGION_FLAG.get(r, '')} {r}".strip(), f"{data['enforcement_counts'].get(r, 0)} to claim")
             for r in REGION_ORDER
         ]},
         {"tag": "hr"},
         {"tag": "div", "text": {"tag": "lark_md", "content": _enforcement_section_md(data)}},
         {"tag": "action", "actions": [{
-            "tag": "button", "text": {"tag": "plain_text", "content": "Review and file takedowns in the dashboard"},
+            "tag": "button", "text": {"tag": "plain_text", "content": "Review and file takedowns"},
             "type": "primary", "url": DASHBOARD_URL,
         }]},
+    ]
+    if waiting:
+        elements += _waiting_elements(waiting)
+    elements += [
         {"tag": "hr"},
-        {"tag": "div", "text": {"tag": "lark_md", "content": f"{offline_line}  ·  {escalated_line}"}},
+        {"tag": "div", "text": {"tag": "lark_md", "content": "  ·  ".join(bottom)}},
     ]
     # Recovery tracking is real but usually empty (nothing checked long enough
     # yet) — only take up card space once there's something to show.
@@ -382,9 +454,9 @@ def build_card(tab_name: str, data: Dict[str, object], recovery_lines: List[str]
         elements.append({"tag": "hr"})
         elements.append({"tag": "div", "text": {"tag": "lark_md", "content":
             "**📈 Original-track recovery**\n" + "\n".join(recovery_lines)}})
-    elements.append({"tag": "note", "elements": [
-        {"tag": "plain_text", "content": "Posts automatically when a new scan cycle appears · full per-region breakdown in the dashboard"}
-    ]})
+    footer = ("Posts when a new scan cycle appears, then every Monday until the window closes · full breakdown in the dashboard"
+              if waiting else "Posts automatically when a new scan cycle appears · full per-region breakdown in the dashboard")
+    elements.append({"tag": "note", "elements": [{"tag": "plain_text", "content": footer}]})
 
     return {
         "config": {"wide_screen_mode": True},
@@ -428,9 +500,17 @@ def run_daily_check(*, dry_run: bool = False) -> Dict[str, object]:
             result["skipped_invalid"].append({"name": name, "error": "not a valid cycle tab (missing headers or empty)"})
             continue
 
-        data = build_digest_data(rows, excluded_keys=read_do_not_claim_keys())
+        always_td_ids, waiting = frozenset(), None
+        try:
+            from copyright_alert import claim_window
+            inputs = claim_window.read_inputs()
+            always_td_ids = frozenset(inputs["accounts"])
+            waiting = claim_window.waiting_summary(rows, inputs, posted=claim_window.today_brt())
+        except Exception as exc:  # the claim extras must never stop the digest
+            print(f"  ⚠ ACR digest: claim-window extras unavailable ({exc!r}) — posting the plain digest", flush=True)
+        data = build_digest_data(rows, excluded_keys=read_do_not_claim_keys(), always_td_ids=always_td_ids)
         recovery_lines = build_recovery_lines()
-        card = build_card(name, data, recovery_lines)
+        card = build_card(name, data, recovery_lines, waiting=waiting)
         if not dry_run:
             ra.post_card(card, chat_id=CONTENT_SAFETY_CHAT_ID, context=f"acr_digest:{name}")
         digested.add(name)

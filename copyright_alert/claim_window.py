@@ -14,7 +14,10 @@ always_td_data.py, no_claim_data.py).
      product ops owner one message: what is still open to claim, per label
      manager, plus any always-take-down cases not requested yet. Once per
      cycle and region (retries only the regions that failed).
-  3. Always-take-down accounts. The source is a plain Lark sheet of SoundOn
+  3. Monday reminder. While a window is open, every Monday the digest card is
+     re-posted in the group with fresh numbers, tagging only managers who
+     still have unmarked cases.
+  4. Always-take-down accounts. The source is a plain Lark sheet of SoundOn
      user IDs; this mirrors it daily into the "Always TD Accounts" tab, which
      the dashboard reads (its Lark app already has access to that workbook).
 
@@ -196,6 +199,35 @@ def _key_sets():
     return no_claim, requested
 
 
+def read_inputs() -> Dict[str, Set[str]]:
+    """Everything summarize_cycle needs besides the scan rows."""
+    no_claim, requested = _key_sets()
+    acct_tab = _tab_id(WORKBOOK_URL, ACCOUNTS_TAB)
+    accounts = set(parse_account_ids(_read_grid(WORKBOOK_URL, acct_tab, "A2:A500"))) if acct_tab else set()
+    return {"no_claim": no_claim, "requested": requested, "accounts": accounts}
+
+
+def waiting_summary(rows: List[List[str]], inputs: Dict[str, Set[str]], *, posted: date,
+                    today: Optional[date] = None, weekly: bool = False) -> Dict[str, object]:
+    """What the digest's "Waiting on managers" block shows: label managers with
+    cases still unmarked (most first), the day the window closes, workdays left,
+    and how many always-take-down cases ops still has to request."""
+    today = today or today_brt()
+    closes = _add_workdays(posted, WINDOW_WORKDAYS)
+    per_region = summarize_cycle(rows, no_claim_keys=inputs["no_claim"], requested_keys=inputs["requested"],
+                                 always_td_ids=inputs["accounts"])
+    managers: Counter = Counter()
+    for region in per_region.values():
+        managers.update(region["by_manager"])
+    return {
+        "managers": managers.most_common(),
+        "closes": closes,
+        "days_left": _net_workdays(today, closes),
+        "weekly": weekly,
+        "always_td_open": sum(r["always_td_left"] for r in per_region.values()),
+    }
+
+
 def summarize_cycle(rows: List[List[str]], *, no_claim_keys: Set[str], requested_keys: Set[str],
                     always_td_ids: Set[str]) -> Dict[str, Dict[str, object]]:
     """Per region: cases still to claim, per label manager, and always-take-down
@@ -310,6 +342,62 @@ def run_daily_alarm(*, today: Optional[date] = None, dry_run: bool = False) -> D
     return result
 
 
+# ── Monday reminder ─────────────────────────────────────────────────────────
+
+WEEKLY_STATE_FILE = ad.ROOT / "runtime" / "claim_weekly_state.json"
+
+
+def _load_weekly_state() -> Dict[str, str]:
+    try:
+        return json.loads(WEEKLY_STATE_FILE.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def run_weekly_reminders(*, today: Optional[date] = None, dry_run: bool = False) -> Dict[str, object]:
+    """Every Monday while a window is still open, re-post the digest card with
+    fresh numbers in the Content Safety group. Only managers who still have
+    unmarked cases are tagged; with nobody pending there is nothing to remind
+    and nothing is posted. At most once per cycle per day."""
+    today = today or today_brt()
+    result: Dict[str, object] = {"posted": [], "skipped": []}
+    if today.weekday() != 0:
+        return result
+    state = _load_weekly_state()
+    tabs = None
+    inputs = None
+    for w in read_windows():
+        cycle = str(w["cycle"]).strip()
+        posted, deadline = ad_parse_date(w["posted_date"]), ad_parse_date(w["deadline_date"])
+        if not posted or not deadline or posted >= today or _net_workdays(today, deadline) < 1:
+            continue
+        if state.get(cycle) == today.isoformat():
+            result["skipped"].append({"cycle": cycle, "reason": "already posted today"})
+            continue
+        tabs = tabs if tabs is not None else {t["name"].strip().lower(): t for t in ad.list_tabs(ad.ACR_SHEET_URL)}
+        tab = tabs.get(cycle.lower())
+        rows = ad.read_tab(ad.ACR_SHEET_URL, tab["sheet_id"]) if tab else None
+        if not rows or not ad.is_valid_cycle_tab(ad._header_index(rows[0])):
+            result["skipped"].append({"cycle": cycle, "reason": "scan tab not found or unreadable"})
+            continue
+        inputs = inputs or read_inputs()
+        waiting = waiting_summary(rows, inputs, posted=posted, today=today, weekly=True)
+        if not waiting["managers"]:
+            result["skipped"].append({"cycle": cycle, "reason": "no manager has cases pending"})
+            continue
+        data = ad.build_digest_data(rows, excluded_keys=inputs["no_claim"], always_td_ids=inputs["accounts"])
+        card = ad.build_card(cycle, data, [], waiting=waiting)
+        if dry_run:
+            result["posted"].append({"cycle": cycle, "managers": len(waiting["managers"]), "dry_run": True})
+            continue
+        ad.ra.post_card(card, chat_id=ad.CONTENT_SAFETY_CHAT_ID, context=f"acr_digest_weekly:{cycle}")
+        state[cycle] = today.isoformat()
+        WEEKLY_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        WEEKLY_STATE_FILE.write_text(json.dumps(state))
+        result["posted"].append({"cycle": cycle, "managers": len(waiting["managers"])})
+    return result
+
+
 def ad_parse_date(text) -> Optional[date]:
     try:
         return date.fromisoformat(str(text or "").strip()[:10])
@@ -321,7 +409,7 @@ def ad_parse_date(text) -> Optional[date]:
 
 def run_daily_jobs(*, dry_run: bool = False) -> Dict[str, object]:
     out: Dict[str, object] = {}
-    for name, fn in (("always_td_sync", sync_always_td_accounts), ("alarm", run_daily_alarm)):
+    for name, fn in (("always_td_sync", sync_always_td_accounts), ("alarm", run_daily_alarm), ("weekly", run_weekly_reminders)):
         try:
             out[name] = fn(dry_run=dry_run)
         except Exception as exc:  # one failing job must not stop the other, or the daily workflow

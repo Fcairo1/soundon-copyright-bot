@@ -163,3 +163,56 @@ def test_run_daily_jobs_isolates_failures(monkeypatch):
     monkeypatch.setattr(cw, "run_daily_alarm", lambda dry_run=False: {"checked": 0})
     out = cw.run_daily_jobs()
     assert "error" in out["always_td_sync"] and out["alarm"] == {"checked": 0}
+
+
+# ── waiting summary + Monday reminder ───────────────────────────────────────
+
+INPUTS = {"no_claim": set(), "requested": set(), "accounts": {ACCT}}
+
+
+def test_waiting_summary_counts_managers_and_closing_day():
+    rows = [HEADER, row("1", "A", managers="Ana"), row("2", "B", managers="Ana"), row("3", "C", managers="Bia"),
+            row("4", "D", user=ACCT, managers="Zed")]
+    w = cw.waiting_summary(rows, INPUTS, posted=date(2026, 10, 5), today=date(2026, 10, 7))
+    assert w["managers"] == [("Ana", 2), ("Bia", 1)]          # always-TD manager is not waited on
+    assert w["closes"] == date(2026, 10, 12) and w["days_left"] == 3
+    assert w["always_td_open"] == 1 and w["weekly"] is False
+
+
+WINDOW = {"cycle": "Week 29", "posted_date": "2026-10-07", "deadline_date": "2026-10-14", "alarmed_at": ""}  # Wed -> Wed
+
+
+@pytest.fixture
+def weekly_env(monkeypatch, tmp_path):
+    state = {"posted": [], "rows": [HEADER, row("1", "A")]}
+    monkeypatch.setattr(cw, "WEEKLY_STATE_FILE", tmp_path / "weekly.json")
+    monkeypatch.setattr(cw, "read_windows", lambda: [WINDOW])
+    monkeypatch.setattr(cw, "read_inputs", lambda: INPUTS)
+    monkeypatch.setattr(cw.ad, "list_tabs", lambda url: [{"name": "Week 29", "sheet_id": "s1"}])
+    monkeypatch.setattr(cw.ad, "read_tab", lambda url, sid: state["rows"])
+    monkeypatch.setattr(cw.ad.ra, "post_card", lambda card, **k: state["posted"].append(card))
+    return state
+
+
+def test_weekly_reminder_only_on_mondays(weekly_env):
+    cw.run_weekly_reminders(today=date(2026, 10, 9))  # Friday inside the window
+    assert not weekly_env["posted"]
+
+
+def test_weekly_reminder_posts_on_monday_and_is_not_repeated(weekly_env):
+    res = cw.run_weekly_reminders(today=date(2026, 10, 12))  # Monday, 2 workdays left
+    assert len(res["posted"]) == 1 and len(weekly_env["posted"]) == 1
+    assert "Weekly update" in str(weekly_env["posted"][0])
+    cw.run_weekly_reminders(today=date(2026, 10, 12))
+    assert len(weekly_env["posted"]) == 1
+
+
+def test_weekly_reminder_not_sent_after_window_closes(weekly_env):
+    cw.run_weekly_reminders(today=date(2026, 10, 19))  # Monday after the 14th
+    assert not weekly_env["posted"]
+
+
+def test_weekly_reminder_skips_when_nobody_is_pending(weekly_env):
+    weekly_env["rows"] = [HEADER, row("1", "A", decision="Own Release")]
+    res = cw.run_weekly_reminders(today=date(2026, 10, 12))
+    assert not weekly_env["posted"] and res["skipped"][0]["reason"] == "no manager has cases pending"
