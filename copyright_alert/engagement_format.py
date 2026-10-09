@@ -131,12 +131,8 @@ def streams_line(info: Optional[dict]) -> str:
 
 def streams_suffix(info: Optional[dict]) -> str:
     """Reminder-line suffix: " — 🎧 1.2M 🔥" (always present so managers can
-    tell "unknown" from "low")."""
+    tell "unknown" from "low"). Shows ONLY the current figure — no at-claim →
+    now change; the 🔥/⭐ badge still reflects peak importance."""
     info = info or {}
-    current, baseline = info.get("now"), info.get("baseline")
     badge = tier_badge(importance(info))
-    if info.get("refreshed") and baseline is not None and trend_pct(current, baseline):
-        body = f"{format_compact(baseline)}→{format_compact(current)}"  # at claim → now
-    else:
-        body = format_compact(current)
-    return f" — 🎧 {body}" + (f" {badge}" if badge else "")
+    return f" — 🎧 {format_compact(info.get('now'))}" + (f" {badge}" if badge else "")
