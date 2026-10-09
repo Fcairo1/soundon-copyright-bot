@@ -123,7 +123,7 @@ def test_reminder_line_shows_refreshed_streams_with_badge(monkeypatch):
     ])
     card = tm.build_tag_card(managers, no_mgr, region="BR", streams_by_upc=tm.streams_by_upc(pending))
     text = json.dumps(card, ensure_ascii=False)
-    assert "🎧 50K→1.5M 🔥" in text   # at claim → now
+    assert "🎧 1.5M 🔥" in text and "→" not in text
 
 
 def test_reminder_falls_back_to_at_claim_snapshot(monkeypatch):
@@ -289,7 +289,7 @@ def test_taken_down_big_track_keeps_fire_badge_restyle_and_shows_both_numbers():
     # Real pattern from the US tracker: 1.1M at claim, ~100 now (takedown collapses the 30d window).
     info = streams_info(now=102, baseline=1_103_084, refreshed=True)
     assert streams_line(info) == "🔥 **102** now · 1.1M at claim (↓ 100%)"
-    assert streams_suffix(info) == " — 🎧 1.1M→102 🔥"
+    assert streams_suffix(info) == " — 🎧 102 🔥"   # reminders: current value only, 🔥 from peak
     card = build_card(_ef(), {"album_title": "Song", "sptf_30d_str": "1103084", "sptf_now": "102"})
     assert (card["header"]["template"], card["header"]["title"]["content"]) == CARD_HEADER_HIGH
     assert "1.1M Spotify streams (30d at claim)" in json.dumps(card, ensure_ascii=False)
