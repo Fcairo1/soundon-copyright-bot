@@ -409,16 +409,17 @@ def _have_rights_text(explanation="Licensed from the label, contact legal@label.
     return " ".join(paras)
 
 
-def test_have_rights_reply_points_to_the_existing_agreement():
+def test_have_rights_reply_says_we_have_the_rights_and_asks_for_reinstatement():
     text = _have_rights_text()
-    assert "governed by the agreement in place between SoundOn and Spotify" in text
+    assert "SoundOn confirms that it has the rights necessary to deliver the content below" in text
+    assert "asks that it be reinstated" in text
+
+
+def test_have_rights_reply_leaves_everything_contractual_to_the_existing_agreement():
+    text = _have_rights_text()
+    assert "governed by, the Agreement" in text
     assert "representations, warranties and indemnities already agreed" in text
-
-
-def test_have_rights_reply_rejects_any_additional_terms():
-    text = _have_rights_text()
-    assert "does not agree to, accept or create any additional" in text
-    assert "indemnity" in text
+    assert "does not add to or change them" in text
 
 
 def test_have_rights_reply_no_longer_uses_the_old_perjury_wording():

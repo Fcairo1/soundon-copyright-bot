@@ -543,23 +543,25 @@ def _send_rights_confirmation_dm(fields: dict, region: str) -> dict:
 # reps, warranties and indemnities already negotiated — and leave it at that. The
 # earlier reply (Spotify's template sentence "I state under penalty of perjury that
 # I have the necessary rights ...") is intentionally NOT used any more.
-RIGHTS_REPLY_AGREEMENT_PARAGRAPHS = (
-    "This request, and any reinstatement of the content, is made under and governed by the "
-    "agreement in place between SoundOn and Spotify (the \u201cAgreement\u201d), including the "
-    "representations, warranties and indemnities already agreed in it.",
-    "For the avoidance of doubt, this email does not agree to, accept or create any additional or "
-    "different warranty, indemnity, liability or other obligation beyond those set out in the "
-    "Agreement, and SoundOn does not accept any term in your notice or in any template that goes "
-    "beyond the Agreement.",
+RIGHTS_REPLY_OPENING = (
+    "Hello, thank you for your email. In accordance with the agreement between SoundOn and Spotify "
+    "(the \u201cAgreement\u201d), SoundOn confirms that it has the rights necessary to deliver the "
+    "content below, and asks that it be reinstated."
+)
+RIGHTS_REPLY_AGREEMENT = (
+    "This confirmation is made under, and is governed by, the Agreement, including the representations, "
+    "warranties and indemnities already agreed in it. It does not add to or change them."
 )
 
 
 def build_have_rights_paragraphs(upc, title, explanation, ref_id):
-    """Body of the "We have rights" reply, as paragraphs (HTML-ready)."""
+    """Body of the "We have rights" reply, as paragraphs (HTML-ready). Deliberately
+    short and vague: we say we have the rights and the release should go live, and
+    nothing else — everything contractual stays with the existing Agreement."""
     return [p for p in (
-        "Hello, thank you for your email. SoundOn would like to request that the content below be reinstated.",
+        RIGHTS_REPLY_OPENING,
         explanation,   # why we have the rights + label contact details, typed by ops
-        *RIGHTS_REPLY_AGREEMENT_PARAGRAPHS,
+        RIGHTS_REPLY_AGREEMENT,
         _context_line(upc, title),
         _ref_line(ref_id),
     ) if p]
