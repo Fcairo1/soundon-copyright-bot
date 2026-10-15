@@ -392,9 +392,9 @@ def build_rights_confirmation_group_card(fields: dict, region: str, aeolus_row: 
             elements.append({"tag": "div", "text": {"tag": "lark_md", "content": f"**{thread_warning}**"}})
     else:
         elements.append({"tag": "div", "text": {"tag": "lark_md", "content":
-            "**Explanation / label contact details** *(required if we have rights)*"}})
+            "**Optional note to add to the reply**"}})
         elements.append({"tag": "input", "name": "explanation",
-                          "placeholder": {"tag": "plain_text", "content": "why we have the rights + label contact info"}})
+                          "placeholder": {"tag": "plain_text", "content": "optional — leave blank to use the details from the email"}})
         elements.append({
             "tag": "action",
             "actions": [
@@ -459,17 +459,17 @@ def build_rights_confirmation_dm_card(fields: dict, region: str, *, resolved_sta
                 f"**{v(fields.get('title'))}**\nLabel: {v(fields.get('label'))}\n"
                 "Spotify needs us to confirm we have the rights to deliver this content."}},
             {"tag": "div", "text": {"tag": "lark_md", "content":
-                "If we have rights: Spotify wants an explanation and the label's contact details "
-                "in the reply (added below). The draft refers back to our existing Agreement and does "
-                "NOT agree to any additional indemnity."}},
+                "If we have rights, just click the button: the reply is written for you from the details "
+                "in Spotify's email (label, artist, title, UPC, URI, claim). It refers back to our existing "
+                "Agreement and does NOT agree to any additional indemnity."}},
             {"tag": "div", "text": {"tag": "lark_md", "content":
                 "⚠️ **Legal guidance:** do not consent to extra indemnity/confirmation wording in Spotify's "
                 "emails, and don't edit the Agreement paragraphs in the draft. If Spotify pushes back or "
                 "asks for more, loop in Legal (Tess Agostini) before replying."}},
             {"tag": "div", "text": {"tag": "lark_md", "content":
-                "**Explanation / label contact details** *(required if we have rights)*"}},
+                "**Optional note to add to the reply**"}},
             {"tag": "input", "name": "explanation",
-             "placeholder": {"tag": "plain_text", "content": "why we have the rights + label contact info"}},
+             "placeholder": {"tag": "plain_text", "content": "optional — leave blank to use the details from the email"}},
             {"tag": "hr"},
             {
                 "tag": "action",
@@ -554,21 +554,36 @@ RIGHTS_REPLY_AGREEMENT = (
 )
 
 
-def build_have_rights_paragraphs(upc, title, explanation, ref_id):
+def _details_block(fields, upc, title, spotify_uri, ref_id):
+    """The affected-content details, taken straight from Spotify's own email."""
+    fields = fields or {}
+    def val(x):
+        x = str(x or "").strip()
+        return "" if x in ("", "N/A") else x
+    rows = [("Label", val(fields.get("label"))), ("Artist", val(fields.get("artist"))),
+            ("Title", val(title)), ("UPC", val(upc)), ("URI", val(spotify_uri)),
+            ("Claim", val(fields.get("claim_number")))]
+    lines = [f"<b>{name}:</b> {value}" for name, value in rows if value]
+    return "<br>".join(lines)
+
+
+def build_have_rights_paragraphs(upc, title, explanation, ref_id, spotify_uri="", fields=None):
     """Body of the "We have rights" reply, as paragraphs (HTML-ready). Deliberately
     short and vague: we say we have the rights and the release should go live, and
-    nothing else — everything contractual stays with the existing Agreement."""
+    nothing else — everything contractual stays with the existing Agreement. The
+    content details come from Spotify's email itself (label, artist, title, UPC,
+    URI, claim number); `explanation` is only an optional extra note from ops."""
     return [p for p in (
         RIGHTS_REPLY_OPENING,
-        explanation,   # why we have the rights + label contact details, typed by ops
+        _details_block(fields, upc, title, spotify_uri, ref_id),
+        explanation,
         RIGHTS_REPLY_AGREEMENT,
-        _context_line(upc, title),
-        _ref_line(ref_id),
+        _ref_line(ref_id) if str(ref_id or "").strip() not in ("", "N/A") else "",
     ) if p]
 
 
-def _reply_have_rights(source_email_message_id, upc, title, spotify_uri, explanation, ref_id):
-    body = _wrap_html(build_have_rights_paragraphs(upc, title, explanation, ref_id))
+def _reply_have_rights(source_email_message_id, upc, title, spotify_uri, explanation, ref_id, fields=None):
+    body = _wrap_html(build_have_rights_paragraphs(upc, title, explanation, ref_id, spotify_uri, fields))
     cc = os.environ.get("RIGHTS_CONFIRMATION_LEGAL_CC", "").strip()   # optional: loop Legal in on the thread
     return _send_reply(source_email_message_id, body, "rights_confirmed", cc=cc,
                         fallback_subject=f"Spotify rights confirmation - UPC {upc}", upc=upc, ref_id=ref_id)
@@ -716,7 +731,7 @@ def handle_reply_callback(value: dict, *, message_id: str = "", explanation: str
     spotify_uri = fields.get("spotify_uri", "")
 
     if choice == "have_rights":
-        result = _reply_have_rights(source_email_message_id, upc, title, spotify_uri, explanation, ref_id)
+        result = _reply_have_rights(source_email_message_id, upc, title, spotify_uri, explanation, ref_id, fields=fields)
         status_value, email_status = STATUS_HAVE_RIGHTS, f"Sent ✅ – have rights – {_now_brt_iso()}"
         outcome_label = "We have rights"
     elif choice == "no_rights":

@@ -404,9 +404,28 @@ def test_handle_reply_callback_success_passes_draft_url_to_patched_cards(monkeyp
 
 
 # ── Legal guidance (Sep 2026): never consent to additional indemnity ─────────
-def _have_rights_text(explanation="Licensed from the label, contact legal@label.example"):
-    paras = rc.build_have_rights_paragraphs("5064079652602", "Comigo é Assim", explanation, "ref:_00D0992XChO._500Qvj4AvB:ref")
+FIELDS = {"label": "Music Eve", "artist": "Israel Novaes, MusicEve", "title": "Comigo é Assim / Lapada Lapada",
+          "upc": "5064079652602", "spotify_uri": "spotify:track:6cBNGZZVoF1OTaKbYzDyDJ",
+          "ref_id": "ref:_00D0992XChO._500Qvj4AvB:ref", "claim_number": "25238364"}
+
+
+def _have_rights_text(explanation=""):
+    paras = rc.build_have_rights_paragraphs("5064079652602", "Comigo é Assim / Lapada Lapada", explanation,
+                                            "ref:_00D0992XChO._500Qvj4AvB:ref", "spotify:track:6cBNGZZVoF1OTaKbYzDyDJ", FIELDS)
     return " ".join(paras)
+
+
+def test_have_rights_reply_is_filled_in_from_spotifys_email_without_any_typing():
+    text = _have_rights_text()          # ops typed nothing
+    for expected in ("Music Eve", "Israel Novaes, MusicEve", "Comigo é Assim / Lapada Lapada", "5064079652602",
+                     "25238364", "ref:_00D0992XChO._500Qvj4AvB:ref"):
+        assert expected in text
+
+
+def test_details_block_skips_missing_fields_and_never_prints_na_or_none():
+    paras = rc.build_have_rights_paragraphs("N/A", "N/A", "", "N/A", "", {"label": "N/A", "artist": "A"})
+    text = " ".join(paras)
+    assert "N/A" not in text and "None" not in text and "<b>Artist:</b> A" in text
 
 
 def test_have_rights_reply_says_we_have_the_rights_and_asks_for_reinstatement():
@@ -424,14 +443,12 @@ def test_have_rights_reply_leaves_everything_contractual_to_the_existing_agreeme
 
 def test_have_rights_reply_no_longer_uses_the_old_perjury_wording():
     text = _have_rights_text().lower()
-    for banned in ("perjury", "i state under penalty", "necessary rights to post the content", "spotify:track:"):
+    for banned in ("perjury", "i state under penalty", "necessary rights to post the content"):
         assert banned not in text
 
 
-def test_have_rights_reply_keeps_explanation_release_and_ref_code():
-    text = _have_rights_text()
-    assert "legal@label.example" in text and "Comigo é Assim" in text and "5064079652602" in text
-    assert "ref:_00D0992XChO._500Qvj4AvB:ref" in text     # Spotify thread tracker must survive verbatim
+def test_optional_note_from_ops_is_still_included():
+    assert "we also own the master" in _have_rights_text("we also own the master")
 
 
 def test_have_rights_reply_works_without_an_explanation():
@@ -455,3 +472,19 @@ def test_ops_dm_card_carries_the_legal_warning_and_no_perjury_promise():
     text = json.dumps(card, ensure_ascii=False)
     assert "Legal guidance" in text and "additional indemnity" in text
     assert "perjury" not in text.lower()
+
+
+def test_cards_say_the_note_is_optional_and_never_required():
+    fields = {"title": "T", "label": "L", "upc": "999", "ref_id": "ref:1", "artist": "A", "spotify_uri": "spotify:track:x"}
+    for card in (rc.build_rights_confirmation_dm_card(fields, "BR"), rc.build_rights_confirmation_group_card(fields, "BR", {})):
+        text = json.dumps(card, ensure_ascii=False)
+        assert "required if we have rights" not in text and "Optional note" in text
+
+
+def test_callback_passes_the_parsed_email_fields_to_the_reply(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(rc, "get_notice", lambda key: {"fields": FIELDS, "source_email_message_id": "m1", "aeolus_row": {}})
+    monkeypatch.setattr(rc, "_reply_have_rights", lambda *a, **k: seen.update(k=k) or {"ok": False, "error": "stop here"})
+    monkeypatch.setattr(rc, "patch_card_message", lambda *a, **k: None)
+    rc.handle_reply_callback({"choice": "have_rights", "key": "k1", "region": "BR", "upc": "5064079652602"}, message_id="x")
+    assert seen["k"]["fields"]["label"] == "Music Eve"
