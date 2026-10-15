@@ -1,3 +1,5 @@
+import json
+
 from copyright_alert import rights_confirmation_notice as rc
 
 REAL_BODY = (
@@ -399,3 +401,56 @@ def test_handle_reply_callback_success_passes_draft_url_to_patched_cards(monkeyp
     for card in patched.values():
         actions = [e for e in card["elements"] if e.get("tag") == "action"]
         assert actions and actions[0]["actions"][0]["url"] == "https://mail.example/draft1"
+
+
+# ── Legal guidance (Sep 2026): never consent to additional indemnity ─────────
+def _have_rights_text(explanation="Licensed from the label, contact legal@label.example"):
+    paras = rc.build_have_rights_paragraphs("5064079652602", "Comigo é Assim", explanation, "ref:_00D0992XChO._500Qvj4AvB:ref")
+    return " ".join(paras)
+
+
+def test_have_rights_reply_points_to_the_existing_agreement():
+    text = _have_rights_text()
+    assert "governed by the agreement in place between SoundOn and Spotify" in text
+    assert "representations, warranties and indemnities already agreed" in text
+
+
+def test_have_rights_reply_rejects_any_additional_terms():
+    text = _have_rights_text()
+    assert "does not agree to, accept or create any additional" in text
+    assert "indemnity" in text
+
+
+def test_have_rights_reply_no_longer_uses_the_old_perjury_wording():
+    text = _have_rights_text().lower()
+    for banned in ("perjury", "i state under penalty", "necessary rights to post the content", "spotify:track:"):
+        assert banned not in text
+
+
+def test_have_rights_reply_keeps_explanation_release_and_ref_code():
+    text = _have_rights_text()
+    assert "legal@label.example" in text and "Comigo é Assim" in text and "5064079652602" in text
+    assert "ref:_00D0992XChO._500Qvj4AvB:ref" in text     # Spotify thread tracker must survive verbatim
+
+
+def test_have_rights_reply_works_without_an_explanation():
+    assert "None" not in _have_rights_text(explanation="")
+
+
+def test_reply_draft_is_threaded_to_sender_only_with_optional_legal_cc(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(rc, "_send_reply", lambda *a, **k: captured.update(args=a, kwargs=k) or {"ok": True})
+    monkeypatch.delenv("RIGHTS_CONFIRMATION_LEGAL_CC", raising=False)
+    rc._reply_have_rights("msg1", "999", "T", "spotify:track:x", "why", "ref:1")
+    assert captured["kwargs"]["cc"] == ""
+    monkeypatch.setenv("RIGHTS_CONFIRMATION_LEGAL_CC", "legal@example.com")
+    rc._reply_have_rights("msg1", "999", "T", "spotify:track:x", "why", "ref:1")
+    assert captured["kwargs"]["cc"] == "legal@example.com"
+
+
+def test_ops_dm_card_carries_the_legal_warning_and_no_perjury_promise():
+    fields = {"title": "T", "label": "L", "upc": "999", "ref_id": "ref:1", "artist": "A", "spotify_uri": "spotify:track:x"}
+    card = rc.build_rights_confirmation_dm_card(fields, "BR")
+    text = json.dumps(card, ensure_ascii=False)
+    assert "Legal guidance" in text and "additional indemnity" in text
+    assert "perjury" not in text.lower()

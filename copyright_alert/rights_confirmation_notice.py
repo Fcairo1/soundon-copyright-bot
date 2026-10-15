@@ -32,10 +32,10 @@ Handling, per the user's explicit spec:
     the normal claim card (red).
   * A private DM action card to the region's product-ops owner (same
     _ops_context_for_region routing as metadata_notice.py) with 2 buttons:
-    "✅ We have rights" (opens a threaded reply draft containing Spotify's own
-    required perjury statement, pre-filled with the real spotify: URI, plus
-    an optional free-text field for the explanation/label contact details
-    Spotify's own template requires) and "🚫 We do not have rights" (a
+    "✅ We have rights" (opens a threaded reply draft that requests reinstatement
+    under the existing Spotify Agreement and expressly does NOT agree to any
+    additional indemnity — Legal's instruction, Sep 2026 — plus a free-text field
+    for the explanation/label contact details) and "🚫 We do not have rights" (a
     threaded reply draft acknowledging the takedown, no contest).
   * Re-sent daily to product ops until the tracker row's Email Status is
     non-blank (mirrors metadata_notice.py's daily-resend-until-actioned loop,
@@ -63,6 +63,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import os
 import re
 from datetime import datetime, timedelta, timezone
 
@@ -163,9 +164,9 @@ def parse_rights_confirmation_notice(body, subject="", meta=None) -> dict:
     trusted from parse_metadata_notice(): this email's real body (confirmed
     live) has no line breaks at all, and labeled_value()'s stop-boundaries are
     all newline-anchored, so it falls through to capturing to end-of-string.
-    Harmless for metadata notices (display-only field), but this value lands
-    directly in the perjury statement of our actual reply to Spotify, so it
-    must never be wrong.
+    Harmless for metadata notices (display-only field), and it is the
+    identifier of the content our reply to Spotify is about, so it must never
+    be wrong.
     """
     fields = parse_metadata_notice(body, subject, meta)
     uri_match = _SPOTIFY_URI_RE.search(body or "")
@@ -458,8 +459,13 @@ def build_rights_confirmation_dm_card(fields: dict, region: str, *, resolved_sta
                 f"**{v(fields.get('title'))}**\nLabel: {v(fields.get('label'))}\n"
                 "Spotify needs us to confirm we have the rights to deliver this content."}},
             {"tag": "div", "text": {"tag": "lark_md", "content":
-                "If we have rights: Spotify requires an explanation and the label's contact details "
-                "in the reply (added below), plus their required perjury statement (added automatically)."}},
+                "If we have rights: Spotify wants an explanation and the label's contact details "
+                "in the reply (added below). The draft refers back to our existing Agreement and does "
+                "NOT agree to any additional indemnity."}},
+            {"tag": "div", "text": {"tag": "lark_md", "content":
+                "⚠️ **Legal guidance:** do not consent to extra indemnity/confirmation wording in Spotify's "
+                "emails, and don't edit the Agreement paragraphs in the draft. If Spotify pushes back or "
+                "asks for more, loop in Legal (Tess Agostini) before replying."}},
             {"tag": "div", "text": {"tag": "lark_md", "content":
                 "**Explanation / label contact details** *(required if we have rights)*"}},
             {"tag": "input", "name": "explanation",
@@ -531,14 +537,38 @@ def _send_rights_confirmation_dm(fields: dict, region: str) -> dict:
 
 
 # ── Reply drafts (threaded, via spotify_reply's generic _send_reply) ────────
+# Legal guidance (Tess Agostini / Grace-Xiaojun Chen, Sep 23-24 2026): regional ops
+# must NOT consent to the additional indemnity language in Spotify's reinstatement
+# emails. Point back to the existing Agreement — reinstatement is governed by the
+# reps, warranties and indemnities already negotiated — and leave it at that. The
+# earlier reply (Spotify's template sentence "I state under penalty of perjury that
+# I have the necessary rights ...") is intentionally NOT used any more.
+RIGHTS_REPLY_AGREEMENT_PARAGRAPHS = (
+    "This request, and any reinstatement of the content, is made under and governed by the "
+    "agreement in place between SoundOn and Spotify (the \u201cAgreement\u201d), including the "
+    "representations, warranties and indemnities already agreed in it.",
+    "For the avoidance of doubt, this email does not agree to, accept or create any additional or "
+    "different warranty, indemnity, liability or other obligation beyond those set out in the "
+    "Agreement, and SoundOn does not accept any term in your notice or in any template that goes "
+    "beyond the Agreement.",
+)
+
+
+def build_have_rights_paragraphs(upc, title, explanation, ref_id):
+    """Body of the "We have rights" reply, as paragraphs (HTML-ready)."""
+    return [p for p in (
+        "Hello, thank you for your email. SoundOn would like to request that the content below be reinstated.",
+        explanation,   # why we have the rights + label contact details, typed by ops
+        *RIGHTS_REPLY_AGREEMENT_PARAGRAPHS,
+        _context_line(upc, title),
+        _ref_line(ref_id),
+    ) if p]
+
+
 def _reply_have_rights(source_email_message_id, upc, title, spotify_uri, explanation, ref_id):
-    perjury = (
-        f'I state under penalty of perjury that I have the necessary rights to post the content '
-        f'found at {spotify_uri or "N/A"}, '
-    )
-    paragraphs = [p for p in (explanation, perjury, _context_line(upc, title), _ref_line(ref_id)) if p]
-    body = _wrap_html(paragraphs)
-    return _send_reply(source_email_message_id, body, "rights_confirmed",
+    body = _wrap_html(build_have_rights_paragraphs(upc, title, explanation, ref_id))
+    cc = os.environ.get("RIGHTS_CONFIRMATION_LEGAL_CC", "").strip()   # optional: loop Legal in on the thread
+    return _send_reply(source_email_message_id, body, "rights_confirmed", cc=cc,
                         fallback_subject=f"Spotify rights confirmation - UPC {upc}", upc=upc, ref_id=ref_id)
 
 
