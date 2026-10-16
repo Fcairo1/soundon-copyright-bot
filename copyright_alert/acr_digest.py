@@ -415,6 +415,8 @@ def build_digest_data(rows: List[List[str]], excluded_keys=frozenset(), always_t
         "offline_top": deduped_offline[0] if deduped_offline else None,
         "do_not_claim": len(do_not_claim_keys),
         "always_td_total": sum(1 for e in by_isrc.values() if e["always_td"]),
+        # False when the account list couldn't be read: then "0" would be a guess, so the card stays silent.
+        "always_td_checked": bool(always_td_ids),
     }
 
 
@@ -521,6 +523,21 @@ def _waiting_elements(waiting: Dict[str, object]) -> List[dict]:
     return elements
 
 
+def _always_td_line(data: Dict[str, object], waiting: Optional[Dict[str, object]]) -> str:
+    """Tracks infringing on always-take-down accounts that are still online. Shown
+    even at zero (so the team can see the accounts are being watched), but not when
+    the account list couldn't be read."""
+    if not data.get("always_td_checked"):
+        return ""
+    n = int(data.get("always_td_total") or 0)
+    if not n:
+        return "⚡ **0 always take down** — no track infringing on an always-take-down account is online"
+    open_ = waiting.get("always_td_open") if waiting else None
+    split = f"{n - open_} requested, {open_} to request" if open_ is not None else "ops to request"
+    return (f"⚡ **{n} always take down**: {split} — track{'s' if n != 1 else ''} infringing on "
+            f"always-take-down accounts, still online · no manager review needed")
+
+
 def build_card(latest_scan: str, data: Dict[str, object], recovery_lines: List[str],
                waiting: Optional[Dict[str, object]] = None) -> dict:
     """waiting (optional, from claim_window.waiting_summary) adds the "Waiting
@@ -531,12 +548,6 @@ def build_card(latest_scan: str, data: Dict[str, object], recovery_lines: List[s
     always_td = int(data.get("always_td_total") or 0)
 
     bottom = []
-    if always_td:
-        open_ = waiting.get("always_td_open") if waiting else None
-        if open_ is None:
-            bottom.append(f"⚡ **{always_td} always take down** to request (ops)")
-        else:
-            bottom.append(f"⚡ **{always_td} always take down**: {always_td - open_} requested, {open_} to request")
     bottom.append(
         f"✅ **{data['offline_total']} taken offline**" if data["offline_total"]
         else "✅ **None taken offline**"
@@ -565,6 +576,11 @@ def build_card(latest_scan: str, data: Dict[str, object], recovery_lines: List[s
         ]},
         {"tag": "hr"},
         {"tag": "div", "text": {"tag": "lark_md", "content": _enforcement_section_md(data)}},
+    ]
+    always_td_line = _always_td_line(data, waiting)
+    if always_td_line:
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": always_td_line}})
+    elements += [
         {"tag": "action", "actions": [{
             "tag": "button", "text": {"tag": "plain_text", "content": "Review and file takedowns"},
             "type": "primary", "url": DASHBOARD_URL,

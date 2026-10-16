@@ -419,7 +419,7 @@ def test_always_td_bottom_line_shows_requested_split_when_known():
     data = ad.build_digest_data(rows, always_td_ids=frozenset({"111"}))
     text = _card_text(ad.build_card("Aug19", data, [], waiting=dict(WAITING, always_td_open=2)))
     assert "3 always take down**: 1 requested, 2 to request" in text
-    assert "to request (ops)" in _card_text(ad.build_card("Aug19", data, []))
+    assert "ops to request" in _card_text(ad.build_card("Aug19", data, []))
 
 
 # ── Everything counts (all tabs), and "to claim" means Online + not filed yet ──
@@ -458,3 +458,19 @@ def test_card_says_it_counts_every_cycle():
     assert "Counts every scan cycle" in text and "latest scan **Sep22**" in text
     card = ad.build_card("Sep22", ad.build_digest_data([AUG3_HEADER]), [])
     assert card["header"]["title"]["content"].endswith("all cycles")
+
+
+def test_card_always_says_how_many_tracks_on_always_td_accounts_are_online_even_at_zero():
+    rows = [AUG3_HEADER, _row(AUG3_HEADER, **{"SO Song Title": "T1", "SO Region": "BR", "Matched Title": "M1",
+                                              "Matched ISRC": "I1", "Streamings": "10", "Decision": "Other Party", "Status": "Online"})]
+    data = ad.build_digest_data(rows, always_td_ids=frozenset({"999"}))      # accounts known, none matches
+    assert data["always_td_checked"] is True and data["always_td_total"] == 0
+    assert "0 always take down" in _card_text(ad.build_card("Aug19", data, []))
+
+
+def test_card_stays_silent_about_always_td_when_the_account_list_was_unreadable():
+    rows = [AUG3_HEADER, _row(AUG3_HEADER, **{"SO Song Title": "T1", "SO Region": "BR", "Matched Title": "M1",
+                                              "Matched ISRC": "I1", "Streamings": "10", "Decision": "Other Party", "Status": "Online"})]
+    data = ad.build_digest_data(rows)                                         # no account ids at all
+    assert data["always_td_checked"] is False
+    assert "always take down" not in _card_text(ad.build_card("Aug19", data, []))
