@@ -136,6 +136,12 @@ def _alarmed_regions(text: str) -> Set[str]:
     return {p for p in parts if p in REGIONS}
 
 
+def _window_sort_key(window: Dict[str, object]) -> tuple:
+    deadline = ad_parse_date(window.get("deadline_date")) or date.min
+    posted = ad_parse_date(window.get("posted_date")) or date.min
+    return (deadline, posted, int(window.get("_row") or 0))
+
+
 # ── Always-take-down accounts (source sheet -> dashboard mirror) ────────────
 
 def parse_account_ids(grid: Iterable[List[str]]) -> List[str]:
@@ -292,48 +298,48 @@ def run_daily_alarm(*, today: Optional[date] = None, dry_run: bool = False) -> D
 
     today = today or today_brt()
     result: Dict[str, object] = {"checked": 0, "sent": [], "skipped": []}
-    due = []
-    for w in read_windows():
-        deadline = ad_parse_date(w["deadline_date"])
-        if deadline and _net_workdays(deadline, today) > 0 and not str(w["alarmed_at"]).startswith("DONE"):
-            due.append(w)
-    result["checked"] = len(due)
-    if not due:
+    windows = read_windows()
+    if not windows:
         return result
 
+    latest = max(windows, key=_window_sort_key)
+    deadline = ad_parse_date(latest["deadline_date"])
+    if not deadline or _net_workdays(deadline, today) <= 0 or str(latest["alarmed_at"]).startswith("DONE"):
+        return result
+
+    result["checked"] = 1
+    cycle = str(latest["cycle"]).strip()
     no_claim, requested = _key_sets()
     accounts = set(parse_account_ids(_read_grid(WORKBOOK_URL, _tab_id(WORKBOOK_URL, ACCOUNTS_TAB), "A2:A500"))) if _tab_id(WORKBOOK_URL, ACCOUNTS_TAB) else set()
     rows = ad.read_all_cycles()   # everything still open, not just the window's own tab
+    if len(rows) < 2:
+        result["skipped"].append({"cycle": cycle, "reason": "no scan data readable"})
+        return result
 
-    for w in due:
-        cycle = str(w["cycle"]).strip()
-        if len(rows) < 2:
-            result["skipped"].append({"cycle": cycle, "reason": "no scan data readable"})
+    per_region = summarize_cycle(rows, no_claim_keys=no_claim, requested_keys=requested, always_td_ids=accounts)
+    done = _alarmed_regions(latest["alarmed_at"])
+    failed = False
+    for region in REGIONS:
+        s = per_region[region]
+        if region in done:
             continue
-        per_region = summarize_cycle(rows, no_claim_keys=no_claim, requested_keys=requested, always_td_ids=accounts)
-        done = _alarmed_regions(w["alarmed_at"])
-        failed = False
-        for region in REGIONS:
-            s = per_region[region]
-            if region in done:
-                continue
-            if not (s["to_claim"] or s["always_td_left"]):
-                done.add(region)
-                continue
-            if dry_run:
-                result["sent"].append({"cycle": cycle, "region": region, "to_claim": s["to_claim"],
-                                       "always_td_left": s["always_td_left"], "dry_run": True})
-                continue
-            send = _send_to_ops(region, build_alarm_card(region, cycle, s), log_context=f"claim window {cycle}")
-            if send.get("ok"):
-                done.add(region)
-                result["sent"].append({"cycle": cycle, "region": region, "to_claim": s["to_claim"], "always_td_left": s["always_td_left"]})
-            else:
-                failed = True
-                result["skipped"].append({"cycle": cycle, "region": region, "reason": "DM failed — will retry next run"})
-        if not dry_run:
-            regions = ",".join(r for r in REGIONS if r in done)
-            _set_alarmed(w, f"PARTIAL {regions}" if failed else f"DONE {_now_brt_str()} {regions}".strip())
+        if not (s["to_claim"] or s["always_td_left"]):
+            done.add(region)
+            continue
+        if dry_run:
+            result["sent"].append({"cycle": cycle, "region": region, "to_claim": s["to_claim"],
+                                   "always_td_left": s["always_td_left"], "dry_run": True})
+            continue
+        send = _send_to_ops(region, build_alarm_card(region, cycle, s), log_context=f"claim window {cycle}")
+        if send.get("ok"):
+            done.add(region)
+            result["sent"].append({"cycle": cycle, "region": region, "to_claim": s["to_claim"], "always_td_left": s["always_td_left"]})
+        else:
+            failed = True
+            result["skipped"].append({"cycle": cycle, "region": region, "reason": "DM failed — will retry next run"})
+    if not dry_run:
+        regions = ",".join(r for r in REGIONS if r in done)
+        _set_alarmed(latest, f"PARTIAL {regions}" if failed else f"DONE {_now_brt_str()} {regions}".strip())
     return result
 
 

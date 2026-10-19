@@ -158,6 +158,34 @@ def test_alarm_not_repeated_once_done(alarm_env):
     assert res["checked"] == 0 and not alarm_env["sent"]
 
 
+def test_alarm_only_targets_latest_closed_cycle(monkeypatch):
+    state = {
+        "windows": [
+            {"cycle": "Week 28", "posted_date": "2026-09-28", "deadline_date": "2026-10-05", "alarmed_at": "", "_row": 2},
+            {"cycle": "Week 29", "posted_date": "2026-10-05", "deadline_date": "2026-10-12", "alarmed_at": "", "_row": 3},
+        ],
+        "sent": [],
+        "written": [],
+    }
+    rows = [HEADER, row("1", "A"), row("2", "B", region="MX")]
+    monkeypatch.setattr(cw, "read_windows", lambda: state["windows"])
+    monkeypatch.setattr(cw, "_key_sets", lambda: (set(), set()))
+    monkeypatch.setattr(cw, "_tab_id", lambda url, name: "tabid")
+    monkeypatch.setattr(cw, "_read_grid", lambda *a, **k: [])
+    monkeypatch.setattr(cw.ad, "read_all_cycles", lambda: rows)
+    monkeypatch.setattr(cw, "_set_alarmed", lambda w, text: state["written"].append((w["cycle"], text)))
+    import copyright_alert.rights_confirmation_notice as rcn
+    monkeypatch.setattr(rcn, "_send_to_ops",
+                        lambda region, card, log_context="": (state["sent"].append((log_context, region)) or {"ok": True}))
+
+    res = cw.run_daily_alarm(today=date(2026, 10, 13))
+
+    assert res["checked"] == 1
+    assert {entry["cycle"] for entry in res["sent"]} == {"Week 29"}
+    assert {ctx for ctx, _ in state["sent"]} == {"claim window Week 29"}
+    assert state["written"] and state["written"][0][0] == "Week 29"
+
+
 def test_run_daily_jobs_isolates_failures(monkeypatch):
     monkeypatch.setattr(cw, "sync_always_td_accounts", lambda dry_run=False: (_ for _ in ()).throw(RuntimeError("boom")))
     monkeypatch.setattr(cw, "run_daily_alarm", lambda dry_run=False: {"checked": 0})
