@@ -685,8 +685,6 @@ def _create_lark_cli_reply_draft(
             "--no-signature",
             "--format",
             "json",
-            "--jq",
-            ".data",
         ]
         cc_arg = _recipient_arg(cc_recipients or [])
         if cc_arg:
@@ -700,13 +698,15 @@ def _create_lark_cli_reply_draft(
             except FileNotFoundError:
                 pass
 
-    draft_id = str(payload.get("draft_id") or payload.get("id") or "").strip()
-    draft_link = str(
-        payload.get("reference")
-        or payload.get("draft_link")
-        or payload.get("send_preview_url")
-        or ""
-    ).strip()
+    if not payload.get("ok", True):
+        err = payload.get("error") or {}
+        msg = err.get("message") or json.dumps(payload)
+        raise LarkMailDraftError(f"lark-cli +reply failed: {msg}")
+
+    result = _extract_result(payload)
+    draft_id = result["draft_id"]
+    draft_link = result["draft_link"]
+
     if not draft_id:
         raise LarkMailDraftError(f"lark-cli +reply did not return a draft_id: {json.dumps(payload, ensure_ascii=False)[:800]}")
     if not draft_link:

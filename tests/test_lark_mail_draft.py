@@ -62,7 +62,11 @@ def test_create_reply_draft_uses_native_lark_reply_when_original_exists(monkeypa
         assert args[0] == "+reply"
         assert "--message-id" in args
         assert args[args.index("--message-id") + 1] == "msg_123"
-        return {"draft_id": "draft_456", "reference": "https://mail.example/draft_456"}
+        assert "--jq" not in args
+        return {
+            "ok": True,
+            "data": {"draft_id": "draft_456", "reference": "https://mail.example/draft_456"},
+        }
 
     monkeypatch.setattr(lark_mail_draft, "_fetch_original_message", fake_fetch)
     monkeypatch.setattr(lark_mail_draft, "_lark_cli_json", fake_lark_cli)
