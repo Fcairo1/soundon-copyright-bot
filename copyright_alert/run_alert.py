@@ -1320,6 +1320,93 @@ def batch_query_aeolus_by_upc(upcs, chunk_size=40):
     return results
 
 
+AMS_ALERT_REGIONS = ("BR", "US", "SPLA")
+
+
+def batch_query_aeolus_rows_by_upc(upcs, chunk_size=40):
+    """{upc: [rows]} — EVERY account row (latest partition only) per UPC.
+
+    batch_query_aeolus_by_upc keeps a single arbitrary row per UPC, but one UPC can
+    exist under several accounts in different regions (e.g. a GB A&R account and a
+    US UG-SEO account), and which one comes first is not defined.
+    """
+    unique = [u for u in dict.fromkeys(str(x or "").strip() for x in (upcs or [])) if u and u != "N/A"]
+    results = {}
+    recent_cutoff = (datetime.utcnow() - timedelta(days=21)).strftime("%Y-%m-%d")
+    for idx in range(0, len(unique), chunk_size):
+        chunk = unique[idx:idx + chunk_size]
+        in_list = ", ".join(f"'{_aeolus_sql_quote(v)}'" for v in chunk)
+        sql = (
+            "SELECT `[upc]`, `[isrc]`, `[album_title]`, `[user_region]`, "
+            "`[source_type_name]`, `[User Tier]`, `[display_artist]`, "
+            "`[bd_manager_list]`, `[operation_manager_list]`, `[user_id]` AS uid, `[user_name]`, `[p_date]` "
+            "FROM `[[AOP] Song Dimension]` "
+            f"WHERE `[upc]` IN ({in_list}) AND `[p_date]` >= '{recent_cutoff}' "
+            "ORDER BY `[p_date]` DESC"
+        )
+        parsed = _run_aeolus_sql(sql, timeout=240)
+        rows = _friendly_aeolus_rows(parsed) if parsed else []
+        latest = {}
+        for row in rows:
+            upc = str(row.get("upc") or "").strip()
+            if not upc:
+                continue
+            day = str(row.get("p_date") or "")
+            if upc not in latest:
+                latest[upc] = day
+            if day == latest[upc]:
+                results.setdefault(upc, []).append(row)
+    return results
+
+
+def choose_ams_row(rows, prefer_sources=None):
+    """Pick the AMS account row for a UPC from all its account rows.
+
+    Returns ``(region, row, status)``: "ok", "out_of_region" (no row is a BR/US/SPLA
+    account) or "no_aeolus_row" (``rows`` is empty). Among AMS rows, one whose source
+    is in ``prefer_sources`` wins."""
+    prefer = set(prefer_sources or ())
+    if not rows:
+        return "", {}, "no_aeolus_row"
+    ams = [r for r in rows if _region_from_aeolus_row(r)]
+    if not ams:
+        return "", rows[0], "out_of_region"
+    preferred = [r for r in ams if not prefer or str(r.get("source_type_name") or "").strip() in prefer]
+    chosen = (preferred or ams)[0]
+    return _region_from_aeolus_row(chosen), chosen, "ok"
+
+
+def resolve_notice_region(upc, first_row=None, prefer_sources=None):
+    """Which AMS tracker (BR / US / SPLA) a Spotify notice for ``upc`` belongs to.
+
+    Returns ``(region, aeolus_row, status)``; status is "ok", "out_of_region" (the
+    account is outside BR/US/SPLA — e.g. ID or GB — so it belongs in NO tracker) or
+    "no_aeolus_row" (can't tell; region comes back "").
+
+    The old code used _canonical_alert_region, which silently falls back to the
+    CURRENT run's region for any account it doesn't recognise — so an Indonesian
+    account's notice was filed in whichever region's workflow happened to scan it.
+    Here an unrecognised region is a hard "no". If the first row isn't an AMS (and,
+    when ``prefer_sources`` is given, preferred-source) account, every account row
+    for the UPC is checked before giving up.
+    """
+    prefer = set(prefer_sources or ())
+
+    def good(row):
+        region = _region_from_aeolus_row(row)
+        return region and (not prefer or str(row.get("source_type_name") or "").strip() in prefer)
+
+    first_row = first_row or {}
+    if first_row and good(first_row):
+        return _region_from_aeolus_row(first_row), first_row, "ok"
+    try:
+        rows = batch_query_aeolus_rows_by_upc([upc]).get(str(upc or "").strip()) or []
+    except Exception as exc:
+        print(f"  ⚠ Could not load all account rows for UPC {upc}: {exc!r}", flush=True)
+        rows = []
+    return choose_ams_row(rows or ([first_row] if first_row else []), prefer_sources)
+
+
 def _resolve_engagement_partition(force=False):
     """Resolve the engagement dataset partition (p_date) dynamically.
 

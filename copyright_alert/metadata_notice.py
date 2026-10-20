@@ -51,6 +51,7 @@ from copyright_alert.run_alert import (
     _parse_people_list,
     batch_query_aeolus_by_upc,
     batch_query_engagement_by_upc,
+    resolve_notice_region,
     extract_fields,
     first,
     labeled_value,
@@ -573,6 +574,20 @@ def _append_metadata_correction_row(fields: dict, region: str, artist_columns=No
     # The row below is positional (streams at D): the tab must already have the
     # column or every cell would land one column off. Inserts it on first use.
     _ensure_streams_column(region)
+    # Idempotent: the same notice (UPC + Date Received) is never appended twice. A
+    # failure after the append (card/DM) used to leave the email on the retry list
+    # and re-append the row on every daily run.
+    try:
+        header, data_rows, _sid = _read_metadata_tracker_rows(region)
+        upc_i, date_i = header.index("UPC"), header.index("Date Received")
+        want = (str(fields.get("upc", "N/A")).strip(), str(fields.get("date_received", "N/A")).strip())
+        if any((r[upc_i].strip() if len(r) > upc_i else "", r[date_i].strip() if len(r) > date_i else "") == want
+               for r in data_rows):
+            print(f"  • {region} Metadata Corrections tab already has UPC {want[0]} ({want[1]}); "
+                  "not appending a duplicate row", flush=True)
+            return True
+    except Exception as exc:
+        print(f"  ⚠ Could not check {region} Metadata Corrections tab for an existing row: {exc!r}", flush=True)
 
     artist_cols = list(artist_columns) if artist_columns else ["", "", "", "", ""]
     row = [
@@ -1076,10 +1091,22 @@ def handle_metadata_notice(body, subject="", meta=None, msg_id="") -> dict:
     fields = parse_metadata_notice(body, subject, meta)
     key = notice_key(fields)
 
-    # Region from UPC via Aeolus (same lookup as the infringement flow).
+    # Region from the UPC's Aeolus account(s). Only BR / US / SPLA accounts belong
+    # in our trackers: a notice for an account in any other region (ID, GB, ...) is
+    # skipped entirely instead of being filed under whichever region's run saw it.
     upc = str(fields.get("upc", "") or "").strip()
     aeolus_row = query_aeolus(upc) if upc and upc != "N/A" else {}
-    region = _canonical_alert_region(aeolus_row=aeolus_row) if aeolus_row else "BR"
+    if upc and upc != "N/A":
+        region, aeolus_row, region_status = resolve_notice_region(upc, aeolus_row)
+    else:
+        region, region_status = "", "no_aeolus_row"
+    if region_status == "out_of_region":
+        print(f"  • Metadata notice for UPC {upc} skipped — account region "
+              f"{str(aeolus_row.get('user_region') or '?')!r} is outside BR/US/SPLA ({key})", flush=True)
+        return {"status": "out_of_region", "key": key, "user_region": aeolus_row.get("user_region", "")}
+    if region_status == "no_aeolus_row":
+        region = "BR"   # legacy default when the UPC can't be resolved at all
+        print(f"  ⚠ No Aeolus account found for UPC {upc}; defaulting the metadata notice to BR ({key})", flush=True)
 
     # Fill artist / title gaps from Aeolus when the email omitted them.
     if fields.get("artist", "N/A") == "N/A" and aeolus_row.get("display_artist"):

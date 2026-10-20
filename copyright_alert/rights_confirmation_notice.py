@@ -74,6 +74,7 @@ from copyright_alert.metadata_notice import (
 )
 from copyright_alert.run_alert import (
     RUNTIME_DIR,
+    resolve_notice_region,
     _canonical_alert_region,
     _display_name_from_username,
     _mention_people,
@@ -231,11 +232,34 @@ def _read_rights_tracker_rows(region: str):
     return header, data_rows, sheet_id
 
 
+def _row_already_tracked(region: str, upc: str, date_received: str) -> bool:
+    """True if this exact notice (same UPC + Date Received) is already in the tab.
+
+    The append used to be blind: any failure AFTER it (group card, DM) left no
+    state record, the email stayed on the retry list, and every daily run
+    appended the same row again (one UPC reached 14+ rows)."""
+    try:
+        header, data_rows, _ = _read_rights_tracker_rows(region)
+        upc_i, date_i = header.index("UPC"), header.index("Date Received")
+    except Exception as exc:
+        print(f"  ⚠ Could not check {region} Rights Confirmation tab for an existing row: {exc!r}", flush=True)
+        return False
+    want = (str(upc).strip(), str(date_received).strip())
+    return any(
+        (r[upc_i].strip() if len(r) > upc_i else "", r[date_i].strip() if len(r) > date_i else "") == want
+        for r in data_rows
+    )
+
+
 def _append_rights_confirmation_row(fields: dict, region: str, aeolus_row: dict) -> bool:
     tracker_url = _rights_tracker_url(region)
     sheet_id = _ensure_rights_confirmation_sheet(region)
     if not sheet_id:
         raise RuntimeError(f"Missing {RIGHTS_CONFIRMATION_SHEET_NAME} sheet id for {region}")
+    if _row_already_tracked(region, fields.get("upc", "N/A"), fields.get("date_received", "N/A")):
+        print(f"  • {region} Rights Confirmation tab already has UPC {fields.get('upc')} "
+              f"({fields.get('date_received')}); not appending a duplicate row", flush=True)
+        return True
 
     bd = ", ".join(_display_name_from_username(p) for p in _parse_people_list(aeolus_row.get("bd_manager_list")))
     label_mgr = ", ".join(_display_name_from_username(p) for p in _parse_people_list(aeolus_row.get("operation_manager_list")))
@@ -605,7 +629,21 @@ def handle_rights_confirmation_notice(body, subject="", meta=None, msg_id="") ->
 
     upc = str(fields.get("upc", "") or "").strip()
     aeolus_row = query_aeolus(upc) if upc and upc != "N/A" else {}
-    region = _canonical_alert_region(aeolus_row=aeolus_row) if aeolus_row else "BR"
+    # Only BR / US / SPLA accounts belong in our trackers. A notice for an account in
+    # any other region (ID, GB, ...) is dropped instead of being filed under whichever
+    # region's run happened to scan it (the old fallback), and a UPC that exists under
+    # several accounts is routed by its AMS account, not an arbitrary first row.
+    if upc and upc != "N/A":
+        region, aeolus_row, region_status = resolve_notice_region(upc, aeolus_row, ELIGIBLE_SOURCE_TYPES)
+    else:
+        region, region_status = "", "no_aeolus_row"
+    if region_status == "out_of_region":
+        print(f"  • Rights-confirmation notice for UPC {upc} skipped — account region "
+              f"{str(aeolus_row.get('user_region') or '?')!r} is outside BR/US/SPLA ({key})", flush=True)
+        return {"status": "out_of_region", "key": key, "user_region": aeolus_row.get("user_region", "")}
+    if region_status == "no_aeolus_row":
+        region = "BR"   # legacy default when the UPC can't be resolved at all
+        print(f"  ⚠ No Aeolus account found for UPC {upc}; defaulting the notice to BR ({key})", flush=True)
 
     source_type = str(aeolus_row.get("source_type_name", "") or "").strip()
     if source_type not in ELIGIBLE_SOURCE_TYPES:
