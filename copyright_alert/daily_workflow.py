@@ -85,6 +85,7 @@ from copyright_alert.run_alert import (  # noqa: E402
     load_posted_card,
 )
 from copyright_alert.dm_action_card import (  # noqa: E402
+    DISMISSED_STATUS_PREFIX,
     send_dm_action_card,
     parse_detected_date,
 )
@@ -1953,7 +1954,9 @@ def countdown_refresh(values):
         retracted = _cell(row, idx["retracted"])
         if not _is_open_for_ops(status, admin_action, retracted):
             continue
-        if _cell(row, idx["email_status"]):  # already handled
+        # A reply was handled -> stop the countdown. A DISMISSED case only stops the
+        # ops DM card (see dm_action_cards); the group card's countdown keeps going.
+        if _cell(row, idx["email_status"]) and not _cell(row, idx["email_status"]).startswith(DISMISSED_STATUS_PREFIX):
             continue
         card_msg_id = _cell(row, idx["card_msg"]) or _cell(row, idx["lark_msg"])
         if not card_msg_id:

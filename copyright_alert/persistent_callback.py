@@ -52,9 +52,15 @@ from copyright_alert.bot_runtime import (
 )
 from copyright_alert import run_alert as ra
 from copyright_alert.dm_upc_lookup import is_upc, lookup_upc
-from copyright_alert.dm_action_card import send_dm_action_card
+from copyright_alert.dm_action_card import (
+    DISMISS_ACTION,
+    DISMISSED_STATUS_PREFIX,
+    build_dismissed_card,
+    send_dm_action_card,
+)
 from copyright_alert.handle_callback import (
     patch_message,
+    _find_tracker_row,
     read_sheet_values,
     update_card_state,
     update_sheet_status,
@@ -363,6 +369,52 @@ def _acquire_message_lock(message_id):
             return False
         MESSAGE_LOCKS[message_id] = now
         return True
+
+
+def _process_dismiss(value, dm_message_id="", event_id=None):
+    """🚫 Dismiss on a DM action card: record "Dismissed" in the tracker's Email
+    Status column (the daily DM step skips any row with a non-blank Email Status,
+    so this case stops being sent) and update the DM card in place. Never
+    overwrites a status that is already there, e.g. a reply recorded meanwhile.
+    Runs in a background thread."""
+    region = str(value.get("region") or "").strip() or None
+    try:
+        _refresh_callback_credentials("callback dismiss write-back")
+        values = read_sheet_values(region)
+        row_num, _reason, header_index = _find_tracker_row(
+            values,
+            message_id=value.get("lark_card_message_id"),
+            upc=value.get("upc"),
+            ref_id=value.get("ref_id"),
+            tracker_row=value.get("tracker_row"),
+        )
+        if not row_num:
+            message, ok = "Couldn't find this case in the tracker, so nothing was recorded.", False
+        else:
+            es_i = header_index.get("Email Status")
+            row = values[row_num - 1] if 0 < row_num <= len(values) else []
+            existing = str(row[es_i]).strip() if es_i is not None and es_i < len(row) and row[es_i] is not None else ""
+            if existing:
+                message, ok = (f"This case already has an Email Status in the tracker (**{existing}**), "
+                               "so I left it as is."), existing.startswith(DISMISSED_STATUS_PREFIX)
+            else:
+                from datetime import timezone, timedelta
+                stamp = datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=-3))).strftime("%Y-%m-%d %H:%M BRT")
+                status_value = f"{DISMISSED_STATUS_PREFIX} – {stamp}"
+                if update_sheet_email_status(row_num, status_value, region=region):
+                    message, ok = (f"Dismissed. I won't send you this reply card for this case again.\n"
+                                   f"Tracker row {row_num} → Email Status: **{status_value}**\n"
+                                   "(Clear that cell to bring the card back.)"), True
+                else:
+                    message, ok = "Couldn't write to the tracker, so this was NOT dismissed. Please try again.", False
+    except Exception as exc:
+        print("dismiss error:", repr(exc), flush=True)
+        message, ok = f"Couldn't dismiss this case ({exc!r}). Please try again.", False
+    if dm_message_id:
+        try:
+            patch_message(dm_message_id, build_dismissed_card(value, message, ok=ok))
+        except Exception as exc:
+            print("dismiss card update error:", repr(exc), flush=True)
 
 
 def _process_spotify_reply(value, custom_message="", notify_chat_id=None, event_id=None, cc="", note=""):
@@ -821,6 +873,19 @@ def handle_card_action(data):
             except Exception as exc:
                 print(f"send_ops_dm callback error: {exc!r}", flush=True)
                 return _toast(f"Failed to send Ops DM card: {exc}", "error")
+
+        # ── 🚫 Dismiss (DM action card) ───────────────────────────────────────
+        if isinstance(value, dict) and value.get("action") == DISMISS_ACTION:
+            if event_id and not _acquire_event_lock(event_id):
+                print(f"Skipping duplicate dismiss for event_id: {event_id}", flush=True)
+                return _toast("This button click was already processed.", "warn")
+            dm_message_id = (
+                (getattr(context, "open_message_id", None) if context else None)
+                or ctx_payload.get("open_message_id")
+                or ""
+            )
+            threading.Thread(target=_process_dismiss, args=(value, dm_message_id, event_id), daemon=True).start()
+            return _toast("Dismissing…", "success")
 
         # ── Spotify reply action (DM action card) ────────────────────────────
         if isinstance(value, dict) and value.get("action") == "spotify_reply":
