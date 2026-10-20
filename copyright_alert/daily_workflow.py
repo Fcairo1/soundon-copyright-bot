@@ -28,6 +28,7 @@ All output is written to both stdout and copyright_alert/logs/daily_<ts>.log.
 """
 
 import argparse
+import base64
 import json
 import os
 import re
@@ -230,6 +231,31 @@ def _setup_logging():
 
 def log(msg=""):
     print(msg, flush=True)
+
+
+def _current_env_jwt_diag() -> str:
+    now_ts = int(datetime.now(timezone.utc).timestamp())
+    for key in ("AIME_USER_CLOUD_JWT", "USER_CLOUD_JWT", "IRIS_USER_CLOUD_JWT"):
+        token = str(os.environ.get(key, "") or "").strip()
+        if not token:
+            continue
+        try:
+            payload = token.split(".")[1]
+            payload += "=" * (-len(payload) % 4)
+            claims = json.loads(base64.urlsafe_b64decode(payload.encode("utf-8")))
+            iat = int(claims.get("iat") or 0)
+            exp = int(claims.get("exp") or 0)
+            lifetime_min = (exp - iat) // 60 if iat and exp else 0
+            remaining_min = (exp - now_ts) // 60 if exp else 0
+            iat_iso = datetime.fromtimestamp(iat, tz=timezone.utc).isoformat() if iat else "n/a"
+            exp_iso = datetime.fromtimestamp(exp, tz=timezone.utc).isoformat() if exp else "n/a"
+            return (
+                f"JWT env diag ({key}): iat={iat_iso} exp={exp_iso} "
+                f"lifetime_min={lifetime_min} remaining_min={remaining_min}"
+            )
+        except Exception as exc:
+            return f"JWT env diag ({key}): decode_error={exc}"
+    return "JWT env diag: no JWT env var set"
 
 
 def section(title):
@@ -2046,6 +2072,7 @@ def main(region=None, only=None, skip=None):
     log(f"Tracker: {TRACKER_SHEET_URL}")
     log(f"Ops DM owner: {RECIPIENT_OPEN_ID or RECIPIENT_EMAIL}")
     log(f"Checkpoint: {CHECKPOINT_FILE}")
+    log(_current_env_jwt_diag())
 
     selector = PartSelector(only=only, skip=skip)
     run_part = {part: selector.should_run(part) for part in VALID_PARTS}

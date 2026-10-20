@@ -45,6 +45,37 @@ def _load_snapshot(path: Path = SNAPSHOT_FILE) -> dict:
         return {}
 
 
+def _decode_jwt_claims(value: str) -> dict:
+    if not (isinstance(value, str) and value.count(".") >= 2):
+        return {}
+    try:
+        import base64
+
+        payload = value.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        obj = json.loads(base64.urlsafe_b64decode(payload.encode("utf-8")))
+        return obj if isinstance(obj, dict) else {}
+    except Exception:
+        return {}
+
+
+def _jwt_diag_line(token: str, now_ts: int | None = None) -> str:
+    claims = _decode_jwt_claims(token)
+    iat = int(claims.get("iat") or 0)
+    exp = int(claims.get("exp") or 0)
+    now_ts = int(now_ts if now_ts is not None else _utc_now().timestamp())
+    if not exp:
+        return "jwt_diag=unavailable"
+    lifetime_min = (exp - iat) // 60 if iat else 0
+    remaining_min = (exp - now_ts) // 60
+    iat_iso = datetime.fromtimestamp(iat, tz=timezone.utc).isoformat() if iat else "n/a"
+    exp_iso = datetime.fromtimestamp(exp, tz=timezone.utc).isoformat()
+    return (
+        f"iat={iat_iso} exp={exp_iso} lifetime_min={lifetime_min} "
+        f"remaining_min={remaining_min}"
+    )
+
+
 def _valid_live_tokens(env: Dict[str, str] | None = None, now_ts: int | None = None) -> Dict[str, Tuple[str, int]]:
     env = env or os.environ
     now_ts = int(now_ts if now_ts is not None else _utc_now().timestamp())
@@ -65,32 +96,38 @@ def refresh_snapshot(
     snapshot_file: Path = SNAPSHOT_FILE,
     log_file: Path = LOG_FILE,
 ) -> dict:
+    env = env or os.environ
     now = _utc_now()
+    now_ts = int(now.timestamp())
     snapshot = _load_snapshot(snapshot_file)
-    live_tokens = _valid_live_tokens(env=env, now_ts=int(now.timestamp()))
+    live_tokens = _valid_live_tokens(env=env, now_ts=now_ts)
     if not live_tokens:
         raise RuntimeError("No non-expired live AIME JWT found in environment")
 
     best_key, (best_token, best_exp) = max(live_tokens.items(), key=lambda item: item[1][1])
+    start_diag = _jwt_diag_line(best_token, now_ts=now_ts)
 
     existing_keys = snapshot.get("keys") if isinstance(snapshot.get("keys"), dict) else {}
     new_keys = dict(existing_keys)
     for key in JWT_KEYS:
         new_keys[key] = live_tokens.get(key, (best_token, best_exp))[0]
 
-    new_snapshot = {"keys": new_keys, "updated_at": int(now.timestamp())}
+    new_snapshot = {"keys": new_keys, "updated_at": now_ts}
     snapshot_file.parent.mkdir(parents=True, exist_ok=True)
     snapshot_file.write_text(json.dumps(new_snapshot, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
 
     expiry_iso = datetime.fromtimestamp(best_exp, tz=timezone.utc).isoformat()
+    end_diag = _jwt_diag_line(new_keys.get(best_key, best_token), now_ts=now_ts)
     log_file.parent.mkdir(parents=True, exist_ok=True)
     with log_file.open("a", encoding="utf-8") as fh:
+        fh.write(f"{now.isoformat()} refresh_start source_key={best_key} {start_diag}\n")
         fh.write(
-            f"{now.isoformat()} refresh_ok source_key={best_key} expires_at={best_exp} expires_at_iso={expiry_iso}\n"
+            f"{now.isoformat()} refresh_ok source_key={best_key} expires_at={best_exp} "
+            f"expires_at_iso={expiry_iso} {end_diag}\n"
         )
 
     return {
-        "updated_at": int(now.timestamp()),
+        "updated_at": now_ts,
         "source_key": best_key,
         "expires_at": best_exp,
         "expires_at_iso": expiry_iso,
