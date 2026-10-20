@@ -1941,8 +1941,8 @@ def countdown_refresh(values):
         "uid": _header_index(headers, "UID"),
         "admin_action": _header_index(headers, ADMIN_ACTION_HEADER),
         "retracted": _header_index(headers, RETRACTED_HEADER),
-        "sptf_baseline": _header_index(headers, engagement_tracker.BASELINE_SPOTIFY_HEADER),
-        "sptf_now": _header_index(headers, engagement_tracker.NOW_SPOTIFY_HEADER),
+        "sptf_baseline": _header_index(headers, engagement_tracker.AT_CLAIM_HEADER),
+        "sptf_now": _header_index(headers, engagement_tracker.SPOTIFY_HEADER),
     }
     today = date.today()
     refreshed = 0
