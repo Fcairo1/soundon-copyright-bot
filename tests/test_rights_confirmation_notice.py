@@ -246,6 +246,21 @@ def test_handle_reply_callback_from_dm_does_not_notify_ops(monkeypatch):
     assert set(patched.keys()) == {"dm_msg_1", "group_msg_1"}
 
 
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _no_real_aeolus_account_lookup(monkeypatch):
+    """handle_rights_confirmation_notice now resolves the region through
+    resolve_notice_region, which may query ALL account rows of the UPC in Aeolus
+    when the first row isn't an eligible AMS account. These tests must never hit
+    the real Aeolus: in the AIME sandbox that lookup succeeded, found an eligible
+    account for the real UPC in REAL_BODY, and flipped
+    test_handle_notice_falls_through_for_ineligible_source to "already_tracked"."""
+    from copyright_alert import run_alert as ra
+    monkeypatch.setattr(ra, "batch_query_aeolus_rows_by_upc", lambda upcs: {})
+
+
 def test_handle_notice_skips_already_tracked(monkeypatch):
     monkeypatch.setattr(rc, "query_aeolus", lambda upc: {"user_region": "BR", "source_type_name": "AP"})
     monkeypatch.setattr(rc, "get_notice", lambda key: {"region": "BR"})
