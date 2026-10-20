@@ -40,10 +40,14 @@ def test_refresh_snapshot_updates_snapshot_and_log(tmp_path):
     assert saved["keys"]["USER_CLOUD_JWT"] == live_token
     assert saved["keys"]["IRIS_USER_CLOUD_JWT"] == live_token
 
-    log_line = log_file.read_text(encoding="utf-8").strip()
+    # Two lines now: refresh_start (env JWT diag) then refresh_ok (snapshot JWT diag).
+    lines = log_file.read_text(encoding="utf-8").strip().splitlines()
+    assert "refresh_start" in lines[0] and "lifetime_min=" in lines[0]
+    log_line = lines[-1]
     assert "refresh_ok" in log_line
     assert f"expires_at={future_exp}" in log_line
     datetime.fromisoformat(log_line.split(" refresh_ok", 1)[0])
+    assert live_token not in "\n".join(lines)          # diagnostics must never log the token itself
 
 
 def test_refresh_snapshot_fails_without_valid_live_token(tmp_path):

@@ -541,8 +541,11 @@ def _refresh_aime_credentials() -> int:
 
 _JWT_ENV_KEYS = ("AIME_USER_CLOUD_JWT", "USER_CLOUD_JWT", "IRIS_USER_CLOUD_JWT")
 # Refresh when the in-process JWT has less than this left (a daily scan can run
-# for hours, so "not expired yet at startup" is not enough).
-JWT_REFRESH_MARGIN_SEC = int(os.getenv("LARK_JWT_REFRESH_MARGIN_SEC", "1800"))
+# for hours, so "not expired yet at startup" is not enough). The AIME JWT lives
+# only ~2h and the platform swaps it every 2h (observed: iat at HH:39:47 on even
+# UTC hours), so a larger margin would just produce "no fresher snapshot" alerts
+# for the whole last stretch of every token.
+JWT_REFRESH_MARGIN_SEC = int(os.getenv("LARK_JWT_REFRESH_MARGIN_SEC", "600"))
 _JWT_PREFLIGHT_MIN_INTERVAL_SEC = 60
 _jwt_preflight_last_attempt = 0.0
 

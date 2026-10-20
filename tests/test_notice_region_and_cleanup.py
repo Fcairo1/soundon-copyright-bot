@@ -225,3 +225,61 @@ def test_apply_backs_up_moves_deletes_and_updates_state(monkeypatch, tmp_path):
     state = json.loads((tmp_path / "state.json").read_text())["notices"]
     assert state["k1"]["answered"] is True and state["k1"]["closed_reason"] == "out_of_region"
     assert state["k2"]["region"] == "US" and state["k3"]["region"] == "BR" and state["k3"]["answered"] is False
+
+
+# --- resend loops stop for notices whose tab row was removed ---------------------------------
+
+def _state_recorder(monkeypatch, module, notices):
+    state = {"notices": json.loads(json.dumps(notices))}
+    monkeypatch.setattr(module, "_load_state", lambda: state)
+    monkeypatch.setattr(module, "update_json_state", lambda path, fn, default=None: fn(state))
+    return state
+
+
+def test_rights_resend_closes_a_notice_whose_row_was_removed_instead_of_dmming_forever(monkeypatch):
+    state = _state_recorder(monkeypatch, rc, {"k1": {"upc": "8997238506645", "region": "BR", "tracker_row_written": True,
+                                                    "fields": {}, "last_dm_sent": ""}})
+    monkeypatch.setattr(rc, "_read_rights_tracker_rows", lambda region: (rc.RIGHTS_CONFIRMATION_HEADERS, [], "sid"))
+    monkeypatch.setattr(rc, "_send_rights_confirmation_dm", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no DM")))
+    summary = rc.resend_unanswered_notices()
+    assert state["notices"]["k1"]["answered"] is True and state["notices"]["k1"]["closed_reason"] == "row_removed"
+    assert summary["resent"] == 0
+
+
+def test_rights_resend_still_nags_when_the_row_exists_and_is_unanswered(monkeypatch):
+    row = ["8997238506645", "u", "AP", "", "", "Investigating", "2026-10-10", "", ""]
+    _state_recorder(monkeypatch, rc, {"k1": {"upc": "8997238506645", "region": "BR", "tracker_row_written": True,
+                                            "fields": {"upc": "8997238506645"}, "last_dm_sent": ""}})
+    monkeypatch.setattr(rc, "_read_rights_tracker_rows", lambda region: (rc.RIGHTS_CONFIRMATION_HEADERS, [row], "sid"))
+    sent = []
+    monkeypatch.setattr(rc, "_send_rights_confirmation_dm", lambda f, region: sent.append(region) or {"ok": True})
+    assert rc.resend_unanswered_notices()["resent"] == 1 and sent == ["BR"]
+
+
+def test_rights_resend_does_not_close_a_notice_whose_row_was_never_written(monkeypatch):
+    # tracker append failed originally -> the DM nag is the only visibility; keep it
+    _state_recorder(monkeypatch, rc, {"k1": {"upc": "1", "region": "BR", "tracker_row_written": False,
+                                            "fields": {"upc": "1"}, "last_dm_sent": ""}})
+    monkeypatch.setattr(rc, "_read_rights_tracker_rows", lambda region: (rc.RIGHTS_CONFIRMATION_HEADERS, [], "sid"))
+    sent = []
+    monkeypatch.setattr(rc, "_send_rights_confirmation_dm", lambda f, region: sent.append(1) or {"ok": True})
+    assert rc.resend_unanswered_notices()["resent"] == 1
+
+
+def test_metadata_resend_closes_a_notice_whose_row_was_removed(monkeypatch):
+    state = _state_recorder(monkeypatch, mn, {"k1": {"region": "BR", "tracker_row_written": True, "resolved": False,
+                                                    "fields": {"upc": "8997238506645"}, "last_dm_sent": ""}})
+    monkeypatch.setattr(mn, "_open_statuses_by_region", lambda regions: {"BR": {"5063971200997": True}})
+    monkeypatch.setattr(mn, "_send_notice_dm", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no DM")))
+    mn.resend_unresolved_notices()
+    assert state["notices"]["k1"]["resolved"] is True and state["notices"]["k1"]["resolved_by"] == "row_removed"
+
+
+def test_metadata_resend_unaffected_when_the_region_tab_could_not_be_read(monkeypatch):
+    _state_recorder(monkeypatch, mn, {"k1": {"region": "BR", "tracker_row_written": True, "resolved": False,
+                                            "fields": {"upc": "1"}, "last_dm_sent": ""}})
+    monkeypatch.setattr(mn, "_open_statuses_by_region", lambda regions: {})      # read failed -> no entry for BR
+    sent = []
+    monkeypatch.setattr(mn, "_send_notice_dm", lambda f, region: sent.append(1) or {"ok": True})
+    mn.resend_unresolved_notices()
+    assert sent == [1]
