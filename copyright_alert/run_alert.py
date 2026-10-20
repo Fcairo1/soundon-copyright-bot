@@ -18,6 +18,7 @@ import os
 import ast
 import csv
 import io
+import time
 import urllib.request
 from datetime import datetime, timedelta, date
 from pathlib import Path
@@ -1344,7 +1345,23 @@ def batch_query_aeolus_rows_by_upc(upcs, chunk_size=40):
             f"WHERE `[upc]` IN ({in_list}) AND `[p_date]` >= '{recent_cutoff}' "
             "ORDER BY `[p_date]` DESC"
         )
-        parsed = _run_aeolus_sql(sql, timeout=240)
+        # A failed/unparseable query must not silently turn a whole chunk of UPCs into
+        # "no Aeolus row" (a real dry run lost exactly one 40-UPC chunk that way and
+        # misreported 21 foreign rows as unknown), so retry before giving up.
+        parsed = None
+        for attempt in range(1, 4):
+            try:
+                parsed = _run_aeolus_sql(sql, timeout=240)
+            except Exception as exc:
+                print(f"  ⚠ Aeolus rows chunk {idx // chunk_size + 1} attempt {attempt} raised: {exc!r}", flush=True)
+                parsed = None
+            if parsed:
+                break
+            if attempt < 3:
+                time.sleep(2 * attempt)
+        if not parsed:
+            print(f"  ✗ Aeolus rows chunk {idx // chunk_size + 1}: no usable response after 3 attempts "
+                  f"({len(chunk)} UPC(s) left unresolved)", flush=True)
         rows = _friendly_aeolus_rows(parsed) if parsed else []
         latest = {}
         for row in rows:

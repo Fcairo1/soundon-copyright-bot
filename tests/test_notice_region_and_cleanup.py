@@ -283,3 +283,35 @@ def test_metadata_resend_unaffected_when_the_region_tab_could_not_be_read(monkey
     monkeypatch.setattr(mn, "_send_notice_dm", lambda f, region: sent.append(1) or {"ok": True})
     mn.resend_unresolved_notices()
     assert sent == [1]
+
+
+# --- a failed Aeolus chunk must be retried, and an unresolved UPC reported -------------------
+
+def test_aeolus_rows_lookup_retries_a_failed_chunk(monkeypatch):
+    calls = []
+    good = {"columns": ["upc", "user_region", "p_date"], "rows": [["111", "ID", "2026-10-20"]]}
+
+    def fake_sql(sql, timeout=0, dataset_id=None):
+        calls.append(1)
+        return None if len(calls) < 3 else good            # two failures, then success
+
+    monkeypatch.setattr(ra, "_run_aeolus_sql", fake_sql)
+    monkeypatch.setattr(ra, "_friendly_aeolus_rows",
+                        lambda parsed: [dict(zip(parsed["columns"], r)) for r in parsed["rows"]])
+    monkeypatch.setattr(ra.time, "sleep", lambda s: None)
+    out = ra.batch_query_aeolus_rows_by_upc(["111"])
+    assert len(calls) == 3 and out["111"][0]["user_region"] == "ID"
+
+
+def test_aeolus_rows_lookup_gives_up_after_three_attempts_without_raising(monkeypatch):
+    monkeypatch.setattr(ra, "_run_aeolus_sql", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(ra.time, "sleep", lambda s: None)
+    assert ra.batch_query_aeolus_rows_by_upc(["111"]) == {}
+
+
+def test_cleanup_warns_about_unresolved_upcs_and_leaves_them_alone(monkeypatch, tmp_path):
+    rows = {"BR": [(2, r("8997238506645")), (3, r("111111111111"))], "US": [], "SPLA": []}
+    _wire_cleanup(monkeypatch, tmp_path, rows, {"8997238506645": "ID"})     # 111111111111 not resolvable
+    out = nc.run_cleanup("rights", apply=False)
+    assert "1 UPC(s) could not be resolved" in out["warning"]
+    assert out["summary"]["keep_unknown"] == 1 and out["summary"]["delete_foreign"] == 1

@@ -181,7 +181,10 @@ def run_cleanup(kind: str, *, apply: bool = False) -> dict:
     tabs = _read_tabs(ad)
     plan = plan_cleanup(tabs, _make_region_of(ad, tabs), ad["protected"])
     entries = plan["entries"]
+    unresolved = sorted({e["upc"] for e in entries if e["action"] == "keep_unknown"})
     result = {"kind": kind, "apply": apply, "summary": plan["summary"],
+              "warning": (f"{len(unresolved)} UPC(s) could not be resolved in Aeolus and were LEFT UNTOUCHED "
+                          "(often one failed query chunk of 40) — rerun to classify them") if unresolved else "",
               "moves": [e for e in entries if e["action"] == "move"],
               "foreign": [e for e in entries if e["action"] == "delete_foreign"],
               "unknown": [e for e in entries if e["action"] == "keep_unknown"],
@@ -254,6 +257,8 @@ def main(argv=None) -> int:
         print(__doc__)
         return 2
     out = run_cleanup(argv[0], apply="--apply" in argv)
+    if out.get("warning"):
+        print("⚠ " + out["warning"], file=sys.stderr)
     brief = {k: v for k, v in out.items() if k not in ("moves", "foreign", "unknown")}
     brief["moves"] = [(e["upc"], e["tab"], "->", e["to"]) for e in out["moves"]]
     brief["foreign"] = sorted({e["upc"] for e in out["foreign"]})
