@@ -1226,7 +1226,22 @@ def resend_unresolved_notices() -> dict:
 
         region = rec.get("region", "BR")
         upc = str(rec.get("fields", {}).get("upc", "") or rec.get("upc", "")).strip()
-        still_open = open_by_region.get(region, {}).get(upc, True)
+        region_rows = open_by_region.get(region)
+        if region_rows is not None and upc not in region_rows and rec.get("tracker_row_written"):
+            # The tab was read fine and the row written for this notice is gone (removed by
+            # hand or by notice_tab_cleanup). It used to default to "still open" and be
+            # re-sent daily forever.
+            def _close_removed(st, _key=key):
+                r = st["notices"].get(_key)
+                if r is not None:
+                    r["resolved"] = True
+                    r["resolved_by"] = "row_removed"
+                    r["closed_reason"] = "row_removed"
+                    r["resolved_at"] = _now_brt_iso()
+            update_json_state(STATE_FILE, _close_removed, default=lambda: {"notices": {}})
+            summary["skipped_resolved_via_sheet"] += 1
+            continue
+        still_open = (region_rows or {}).get(upc, True)
         if not still_open:
             def _mark_resolved_via_sheet(st, _key=key):
                 r = st["notices"].get(_key)

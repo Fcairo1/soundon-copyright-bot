@@ -712,11 +712,25 @@ def resend_unanswered_notices() -> dict:
         upc = rec.get("upc", "")
         header, data_rows, _ = _read_rights_tracker_rows(region)
         email_status = ""
+        row_found = False
         if header and "UPC" in header and "Email Status" in header:
             upc_i, es_i = header.index("UPC"), header.index("Email Status")
             for r in data_rows:
                 if (r[upc_i].strip() if len(r) > upc_i else "") == str(upc).strip():
+                    row_found = True
                     email_status = r[es_i].strip() if len(r) > es_i else ""
+        if header and "UPC" in header and not row_found and rec.get("tracker_row_written"):
+            # The tab was read fine and the row that was written for this notice is gone
+            # (removed by hand or by notice_tab_cleanup, e.g. a foreign-region notice).
+            # Without this the notice looked "unanswered" and re-sent its DM every day.
+            def _close_removed(st, _key=key):
+                rec2 = st["notices"].get(_key)
+                if rec2 is not None:
+                    rec2["answered"] = True
+                    rec2["closed_reason"] = "row_removed"
+            update_json_state(STATE_FILE, _close_removed, default=lambda: {"notices": {}})
+            summary["skipped_answered"] += 1
+            continue
         if email_status:
             def _mark_answered(st, _key=key):
                 rec2 = st["notices"].get(_key)
