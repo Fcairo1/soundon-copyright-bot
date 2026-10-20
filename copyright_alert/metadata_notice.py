@@ -1028,10 +1028,14 @@ def backfill_metadata_streams(region: str = "BR", *, dry_run: bool = True) -> di
 
     * Inserts the column at D first if the tab lacks it (see _ensure_streams_column).
     * Only BLANK cells are written — a value captured at scan time by
-      _append_metadata_correction_row is never overwritten. Rows filled here carry
-      the value as of this run (that's the best available for older notices).
-    * One batched Aeolus query for all unique UPCs. A UPC with no engagement data
-      gets "N/A" so it isn't re-queried on every run.
+      _append_metadata_correction_row is never overwritten.
+    * Older notices were never recorded at scan time, and a taken-down release's 30d
+      streams collapse to 0 — filling today's number would just write misleading
+      zeros (41 of 55 BR rows). So only rows whose 'Spotify Status' is "Online" get
+      today's number (as of this run); every other row (Offline / Unknown / blank,
+      e.g. tabs whose status backfill hasn't run) gets "N/A".
+    * One batched Aeolus query for the Online UPCs only. A UPC with no engagement
+      data gets "N/A" so it isn't re-queried on every run.
     * Rows in _METADATA_PROTECTED_ROWS for the region are never written.
     """
     region = str(region or "BR").upper()
@@ -1044,9 +1048,10 @@ def backfill_metadata_streams(region: str = "BR", *, dry_run: bool = True) -> di
     if upc_i is None:
         raise RuntimeError(f"{METADATA_CORRECTIONS_SHEET_NAME} header missing UPC: {header}")
     protected = _METADATA_PROTECTED_ROWS.get(region, set())
+    status_i = header.index(METADATA_SPOTIFY_STATUS_HEADER) if METADATA_SPOTIFY_STATUS_HEADER in header else None
 
     def cell(r, i):
-        return r[i].strip() if len(r) > i else ""
+        return r[i].strip() if i is not None and len(r) > i else ""
 
     # In a dry run against a tab that doesn't have the column yet, the existing
     # cell at that index is some other column's data — treat every row as blank.
@@ -1059,14 +1064,16 @@ def backfill_metadata_streams(region: str = "BR", *, dry_run: bool = True) -> di
         if column_exists and cell(r, streams_i):
             continue
         todo.append((idx, upc))
-    streams = _streams_for_upcs([u for _, u in todo])
+    online = {idx for idx, _ in todo if cell(data_rows[idx], status_i).lower() == "online"}
+    streams = _streams_for_upcs([u for idx, u in todo if idx in online])
     values = [None] * len(data_rows)
     for idx, upc in todo:
-        values[idx] = streams.get(upc, "N/A")
+        values[idx] = streams.get(upc, "N/A") if idx in online else "N/A"
 
     summary = {
         "region": region, "dry_run": dry_run, "column": ensure, "rows": len(data_rows),
-        "rows_to_fill": len(todo), "unique_upcs": len({u for _, u in todo}),
+        "rows_to_fill": len(todo), "online_rows_filled_with_streams": len(online),
+        "not_online_set_to_na": len(todo) - len(online), "unique_upcs": len({u for i, u in todo if i in online}),
         "with_streams": sum(1 for v in values if isinstance(v, int)),
         "na": sum(1 for v in values if v == "N/A"),
         "protected_rows_skipped": sum(1 for i in range(len(data_rows)) if (i + 2) in protected),

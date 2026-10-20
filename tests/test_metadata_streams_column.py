@@ -107,11 +107,21 @@ def test_streams_for_upcs_parses_floats_and_marks_missing_as_na(monkeypatch):
 
 # --- backfill ------------------------------------------------------------------------
 
-def test_backfill_fills_only_blank_cells_skips_protected_rows_and_writes_column_d(monkeypatch):
-    rows = [_row("111", streams="999"),      # row 2: captured at scan time -> must NOT be overwritten
-            _row("222", streams=""),         # row 3: blank -> fill
-            _row("333", streams=""),         # row 4: protected -> never written
-            _row("444", streams="")]         # row 5: blank, no engagement data -> N/A
+def _full_row(upc, streams="", spotify_status=""):
+    """A NEW_HEADER-shaped row (14 cells) with Spotify Status in the last column."""
+    r = [upc, "2026-07-25 06:03", "Artist/origin metadata misrepresentation", streams, "Some notice", "", "n",
+         "", "", "", "", "", "", spotify_status]
+    assert len(r) == len(NEW_HEADER)
+    return r
+
+
+def test_backfill_fills_only_blank_cells_online_rows_get_numbers_the_rest_na(monkeypatch):
+    rows = [_full_row("111", streams="999", spotify_status="Online"),    # row 2: scan-time value -> untouched
+            _full_row("222", spotify_status="Online"),                    # row 3: Online -> today's number
+            _full_row("333", spotify_status="Online"),                    # row 4: protected -> never written
+            _full_row("444", spotify_status="Online"),                    # row 5: Online, no Aeolus data -> N/A
+            _full_row("555", spotify_status="Offline"),                   # row 6: taken down -> N/A (not a misleading 0)
+            _full_row("666", spotify_status="")]                          # row 7: status never backfilled -> N/A
     calls = _record_writes(monkeypatch)
     monkeypatch.setattr(mn, "_read_metadata_tracker_rows", lambda region: (NEW_HEADER, rows, "sid"))
     monkeypatch.setattr(mn, "_METADATA_PROTECTED_ROWS", {"BR": {4}})
@@ -121,10 +131,13 @@ def test_backfill_fills_only_blank_cells_skips_protected_rows_and_writes_column_
 
     summary = mn.backfill_metadata_streams("BR", dry_run=False)
 
-    assert queried == [["222", "444"]]                       # existing + protected rows aren't even queried
-    assert summary["rows_to_fill"] == 2 and summary["protected_rows_skipped"] == 1
+    assert queried == [["222", "444"]]                      # only Online, unprotected, blank rows are queried
+    assert summary["rows_to_fill"] == 4 and summary["online_rows_filled_with_streams"] == 2
+    assert summary["not_online_set_to_na"] == 2 and summary["protected_rows_skipped"] == 1
     csv_calls = [c[0] for c in calls if c[0][0] == "+csv-put"]
-    assert [(a[a.index("--start-cell") + 1], a[-1].strip()) for a in csv_calls] == [("D3", "52000"), ("D5", "N/A")]
+    written = [(a[a.index("--start-cell") + 1], a[-1].strip().split("\n")) for a in csv_calls]
+    # row 3 alone (row 4 is protected), then rows 5-7 as one contiguous block
+    assert written == [("D3", ["52000"]), ("D5", ["N/A", "N/A", "N/A"])]
 
 
 def test_backfill_dry_run_on_a_tab_without_the_column_writes_nothing_and_treats_every_row_as_blank(monkeypatch):
@@ -136,3 +149,4 @@ def test_backfill_dry_run_on_a_tab_without_the_column_writes_nothing_and_treats_
     monkeypatch.setattr(mn, "batch_query_engagement_by_upc", lambda upcs: {})
     summary = mn.backfill_metadata_streams("US", dry_run=True)
     assert calls == [] and summary["rows_to_fill"] == 2 and summary["column"]["would_insert"] is True
+    assert summary["not_online_set_to_na"] == 2          # no 'Spotify Status' values -> N/A, not zeros
