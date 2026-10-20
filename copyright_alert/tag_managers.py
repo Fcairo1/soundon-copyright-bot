@@ -58,9 +58,9 @@ from copyright_alert.lark_auth import extract_sheet_values, sheet_values_api
 ADMIN_ACTION_HEADER = "Admin Action Taken"
 # Spotify 30d streams: refreshed daily by engagement_tracker; the baseline
 # column is the at-claim snapshot used as a fallback.
-NOW_STREAMS_HEADER = "Spotify 30d Streams (Now)"
+NOW_STREAMS_HEADER = "sptf_30d_str"
 CLAIMANT_TIER_HEADER = "Claimant Tier"
-BASELINE_STREAMS_HEADER = "sptf_30d_str"
+BASELINE_STREAMS_HEADER = "Spotify At Claim"
 # Wide enough to reach the appended "(Now)" columns (A:Z stopped short of them).
 TRACKER_READ_RANGE = "A:BZ"
 PENDING_STATUSES = {
