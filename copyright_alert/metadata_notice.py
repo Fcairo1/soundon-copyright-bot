@@ -50,6 +50,7 @@ from copyright_alert.run_alert import (
     _ops_context_for_region,
     _parse_people_list,
     batch_query_aeolus_by_upc,
+    batch_query_engagement_by_upc,
     extract_fields,
     first,
     labeled_value,
@@ -75,10 +76,17 @@ _ADMIN_ALBUM_URL = (
 )
 
 METADATA_CORRECTIONS_SHEET_NAME = "Metadata Corrections"
+# "Spotify Streams (30d)" (column D) = the content's Spotify 30-day streams at the
+# time the notice was scanned — the same metric as the claims tracker's
+# sptf_30d_str (Aeolus api_sptf_play_cnt_30d). New rows get it at append time;
+# rows that predate it are filled once by backfill_metadata_streams (as of that
+# run) and never overwritten afterwards.
+METADATA_STREAMS_HEADER = "Spotify Streams (30d)"
 METADATA_CORRECTIONS_BASE_HEADERS = [
     "UPC",
     "Date Received",
     "Spotify Notice Type",
+    METADATA_STREAMS_HEADER,
     "Subject",
     "Status",
     "Notes",
@@ -507,17 +515,71 @@ def _ensure_metadata_corrections_sheet(region: str) -> str:
     return sheet_id
 
 
-def _append_metadata_correction_row(fields: dict, region: str, artist_columns=None) -> bool:
+_STREAMS_COLUMN_READY: set = set()   # regions whose tab is known to have the streams column
+
+
+def _streams_for_upcs(upcs) -> dict:
+    """{upc: int Spotify 30d streams | "N/A"} — one batched Aeolus engagement query."""
+    wanted = [u for u in dict.fromkeys(str(u or "").strip() for u in upcs) if u and u != "N/A"]
+    found = batch_query_engagement_by_upc(wanted) if wanted else {}
+    out = {}
+    for upc in wanted:
+        raw = (found.get(upc) or {}).get("sptf_30d_str")
+        try:
+            out[upc] = int(round(float(str(raw).replace(",", ""))))
+        except (TypeError, ValueError):
+            out[upc] = "N/A"
+    return out
+
+
+def _ensure_streams_column(region: str, *, dry_run: bool = False) -> dict:
+    """Make sure the region's Metadata Corrections tab has the streams column at D.
+
+    Inserts a blank column before D and writes its header. Refuses to touch a tab
+    whose existing layout isn't the expected "…, Spotify Notice Type, Subject, …"
+    (so a hand-edited tab is never shifted blindly) and resumes cleanly if a
+    previous run inserted the column but died before writing the header. Idempotent.
+    """
+    region = str(region or "BR").upper()
+    if region in _STREAMS_COLUMN_READY and not dry_run:
+        return {"region": region, "inserted": False, "already_present": True}
+    tracker_url = _metadata_tracker_url(region)
+    header, _rows, sheet_id = _read_metadata_tracker_rows(region)
+    if METADATA_STREAMS_HEADER in header:
+        if not dry_run:
+            _STREAMS_COLUMN_READY.add(region)
+        return {"region": region, "inserted": False, "already_present": True,
+                "column": _column_letter(header.index(METADATA_STREAMS_HEADER))}
+    half_done = len(header) > 4 and header[3] == "" and header[4] == "Subject"
+    if not half_done and header[:4] != ["UPC", "Date Received", "Spotify Notice Type", "Subject"]:
+        raise RuntimeError(f"{region} Metadata Corrections layout is not the expected one; "
+                           f"refusing to insert a column at D. Header: {header[:8]}")
+    if dry_run:
+        return {"region": region, "inserted": False, "would_insert": not half_done, "would_write_header": True}
+    if not half_done:
+        _run_lark_sheets(["+dim-insert", "--url", tracker_url, "--sheet-id", sheet_id,
+                          "--position", "D", "--count", "1", "--inherit-style", "before"])
+    _run_lark_sheets(["+csv-put", "--url", tracker_url, "--sheet-id", sheet_id, "--start-cell", "D1",
+                      "--csv", _rows_to_csv([[METADATA_STREAMS_HEADER]])])
+    _STREAMS_COLUMN_READY.add(region)
+    return {"region": region, "inserted": not half_done, "already_present": False, "column": "D"}
+
+
+def _append_metadata_correction_row(fields: dict, region: str, artist_columns=None, streams=None) -> bool:
     tracker_url = _metadata_tracker_url(region)
     sheet_id = _ensure_metadata_corrections_sheet(region)
     if not sheet_id:
         raise RuntimeError(f"Missing {METADATA_CORRECTIONS_SHEET_NAME} sheet id for {region}")
+    # The row below is positional (streams at D): the tab must already have the
+    # column or every cell would land one column off. Inserts it on first use.
+    _ensure_streams_column(region)
 
     artist_cols = list(artist_columns) if artist_columns else ["", "", "", "", ""]
     row = [
         fields.get("upc", "N/A"),
         fields.get("date_received", "N/A"),
         "Artist/origin metadata misrepresentation",
+        "N/A" if streams in (None, "") else streams,
         fields.get("subject", ""),
         DEFAULT_METADATA_STATUS,
         f"Auto-routed from Spotify metadata correction notice; ref={fields.get('ref_id', 'N/A')}",
@@ -638,7 +700,12 @@ def backfill_metadata_artists_and_status(region: str = "BR", *, dry_run: bool = 
             new_status.append(current)
 
     has_artist_headers = all(h in header for h in METADATA_ARTIST_HEADERS)
-    artist_start_col = _column_letter(len(METADATA_CORRECTIONS_BASE_HEADERS))  # "G" today
+    # Where the Artist block goes: its existing header if present, otherwise right
+    # after the last existing header (a fixed offset breaks as soon as a column is
+    # inserted ahead of it, e.g. the streams column at D).
+    artist_start_col = _column_letter(
+        header.index(METADATA_ARTIST_HEADERS[0]) if has_artist_headers else len(header)
+    )
     status_col = _column_letter(status_i)
 
     summary = {
@@ -916,6 +983,87 @@ def backfill_metadata_claim_and_spotify_status(region: str = "BR", *, dry_run: b
     return summary
 
 
+def _write_column_segments(tracker_url: str, sheet_id: str, col_letter: str, values) -> int:
+    """Write ``values`` down a column starting at row 2; ``None`` entries are left
+    untouched (the write is split into contiguous segments around them)."""
+    written, segment, seg_start = 0, [], None
+
+    def flush():
+        nonlocal written, segment, seg_start
+        if segment:
+            _run_lark_sheets(["+csv-put", "--url", tracker_url, "--sheet-id", sheet_id,
+                              "--start-cell", f"{col_letter}{seg_start}",
+                              "--csv", _rows_to_csv([[x] for x in segment])])
+            written += len(segment)
+        segment, seg_start = [], None
+
+    for i, v in enumerate(values):
+        if v is None:
+            flush()
+            continue
+        if seg_start is None:
+            seg_start = i + 2
+        segment.append(v)
+    flush()
+    return written
+
+
+def backfill_metadata_streams(region: str = "BR", *, dry_run: bool = True) -> dict:
+    """Fill 'Spotify Streams (30d)' for rows that don't have it yet.
+
+    * Inserts the column at D first if the tab lacks it (see _ensure_streams_column).
+    * Only BLANK cells are written — a value captured at scan time by
+      _append_metadata_correction_row is never overwritten. Rows filled here carry
+      the value as of this run (that's the best available for older notices).
+    * One batched Aeolus query for all unique UPCs. A UPC with no engagement data
+      gets "N/A" so it isn't re-queried on every run.
+    * Rows in _METADATA_PROTECTED_ROWS for the region are never written.
+    """
+    region = str(region or "BR").upper()
+    ensure = _ensure_streams_column(region, dry_run=dry_run)
+    header, data_rows, sheet_id = _read_metadata_tracker_rows(region)
+    if not header:
+        raise RuntimeError(f"Could not read {METADATA_CORRECTIONS_SHEET_NAME} header for {region}")
+    upc_i = header.index("UPC") if "UPC" in header else None
+    streams_i = header.index(METADATA_STREAMS_HEADER) if METADATA_STREAMS_HEADER in header else 3
+    if upc_i is None:
+        raise RuntimeError(f"{METADATA_CORRECTIONS_SHEET_NAME} header missing UPC: {header}")
+    protected = _METADATA_PROTECTED_ROWS.get(region, set())
+
+    def cell(r, i):
+        return r[i].strip() if len(r) > i else ""
+
+    # In a dry run against a tab that doesn't have the column yet, the existing
+    # cell at that index is some other column's data — treat every row as blank.
+    column_exists = METADATA_STREAMS_HEADER in header
+    todo = []   # (data index, upc)
+    for idx, r in enumerate(data_rows):
+        upc = cell(r, upc_i)
+        if not upc or (idx + 2) in protected:
+            continue
+        if column_exists and cell(r, streams_i):
+            continue
+        todo.append((idx, upc))
+    streams = _streams_for_upcs([u for _, u in todo])
+    values = [None] * len(data_rows)
+    for idx, upc in todo:
+        values[idx] = streams.get(upc, "N/A")
+
+    summary = {
+        "region": region, "dry_run": dry_run, "column": ensure, "rows": len(data_rows),
+        "rows_to_fill": len(todo), "unique_upcs": len({u for _, u in todo}),
+        "with_streams": sum(1 for v in values if isinstance(v, int)),
+        "na": sum(1 for v in values if v == "N/A"),
+        "protected_rows_skipped": sum(1 for i in range(len(data_rows)) if (i + 2) in protected),
+        "sample": [{"upc": todo[i][1], "streams": values[todo[i][0]]} for i in range(min(3, len(todo)))],
+    }
+    if dry_run:
+        return summary
+    summary["rows_written"] = _write_column_segments(_metadata_tracker_url(region), sheet_id,
+                                                      _column_letter(streams_i), values)
+    return summary
+
+
 # ── Main handler (called from the daily scan) ────────────────────────────────
 def handle_metadata_notice(body, subject="", meta=None, msg_id="") -> dict:
     """Route a detected metadata notice: parse → region → DM → track state.
@@ -955,7 +1103,12 @@ def handle_metadata_notice(body, subject="", meta=None, msg_id="") -> dict:
         return {"status": "already_tracked", "key": key, "region": region}
 
     # New notice → write to the Metadata Corrections tab, send the DM, and record state.
-    tracker_ok = _append_metadata_correction_row(fields, region, artist_columns)
+    try:
+        streams = _streams_for_upcs([upc]).get(upc, "N/A") if upc and upc != "N/A" else "N/A"
+    except Exception as exc:  # never let a stats lookup block recording the notice
+        print(f"  ⚠ Spotify streams lookup failed for {upc}: {exc!r}", flush=True)
+        streams = "N/A"
+    tracker_ok = _append_metadata_correction_row(fields, region, artist_columns, streams)
     send = _send_notice_dm(fields, region)
     today = _today_brt()
 

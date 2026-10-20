@@ -124,6 +124,7 @@ def test_new_row_default_status_and_artist_columns(monkeypatch):
         return {}
 
     monkeypatch.setattr(mn, "_ensure_metadata_corrections_sheet", fake_ensure)
+    monkeypatch.setattr(mn, "_ensure_streams_column", lambda region, **k: {})   # covered in test_metadata_streams_column
     monkeypatch.setattr(mn, "_run_lark_sheets", fake_run_lark_sheets)
 
     fields = {"upc": "5063971200997", "date_received": "2026-07-27", "subject": "Some subject",
@@ -131,8 +132,8 @@ def test_new_row_default_status_and_artist_columns(monkeypatch):
     mn._append_metadata_correction_row(fields, "BR", ["Anna Luz", "DJ Lano SP", "", "", ""])
 
     row = captured["payload"]["sheets"][0]["data"][0]
-    assert row[4] == "🔍 Investigating"
-    assert row[6:8] == ["Anna Luz", "DJ Lano SP"]
+    assert row[5] == "🔍 Investigating"          # Status moved E -> F when the streams column became D
+    assert row[7:9] == ["Anna Luz", "DJ Lano SP"]
 
 
 def test_new_row_has_blank_placeholders_for_claim_and_spotify_status_columns(monkeypatch):
@@ -141,6 +142,7 @@ def test_new_row_has_blank_placeholders_for_claim_and_spotify_status_columns(mon
     # in by the next backfill run, same as Artist 1-5 already work.
     captured = {}
     monkeypatch.setattr(mn, "_ensure_metadata_corrections_sheet", lambda region: "sid")
+    monkeypatch.setattr(mn, "_ensure_streams_column", lambda region, **k: {})
 
     def fake_run_lark_sheets(args, input_text=None):
         if "+table-put" in args:
