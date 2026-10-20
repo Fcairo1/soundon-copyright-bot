@@ -107,8 +107,9 @@ def test_apply_streams_adds_row_to_legacy_card_without_one():
 
 # --- manager reminders ---------------------------------------------------------
 
+# G ("sptf_30d_str") holds the CURRENT figure; "Spotify At Claim" the original.
 HEADER = ["UPC", "Title", "Status", "Date Received", "Admin Action Taken", "BD", "Label Manager",
-          "ISRC", "UID", "sptf_30d_str", "Spotify 30d Streams (Now)"]
+          "ISRC", "UID", "sptf_30d_str", "Spotify At Claim"]
 
 
 def _collect(monkeypatch, rows):
@@ -117,21 +118,31 @@ def _collect(monkeypatch, rows):
     return tm.collect_pending([HEADER, *rows])
 
 
-def test_reminder_line_shows_refreshed_streams_with_badge(monkeypatch):
+def test_reminder_line_shows_current_streams_with_badge(monkeypatch):
     managers, pending, no_mgr = _collect(monkeypatch, [
-        ["638022638262", "Mundo", "", "2026-08-01", "", "", "", "", "", "50000", "1500000"],
+        ["638022638262", "Mundo", "", "2026-08-01", "", "", "", "", "", "1500000", "50000"],
     ])
     card = tm.build_tag_card(managers, no_mgr, region="BR", streams_by_upc=tm.streams_by_upc(pending))
     text = json.dumps(card, ensure_ascii=False)
     assert "🎧 1.5M 🔥" in text and "→" not in text
 
 
-def test_reminder_falls_back_to_at_claim_snapshot(monkeypatch):
+def test_reminder_badge_uses_at_claim_peak_but_shows_current(monkeypatch):
     managers, pending, no_mgr = _collect(monkeypatch, [
-        ["638022638262", "Mundo", "", "2026-08-01", "", "", "", "", "", "12000", ""],
+        ["638022638262", "Mundo", "", "2026-08-01", "", "", "", "", "", "102", "1103084"],
     ])
     card = tm.build_tag_card(managers, no_mgr, region="BR", streams_by_upc=tm.streams_by_upc(pending))
-    assert "🎧 12K ⭐" in json.dumps(card, ensure_ascii=False)
+    assert "🎧 102 🔥" in json.dumps(card, ensure_ascii=False)
+
+
+def test_reminder_works_before_the_at_claim_column_exists(monkeypatch):
+    # Deploy-to-first-daily-run window: no "Spotify At Claim" column yet, G is still the original value.
+    monkeypatch.setattr(tm, "resolve_managers_for_row", lambda row, idx: [("m", "M")])
+    monkeypatch.setattr(tm, "is_upc_excluded", lambda upc: False)
+    header = HEADER[:-1]
+    managers, pending, no_mgr = tm.collect_pending([header, ["638022638262", "Mundo", "", "2026-08-01", "", "", "", "", "", "12000"]])
+    assert "🎧 12K ⭐" in json.dumps(tm.build_tag_card(managers, no_mgr, region="BR",
+                                                      streams_by_upc=tm.streams_by_upc(pending)), ensure_ascii=False)
 
 
 def test_reminder_unchanged_when_no_streams_passed(monkeypatch):
@@ -141,66 +152,120 @@ def test_reminder_unchanged_when_no_streams_passed(monkeypatch):
     assert "🎧" not in json.dumps(tm.build_tag_card(managers, no_mgr, region="BR"), ensure_ascii=False)
 
 
-# --- daily refresh --------------------------------------------------------------
+# --- daily refresh: F/G in place, at-claim preserved ------------------------------------
 
-TRACKER_HEADER = ["UPC", "Status", "Admin Action Taken", "Retracted", "sptf_30d_str", "tt_30d_vv",
-                  et.NOW_SPOTIFY_HEADER, et.NOW_TIKTOK_HEADER, et.CHECKED_HEADER]
+import copyright_alert.lark_auth as lark_auth  # noqa: E402
+from copyright_alert import run_alert as ra  # noqa: E402
+
+TRACKER_HEADER = ["UPC", "Status", "Admin Action Taken", "Retracted", "tt_30d_vv", "sptf_30d_str", et.AT_CLAIM_HEADER]
+OPEN = lambda s, a, r: "Resolved" not in s   # noqa: E731
 
 
-def _patch_sheet(monkeypatch, rows):
+class FakeSheet:
+    """Tiny in-memory tracker: read_sheet_values + batch writes, so the real
+    write-then-verify-then-overwrite sequence is exercised."""
+
+    def __init__(self, rows, header=None, persist_writes=True):
+        self.header = list(header or TRACKER_HEADER)
+        self.rows = [list(r) for r in rows]
+        self.persist = persist_writes
+        self.write_log = []   # one list of (cell, value) per batch call
+
+    def read(self, region=None):
+        return [list(self.header)] + [list(r) for r in self.rows]
+
+    def batch(self, url, ranges):
+        cells = []
+        for item in ranges:
+            col = item["range"].split("!")[1].split(":")[0]
+            letters = "".join(c for c in col if c.isalpha())
+            rownum = int("".join(c for c in col if c.isdigit()))
+            ci = ord(letters) - 65
+            cells.append((col, item["values"][0][0]))
+            if self.persist:
+                self.rows[rownum - 2][ci] = item["values"][0][0]
+        self.write_log.append(cells)
+
+
+def _setup(monkeypatch, sheet, found=None):
     monkeypatch.setattr(hc, "_tracker_config", lambda region=None: ("https://sheet", "sid"))
-    monkeypatch.setattr(hc, "read_sheet_values", lambda region=None: [TRACKER_HEADER, *rows])
+    monkeypatch.setattr(hc, "read_sheet_values", sheet.read)
     monkeypatch.setattr(et, "ensure_columns", lambda region: {"created": []})
-    et.LATEST.clear()
-
-
-def test_refresh_writes_now_columns_and_leaves_snapshot_alone(monkeypatch):
-    _patch_sheet(monkeypatch, [
-        ["111", "", "", "", "1000", "50", "", "", ""],
-        ["222", "✅ Resolved", "", "", "1000", "50", "", "", ""],      # not open
-        ["", "", "", "", "", "", "", "", ""],                            # blank row
-    ])
-    from copyright_alert import run_alert as ra
+    monkeypatch.setattr(lark_auth, "sheet_values_batch_update", sheet.batch)
     queried = []
     monkeypatch.setattr(ra, "batch_query_engagement_by_upc",
-                        lambda upcs: queried.append(list(upcs)) or {"111": {"sptf_30d_str": "2500.0", "tt_30d_vv": "75"}})
-    writes = []
-    import copyright_alert.lark_auth as lark_auth
-    monkeypatch.setattr(lark_auth, "sheet_values_batch_update", lambda url, ranges: writes.extend(ranges))
-
-    result = et.run_daily_sync("BR", is_open=lambda s, a, r: "Resolved" not in s, today=date(2026, 10, 7))
-
-    assert queried == [["111"]]
-    assert result["refreshed"] == 1 and result["open_rows"] == 1
-    by_range = {w["range"]: w["values"][0][0] for w in writes}
-    assert by_range == {"sid!G2:G2": 2500, "sid!H2:H2": 75, "sid!I2:I2": "2026-10-07"}
-    assert not any(r.startswith(("sid!E", "sid!F")) for r in by_range)   # snapshot columns untouched
-    assert et.LATEST["111"]["sptf_now"] == 2500
+                        lambda upcs: queried.append(list(upcs)) or (found or {}))
+    et.LATEST.clear()
+    return queried
 
 
-def test_refresh_keeps_old_values_when_upc_missing_from_aeolus(monkeypatch):
-    _patch_sheet(monkeypatch, [["111", "", "", "", "1000", "50", "900", "40", "2026-10-06"]])
-    from copyright_alert import run_alert as ra
-    monkeypatch.setattr(ra, "batch_query_engagement_by_upc", lambda upcs: {})
-    writes = []
-    import copyright_alert.lark_auth as lark_auth
-    monkeypatch.setattr(lark_auth, "sheet_values_batch_update", lambda url, ranges: writes.extend(ranges))
-    result = et.run_daily_sync("BR", is_open=lambda s, a, r: True)
-    assert writes == [] and result["refreshed"] == 0 and result["not_found_in_aeolus"] == 1
-
-
-def test_refresh_checks_least_recently_checked_first_under_cap(monkeypatch):
-    _patch_sheet(monkeypatch, [
-        ["111", "", "", "", "1", "1", "", "", "2026-10-06"],
-        ["222", "", "", "", "1", "1", "", "", ""],
-        ["333", "", "", "", "1", "1", "", "", "2026-10-01"],
+def test_first_run_preserves_at_claim_then_overwrites_fg_in_place(monkeypatch):
+    sheet = FakeSheet([
+        ["111", "", "", "", "50", "1103084", ""],            # open, has a snapshot
+        ["222", "✅ Resolved", "", "", "70", "9000", ""],      # closed: snapshot copied, F/G untouched
+        ["333", "", "", "", "N/A", "N/A", ""],               # open, no snapshot at all
     ])
+    queried = _setup(monkeypatch, sheet, {"111": {"sptf_30d_str": "102.0", "tt_30d_vv": "75"},
+                                           "333": {"sptf_30d_str": "5", "tt_30d_vv": "1"}})
+    result = et.run_daily_sync("BR", is_open=OPEN, today=date(2026, 10, 20))
+
+    assert sheet.rows[0][6] == 1103084 and sheet.rows[0][5] == 102 and sheet.rows[0][4] == 75
+    assert sheet.rows[1][6] == 9000 and sheet.rows[1][5] == "9000"          # closed row: F/G not refreshed
+    assert sheet.rows[2][6] == "N/A" and sheet.rows[2][5] == 5               # N/A preserved explicitly
+    assert result["at_claim_backfilled"] == 3 and result["refreshed"] == 2
+    assert queried == [["333", "111"]]                                        # newest rows first
+    # the at-claim copy was written (and so persisted) in a batch BEFORE any F/G write
+    assert all(c[0].startswith("G") for c in sheet.write_log[0])
+    assert len(sheet.write_log) == 2 and all(c[0].startswith(("E", "F")) for c in sheet.write_log[1])
+
+
+def test_second_run_never_overwrites_the_preserved_at_claim_value(monkeypatch):
+    sheet = FakeSheet([["111", "", "", "", "75", "102", 1103084]])
+    _setup(monkeypatch, sheet, {"111": {"sptf_30d_str": "90", "tt_30d_vv": "80"}})
+    result = et.run_daily_sync("BR", is_open=OPEN)
+    assert sheet.rows[0][6] == 1103084 and sheet.rows[0][5] == 90
+    assert result["at_claim_backfilled"] == 0
+
+
+def test_f_g_are_not_overwritten_when_the_at_claim_copy_did_not_persist(monkeypatch):
+    sheet = FakeSheet([["111", "", "", "", "50", "1103084", ""]], persist_writes=False)
+    _setup(monkeypatch, sheet, {"111": {"sptf_30d_str": "102", "tt_30d_vv": "75"}})
+    result = et.run_daily_sync("BR", is_open=OPEN)
+    assert result["skipped_at_claim_not_persisted"] == 1 and result["refreshed"] == 0
+    assert sheet.rows[0][5] == "1103084"          # original value untouched
+
+
+def test_dry_run_writes_nothing_and_creates_no_header(monkeypatch):
+    sheet = FakeSheet([["111", "", "", "", "50", "1103084", ""]])
+    queried = _setup(monkeypatch, sheet, {"111": {"sptf_30d_str": "102", "tt_30d_vv": "75"}})
+    monkeypatch.undo()   # use the real ensure_columns to prove it is skipped
+    monkeypatch.setattr(hc, "_tracker_config", lambda region=None: ("https://sheet", "sid"))
+    monkeypatch.setattr(hc, "read_sheet_values", sheet.read)
+    monkeypatch.setattr(hc, "_sheet_api", lambda *a, **k: (_ for _ in ()).throw(AssertionError("dry run must not write")))
+    monkeypatch.setattr(lark_auth, "sheet_values_batch_update", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no")))
+    monkeypatch.setattr(ra, "batch_query_engagement_by_upc", lambda upcs: {"111": {"sptf_30d_str": "102", "tt_30d_vv": "75"}})
+    result = et.run_daily_sync("BR", dry_run=True, is_open=OPEN)
+    assert result["dry_run"] is True and sheet.rows[0][5] == "1103084"
+
+
+def test_missing_from_aeolus_keeps_existing_values(monkeypatch):
+    sheet = FakeSheet([["111", "", "", "", "50", "1000", 1000]])
+    _setup(monkeypatch, sheet, {})
+    result = et.run_daily_sync("BR", is_open=OPEN)
+    assert sheet.rows[0][5] == "1000" and result["refreshed"] == 0 and result["not_found_in_aeolus"] == 1
+
+
+def test_cap_refreshes_newest_rows_first(monkeypatch):
+    sheet = FakeSheet([["111", "", "", "", "1", "1", 1], ["222", "", "", "", "1", "1", 1], ["333", "", "", "", "1", "1", 1]])
+    queried = _setup(monkeypatch, sheet, {})
     monkeypatch.setattr(et, "MAX_REFRESH_PER_RUN", 2)
-    from copyright_alert import run_alert as ra
-    queried = []
-    monkeypatch.setattr(ra, "batch_query_engagement_by_upc", lambda upcs: queried.append(list(upcs)) or {})
-    result = et.run_daily_sync("BR", dry_run=True, is_open=lambda s, a, r: True)
-    assert queried == [["222", "333"]] and result["pending_next_run"] == 1
+    result = et.run_daily_sync("BR", is_open=OPEN)
+    assert queried == [["333", "222"]] and result["pending_next_run"] == 1
+
+
+def test_ingestion_writes_the_at_claim_value_for_new_rows():
+    values = ra._base_tracker_values({"upc": "1"}, {"sptf_30d_str": "4200", "tt_30d_vv": "9"}, "m", "1", "", "u", "", {})
+    assert values["Spotify At Claim"] == ("4200", False) and values["sptf_30d_str"] == ("4200", False)
 
 
 # --- priority sort: old rules keep priority, streams layer on top ---------------------

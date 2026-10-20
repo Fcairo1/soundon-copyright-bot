@@ -2215,6 +2215,8 @@ def _base_tracker_values(ef, ar, msg_id_str, upc_str, isrc_str, uid_str, status,
         "Source": (ar.get("source_type_name", "N/A"), False),
         "tt_30d_vv": (ar.get("tt_30d_vv", "N/A"), False),
         "sptf_30d_str": (ar.get("sptf_30d_str", "N/A"), False),
+        # F/G are refreshed nightly; this keeps the value as of claim time.
+        "Spotify At Claim": (ar.get("sptf_30d_str", "N/A"), False),
         "Artist(s)": (_format_artist_names(ar.get("display_artist")), False),
         "Spotify URI": (ef.get("spotify_uri") if ef.get("spotify_uri") not in (None, "", "N/A") else "", True),
         "DSP": (ef.get("dsp", "N/A"), False),
