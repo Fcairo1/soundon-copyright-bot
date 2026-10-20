@@ -40,6 +40,11 @@ from copyright_alert.tag_managers import (  # noqa: E402
 )
 
 OPERATOR_EMAIL = "filipe.cairo@bytedance.com"
+# "🚫 Dismiss" button: stops the bot from sending this reply card for this case
+# again. The callback records it in the tracker's Email Status column — which the
+# daily DM step already treats as "handled" — see persistent_callback._process_dismiss.
+DISMISS_ACTION = "dismiss_dm_action"
+DISMISSED_STATUS_PREFIX = "Dismissed 🚫"
 ACTION_FALLBACK_LABEL = "⏳ None selected yet"
 ACTION_FIELD_CANDIDATES = (
     "manager_action",
@@ -269,6 +274,17 @@ def build_dm_action_card(case: dict) -> dict:
             "value": value,
         }
 
+    def dismiss_btn():
+        value = dict(base_value)
+        value["action"] = DISMISS_ACTION
+        value["reply_type"] = "dismiss"
+        return {
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": "🚫 Dismiss"},
+            "type": "default",
+            "value": value,
+        }
+
     header_title = f"📋 Spotify Reply Needed – {artist} – {upc}"
 
     detail_md = (
@@ -325,6 +341,7 @@ def build_dm_action_card(case: dict) -> dict:
                     btn("✅ Agree with claim", "agree", "primary"),
                     btn("🔍 Investigating – will follow up", "investigating", "default"),
                     btn("⚖️ Dispute claim", "dispute", "danger"),
+                    dismiss_btn(),
                 ],
             },
             {"tag": "note", "elements": [
@@ -332,11 +349,28 @@ def build_dm_action_card(case: dict) -> dict:
                     "Pick one action. All three options create a pre-made reply "
                     "draft back to the original claim email thread (preserving the "
                     "Spotify ref code for Salesforce threading). The draft stays in "
-                    "the soundon-copyright mailbox for you to review and send."}
+                    "the soundon-copyright mailbox for you to review and send. "
+                    "🚫 Dismiss = no reply needed: the bot stops sending you this "
+                    "card for this case (recorded as Dismissed in the tracker)."}
             ]},
         ],
     }
     return card
+
+
+def build_dismissed_card(value: dict, message: str, *, ok: bool = True) -> dict:
+    """The DM card after a Dismiss click: buttons removed, outcome shown in place."""
+    upc = _v((value or {}).get("upc"))
+    artist = _v((value or {}).get("artist"))
+    return {
+        "config": {"wide_screen_mode": True, "update_multi": True},
+        "header": {
+            "template": "grey" if ok else "red",
+            "title": {"tag": "plain_text", "content": f"🚫 Dismissed – {artist} – {upc}" if ok
+                      else f"⚠️ Not dismissed – {artist} – {upc}"},
+        },
+        "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": message}}],
+    }
 
 
 # ── Sender ───────────────────────────────────────────────────────────────────
