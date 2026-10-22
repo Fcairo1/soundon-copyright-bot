@@ -80,3 +80,33 @@ def test_retraction_search_window_is_a_fixed_7_day_lookback():
     now = datetime(2026, 10, 22, 21, 0, 0, tzinfo=timezone.utc)
     assert dw.retraction_window_start_iso(now) == "2026-10-15T21:00:00Z"
     assert dw._mail_search_timestamp(dw.retraction_window_start_iso(now)) is not None
+
+
+def test_retraction_state_is_per_region_and_unmatched_stays_open(tmp_path, monkeypatch):
+    from copyright_alert import run_alert as ra
+
+    monkeypatch.setattr(ra, "RETRACTED_CLAIMS_FILE", str(tmp_path / "retracted.json"))
+    # BR run sees a US retraction: unmatched -> must NOT block the US run.
+    ra._save_retracted_claim("m1", {"region": "BR", "matched": False})
+    assert ra.is_retraction_already_processed("m1", region="BR") is False
+    assert ra.is_retraction_already_processed("m1", region="US") is False
+    # US run applies it: processed for US only.
+    ra._save_retracted_claim("m1", {"region": "US", "matched": True})
+    assert ra.is_retraction_already_processed("m1", region="US") is True
+    assert ra.is_retraction_already_processed("m1", region="BR") is False
+
+
+def test_legacy_retraction_records_only_count_when_matched_for_same_region(tmp_path, monkeypatch):
+    import json
+    from copyright_alert import run_alert as ra
+
+    f = tmp_path / "retracted.json"
+    f.write_text(json.dumps({
+        "old_matched_br": {"region": "BR", "matched": True},
+        "old_unmatched_br": {"region": "BR", "matched": False},
+    }))
+    monkeypatch.setattr(ra, "RETRACTED_CLAIMS_FILE", str(f))
+    assert ra.is_retraction_already_processed("old_matched_br", region="BR") is True
+    assert ra.is_retraction_already_processed("old_matched_br", region="US") is False
+    assert ra.is_retraction_already_processed("old_unmatched_br", region="US") is False
+    assert ra.is_retraction_already_processed("old_unmatched_br", region="BR") is False

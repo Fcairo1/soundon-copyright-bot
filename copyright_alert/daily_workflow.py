@@ -1372,7 +1372,7 @@ def run_retraction_pass(values, *, since_timestamp=None, full_history=False, not
         message_id = _norm(candidate.get("message_id"))
         if not message_id:
             continue
-        if is_retraction_already_processed(message_id):
+        if is_retraction_already_processed(message_id, region=ACTIVE_REGION):
             summary["already_processed"] += 1
             continue
 
