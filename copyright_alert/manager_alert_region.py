@@ -162,7 +162,7 @@ def run_region_manager_alert(region: str) -> dict:
     # run_alert.CURRENT_REGION global for the no-@mention behavior.
     tag_card = tm.build_tag_card(
         managers, no_manager_rows, region=region, streams_by_upc=tm.streams_by_upc(pending_rows),
-        tier_by_upc=tm.tier_by_upc(pending_rows),
+        tier_by_upc=tm.tier_by_upc(pending_rows), group_by_upc=tm.group_by_upc(pending_rows),
     )
     digest_card = _build_digest_card(region, cfg, alert_cfg, managers, pending_rows)
 

@@ -1850,6 +1850,100 @@ def _region_from_aeolus_row(row) -> str:
 
 
 
+# ── Tier-1 (major label) priority styling ───────────────────────────────────
+# The claimant tier (major_label_detector) used to be only a tracker/dashboard
+# column — nothing in the cards read it, so a Sony claim looked like any other.
+# Tier 1 = Sony / Warner / Universal / BMG; everything else keeps the normal card.
+MAJOR_BANNER_MARKER = "🏛️ **MAJOR LABEL CLAIM**"
+CARD_TEMPLATE_MAJOR = "carmine"
+
+
+def claimant_classification(ef):
+    try:
+        return classify_claimant((ef or {}).get("claimant_email", ""), (ef or {}).get("claimant_name", ""))
+    except Exception:
+        return {}
+
+
+def is_major_label(classification) -> bool:
+    return (classification or {}).get("tier") == 1
+
+
+def major_short_name(classification) -> str:
+    """"Sony Music Entertainment" -> "Sony" (for compact reminder tags)."""
+    name = str((classification or {}).get("major") or "").strip()
+    return name.split()[0] if name else "Major"
+
+
+def apply_tier_style_to_card(card, classification):
+    """Give a Tier-1 (major label) group card the loud treatment: carmine header,
+    "MAJOR LABEL CLAIM" title and a banner above the case summary. Idempotent; on a
+    card whose claimant is NOT tier 1 it removes any such styling (so a reclassified
+    claim doesn't stay highlighted). Safe on persisted/legacy cards."""
+    if not isinstance(card, dict) or not isinstance(card.get("elements"), list):
+        return card
+    elements = [el for el in card["elements"] if MAJOR_BANNER_MARKER not in json.dumps(el, ensure_ascii=False)]
+    header = card.get("header")
+    if is_major_label(classification):
+        name = (classification or {}).get("major") or "Major label"
+        arm = (classification or {}).get("arm")
+        banner = {"tag": "div", "text": {"tag": "lark_md", "content": (
+            f"{MAJOR_BANNER_MARKER} — {name}{f' ({arm})' if arm else ''} · Tier 1\n"
+            "Priority review: reply today — don't let the 5-day window run.")}}
+        at = next((i for i, el in enumerate(elements) if "Artist(s)" in json.dumps(el, ensure_ascii=False)), 0)
+        elements.insert(at, banner)
+        if isinstance(header, dict):
+            header["template"] = CARD_TEMPLATE_MAJOR
+            header["title"] = {"tag": "plain_text", "content": f"🚨 MAJOR LABEL CLAIM — {name}"}
+    elif isinstance(header, dict) and header.get("template") == CARD_TEMPLATE_MAJOR:
+        header["template"], title = CARD_HEADER_DEFAULT
+        header["title"] = {"tag": "plain_text", "content": title}
+    card["elements"] = elements
+    return card
+
+
+def build_major_label_ping_card(ef, ar, region, classification):
+    """Short separate group message for a Tier-1 claim, @-mentioning the BD and
+    Label Manager so they get their own notification (a mention buried inside the
+    long claim card is easy to miss)."""
+    ar = ar or {}
+    label_uid = ar.get("uid", "")
+    region_value = _canonical_alert_region(region, ar)
+    bd = _mention_people(ar.get("bd_manager_list"), label_uid=label_uid, region=region_value)
+    lm = _mention_people(ar.get("operation_manager_list"), label_uid=label_uid, region=region_value)
+    title = ef.get("title") if ef.get("title") and ef.get("title") != "N/A" else ar.get("album_title", "N/A")
+    name = (classification or {}).get("major") or "Major label"
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {"template": CARD_TEMPLATE_MAJOR,
+                   "title": {"tag": "plain_text", "content": f"🏛️ Major label claim — {name}"}},
+        "elements": [
+            {"tag": "div", "text": {"tag": "lark_md", "content": (
+                f"**{title}** · UPC `{ef.get('upc', 'N/A')}`\n"
+                f"Claimant: {ef.get('claimant_name', 'N/A')} ({ef.get('claimant_email', 'N/A')})\n"
+                "⏳ Spotify reply window: 5 business days — start today.")}},
+            {"tag": "div", "text": {"tag": "lark_md", "content": f"{bd} {lm} — please review this claim today."}},
+            {"tag": "note", "elements": [{"tag": "plain_text", "content": "Full details on the claim card above."}]},
+        ],
+    }
+
+
+def notify_major_label_claim(ef, ar, region, claim_message_id=""):
+    """Post the Tier-1 ping for a freshly posted claim. Never raises (the claim card
+    and tracker row already exist; this is an extra nudge). Returns True if sent."""
+    classification = claimant_classification(ef)
+    if not is_major_label(classification):
+        return False
+    try:
+        card = build_major_label_ping_card(ef, ar, region, classification)
+        ok, _mid = post_card(card, ar, upc=(ef or {}).get("upc"), context=f"{region} major label ping",
+                             expected_region=region)
+        return bool(ok)
+    except Exception as exc:
+        print(f"  ⚠ Major-label ping failed for UPC {(ef or {}).get('upc')}: {exc!r}", flush=True)
+        return False
+
+
 STREAMS_ELEMENT_MARKER = "🎧 Spotify streams (30d)"
 HIGH_BANNER_MARKER = "🔥 **High-streaming track**"
 # Normal alert header vs. the restyled one for tracks above the high-streaming
@@ -1914,7 +2008,8 @@ def _apply_high_streaming_style(card, streams):
     elements = [el for el in card["elements"] if HIGH_BANNER_MARKER not in json.dumps(el, ensure_ascii=False)]
     header = card.get("header")
     high = is_high(importance(streams))
-    if isinstance(header, dict):
+    major_styled = any(MAJOR_BANNER_MARKER in json.dumps(el, ensure_ascii=False) for el in elements)
+    if isinstance(header, dict) and not major_styled:   # a major-label header always wins
         template, title = CARD_HEADER_HIGH if high else CARD_HEADER_DEFAULT
         header["template"] = template
         header["title"] = {"tag": "plain_text", "content": title}
@@ -2081,6 +2176,7 @@ def build_card(
             ]}
         ]
     }
+    card = apply_tier_style_to_card(card, claimant_classification(ef))
     return apply_streams_to_card(card, _streams_from_ar(ar))
 
 
@@ -2697,6 +2793,7 @@ def main():
                 patch_card_message(posted_message_id, card)
                 tracker_row = append_tracker_row(ef, ar, posted_message_id, status="")
                 update_account_release_counts_for_claim(ar)
+                notify_major_label_claim(ef, ar, CURRENT_REGION, posted_message_id)
                 _save_posted_claim(duplicate_key, {
                     "message_id": posted_message_id,
                     "source_email_message_id": msg_id,

@@ -78,6 +78,8 @@ from copyright_alert.run_alert import (  # noqa: E402
     save_posted_card,
     build_card,
     apply_streams_to_card,
+    apply_tier_style_to_card,
+    notify_major_label_claim,
     post_card,
     patch_card_message,
     append_tracker_row,
@@ -861,6 +863,7 @@ def run_scan():
             save_posted_card(posted_message_id, card)
             patch_card_message(posted_message_id, card)
             tracker_row = append_tracker_row(ef, ar, posted_message_id, status="")
+            notify_major_label_claim(ef, ar, ACTIVE_REGION, posted_message_id)
             _save_posted_claim(dup_key, {
                 "message_id": posted_message_id,
                 "source_email_message_id": msg_id,
@@ -1659,6 +1662,9 @@ def dm_action_cards(values):
         "card_msg": _header_index(headers, CARD_MSG_ID_HEADER),
         "email_status": _header_index(headers, EMAIL_STATUS_HEADER),
         "claimant_category": _header_index(headers, "Claimant Category"),
+        "claimant_tier": _header_index(headers, "Claimant Tier"),
+        "claimant_group": _header_index(headers, "Claimant Group"),
+        "claimant_arm": _header_index(headers, "Claimant Arm"),
         "admin_action": _header_index(headers, ADMIN_ACTION_HEADER),
         "retracted": _header_index(headers, RETRACTED_HEADER),
     }
@@ -1688,7 +1694,8 @@ def dm_action_cards(values):
         detected = parse_detected_date(detected_raw)
         if detected is None:
             continue
-        if (today - detected).days < 1:  # not yet 1 calendar day old
+        is_major = _cell(row, idx["claimant_tier"]) == "1"
+        if (today - detected).days < 1 and not is_major:  # not yet 1 calendar day old (major labels: day 0)
             continue
 
         card_msg_id = _cell(row, idx["card_msg"]) or _cell(row, idx["lark_msg"])
@@ -1726,6 +1733,9 @@ def dm_action_cards(values):
             "lark_card_message_id": card_msg_id,
             "detected_at": detected_raw,
             "tracker_row": row_num,
+            "claimant_tier": _cell(row, idx["claimant_tier"]),
+            "claimant_group": _cell(row, idx["claimant_group"]),
+            "claimant_arm": _cell(row, idx["claimant_arm"]),
             # Route the private action card to this region's Ops owner.
             "region": ACTIVE_REGION,
             "ops_dm_email": RECIPIENT_EMAIL,
@@ -1929,6 +1939,16 @@ def _replace_card_message_via_lark_cli(old_message_id, card, *, row_num=None, id
     return new_message_id
 
 
+def _claimant_classification_for_row(row, idx):
+    """Classification dict from the tracker's Claimant Tier/Group/Arm columns."""
+    tier_raw = _cell(row, idx.get("claimant_tier"))
+    return {
+        "tier": int(tier_raw) if tier_raw.isdigit() else None,
+        "major": _cell(row, idx.get("claimant_group")) or None,
+        "arm": _cell(row, idx.get("claimant_arm")) or None,
+    }
+
+
 def _streams_for_row(row, idx, upc):
     """Spotify streams payload for a tracker row: this run's fresh refresh
     (engagement_tracker.LATEST) first, then the sheet's refreshed column, then
@@ -1970,6 +1990,9 @@ def countdown_refresh(values):
         "retracted": _header_index(headers, RETRACTED_HEADER),
         "sptf_baseline": _header_index(headers, engagement_tracker.AT_CLAIM_HEADER),
         "sptf_now": _header_index(headers, engagement_tracker.SPOTIFY_HEADER),
+        "claimant_tier": _header_index(headers, "Claimant Tier"),
+        "claimant_group": _header_index(headers, "Claimant Group"),
+        "claimant_arm": _header_index(headers, "Claimant Arm"),
     }
     today = date.today()
     refreshed = 0
@@ -2010,6 +2033,7 @@ def countdown_refresh(values):
             continue
         # Keep the Spotify-streams row current on the posted card (also adds it
         # to cards that were posted before this row existed).
+        card = apply_tier_style_to_card(card, _claimant_classification_for_row(row, idx))
         card = apply_streams_to_card(card, _streams_for_row(row, idx, _cell(row, idx["upc"])))
         patched = build_card_with_countdown(card, days_remaining)
         try:
