@@ -45,7 +45,14 @@ _OAUTH_LOCK = threading.Lock()
 _FEISHU_IM_DIR = inner_skill("feishu-im-send")
 _ALERT_EMAIL = "filipe.cairo@bytedance.com"
 _ALERT_CHAT_ID = "oc_6e157309d8d7145ba5ce7f0ba67354cb"
-_AUTH_ERROR_CODES = {99991663, 99991664, 99991679}
+# Expired / invalid ACCESS TOKEN. 99991679 is deliberately NOT here: it means the token
+# is valid but lacks a scope ("Unauthorized ... grant the scopes"). The bot's OAuth app
+# only has sheets:spreadsheet:read + :write_only, which covers values GET/PUT but not
+# the values_batch_update / values_append endpoints — so those calls fail with 99991679
+# on EVERY attempt, no matter how fresh the token is. Treating it as an auth failure made
+# each such call refresh the token twice and fire a bogus "auth refresh failed" alert.
+_AUTH_ERROR_CODES = {99991663, 99991664}
+_SCOPE_MISSING_CODE = 99991679
 _AUTH_ALERT_LOCK = threading.Lock()
 _AUTH_ALERT_FINGERPRINTS: set[str] = set()
 
@@ -113,6 +120,8 @@ def _response_code(payload) -> Optional[int]:
 
 def _looks_like_auth_failure(http_status: Optional[int] = None, payload=None, raw_text: str = "") -> bool:
     code = _response_code(payload)
+    if code == _SCOPE_MISSING_CODE:
+        return False   # valid token, missing scope — refreshing cannot fix it
     if http_status == 401:
         return True
     if code in _AUTH_ERROR_CODES:
@@ -418,6 +427,13 @@ def sheet_values_api(method: str, sheet_url: str, sheet_id: str, cell_range: str
     return payload
 
 
+# When the batch endpoint was last seen rejecting this token for a missing scope; the
+# batch call is skipped for _BATCH_SCOPE_RECHECK_SEC afterwards (re-probed later in case
+# the scope gets granted while a long-lived process, e.g. the daemon, is running).
+_batch_scope_missing_since = 0.0
+_BATCH_SCOPE_RECHECK_SEC = 6 * 3600
+
+
 def sheet_values_batch_update(
     sheet_url: str,
     value_ranges: list,
@@ -446,29 +462,38 @@ def sheet_values_batch_update(
             headers={"Content-Type": "application/json; charset=utf-8", "Authorization": f"Bearer {token}"},
         )
 
+    def single_range_puts(cause=None):
+        results = []
+        for item in value_ranges:
+            item_range = str(item.get("range") or "")
+            if "!" not in item_range:
+                raise RuntimeError(f"Invalid batch value range without sheet id: {item_range!r}") from cause
+            item_sheet_id, item_cell_range = item_range.split("!", 1)
+            results.append(sheet_values_api("PUT", sheet_url, item_sheet_id, item_cell_range, item.get("values"), timeout=timeout))
+        return {"code": 0, "msg": "success", "fallback": "single_range_put", "results": results}
+
+    global _batch_scope_missing_since
+    if _batch_scope_missing_since and time.time() - _batch_scope_missing_since < _BATCH_SCOPE_RECHECK_SEC:
+        return single_range_puts()          # already known: the token can't use this endpoint
+
     try:
         payload = request_json_with_auth_retry(make_request, timeout=timeout, context="sheet_values_batch_update")
     except RuntimeError as exc:
+        if str(_SCOPE_MISSING_CODE) in str(exc):
+            _batch_scope_missing_since = time.time()
+            print("↻ sheet_values_batch_update: token lacks the batch-update scope (99991679); "
+                  "using single-range PUT updates", flush=True)
+            return single_range_puts(exc)
         force_refresh = True
         try:
             payload = request_json_with_auth_retry(make_request, timeout=timeout, context="sheet_values_batch_update:forced")
         except RuntimeError as forced_exc:
             detail = f"{exc}\n{forced_exc}"
-            if "99991679" not in detail and "Unauthorized" not in detail:
+            if "Unauthorized" not in detail:
                 raise
-            print(
-                "↻ sheet_values_batch_update: batch endpoint unauthorized; "
-                "falling back to single-range PUT updates",
-                flush=True,
-            )
-            results = []
-            for item in value_ranges:
-                item_range = str(item.get("range") or "")
-                if "!" not in item_range:
-                    raise RuntimeError(f"Invalid batch value range without sheet id: {item_range!r}") from forced_exc
-                item_sheet_id, item_cell_range = item_range.split("!", 1)
-                results.append(sheet_values_api("PUT", sheet_url, item_sheet_id, item_cell_range, item.get("values"), timeout=timeout))
-            return {"code": 0, "msg": "success", "fallback": "single_range_put", "results": results}
+            print("↻ sheet_values_batch_update: batch endpoint unauthorized; "
+                  "falling back to single-range PUT updates", flush=True)
+            return single_range_puts(forced_exc)
     if payload.get("code") not in (0, "0", None):
         raise RuntimeError(f"Sheet batch update failed: {json.dumps(payload, ensure_ascii=False)[:1000]}")
     return payload
