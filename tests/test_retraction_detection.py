@@ -71,3 +71,12 @@ def test_open_status_excludes_retracted_rows():
         "Retracted": "Yes",
     }
     assert br._is_open_status(row) is False
+
+
+def test_retraction_search_window_is_a_fixed_7_day_lookback():
+    from datetime import datetime, timezone
+    from copyright_alert import daily_workflow as dw
+
+    now = datetime(2026, 10, 22, 21, 0, 0, tzinfo=timezone.utc)
+    assert dw.retraction_window_start_iso(now) == "2026-10-15T21:00:00Z"
+    assert dw._mail_search_timestamp(dw.retraction_window_start_iso(now)) is not None
