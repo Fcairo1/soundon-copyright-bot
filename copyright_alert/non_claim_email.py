@@ -11,6 +11,8 @@ entry point can skip them.
 Recognised (all verified against real emails, Oct 2026):
   * PPP / Excessive Infringement Policy reports — a monthly "your catalog is At
     Risk" mail with a table of already-known claims.
+  * "Query regarding claim NNN" replies — Spotify answering our own reinstatement
+    request, quoting it (with its UPC) below the fold.
   * Contest-instruction auto-replies — Spotify answering a message we sent to the
     wrong place, quoting the claim's takedown-notification subject and the
     affected URI/UPC so we know which thread to reply to.
@@ -34,6 +36,12 @@ _CONTEST_REPLY = re.compile(
     re.IGNORECASE,
 )
 
+# Spotify answering OUR reinstatement/contest mail: "Please refer to our email sent
+# to you with the subject line ..." — quotes our own message (with its UPC), so the
+# UPC in it is not a new claim. Subject is "Query regarding claim NNN - ref:...".
+_QUERY_REPLY = re.compile(r"please\s+refer\s+to\s+our\s+email\s+sent\s+to\s+you\s+with\s+the\s+subject\s+line", re.IGNORECASE)
+_QUERY_SUBJECT = re.compile(r"^\s*query\s+regarding\s+claim\b", re.IGNORECASE)
+
 
 def _flat(*parts) -> str:
     return re.sub(r"\s+", " ", " ".join(str(p or "") for p in parts))
@@ -49,6 +57,8 @@ def non_claim_reason(body, subject="", meta=None):
         return "PPP / Excessive Infringement policy report (existing claims, not new)"
     if _CONTEST_REPLY.search(text):
         return "Spotify contest-instruction reply (points to an existing takedown notice)"
+    if _QUERY_REPLY.search(text) or _QUERY_SUBJECT.match(str(subject or "")):
+        return "Spotify 'Query regarding claim' reply (answers our own reinstatement/contest mail)"
     return None
 
 

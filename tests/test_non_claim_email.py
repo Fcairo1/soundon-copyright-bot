@@ -87,3 +87,55 @@ def test_daily_workflow_skips_non_claims_before_any_handler(monkeypatch, body, s
     assert (kind, info) == ("skip", "non-claim email")
     assert called == []
     assert summary["skipped_non_claim"] == 1
+
+
+QUERY_REPLY = (
+    "Hi, Please refer to our email sent to you with the subject line \"Re: Possibly Infringing - "
+    "Notification Warning No 1 - H7 Music - Claim 24769868 - ref:_00D0992XChO._500QvgqzTz:ref\" regarding this. "
+    "Best regards, Spotify Content Protection ref:_00D0992XChO._500QvkESX0:ref "
+    "--------------- Original Message --------------- From: SoundOn [soundon-copyright@bytedance.com] "
+    "Subject: [SoundOn] Request to Reinstate Content Following Review — 033932262024 "
+    "Dear Spotify Content Operations Team, ... Album Title: Eu Falei pra Elas UPC: 033932262024"
+)
+
+
+def test_query_regarding_claim_reply_is_flagged():
+    assert "Query regarding claim" in non_claim_reason(QUERY_REPLY, "Query regarding claim 25519890 - ref:_00D0992XChO._500QvkESX0:ref")
+    assert is_non_claim_email(QUERY_REPLY, "Query regarding claim 25520081")
+    assert ra.extract_claim_entries(QUERY_REPLY, "Query regarding claim 25519890", {}) == []
+
+
+FORWARDED_TICKET = (
+    "---------- Forwarded message ---------- From: \"Mariana Fusaro (Matter Collective)\" <support@matter.is> "
+    "Date: Tuesday, October 20 2026 at 9:36 AM CDT Subject: [Matter Collective] Content Removal - Sam Business "
+    "To: Jeff Rojas <jeff@matter.is>, Kyle Trafton <kyle@matter.is> "
+    "A ticket (#5150) by Mariana Fusaro has been received. It is unassigned. "
+    "Mariana Fusaro Oct 20, 2026, 09:36 CDT Hello Matter team, Hope everything is well! "
+    "We've noticed that the following content is infringing the rights of one of our clients, Sam Business. "
+    "According to our client, the songs below are unauthorized versions of our artist's song. "
+    "Could you please check with your client and proceed with the removal from all platforms? "
+    "UPC: 5064078954943 Link: https://open.spotify.com/album/5POoY0yg5IjdHJ2ezoXmkk "
+    "According to DMCA procedure, I state that I believe in good faith there is a copyright infringement. "
+    "Best regards, -- Mariana Fusaro Copyright São Paulo, BR onerpm.com You are an agent. Add a comment "
+    "by replying to this email or view ticket in Zendesk Support. Ticket # 5150 Status New Requester "
+    "Mariana Fusaro CCs Copyright Followers Delivered by Zendesk [7YL2Y7-GPGGX]Ticket-Id:5150"
+)
+
+
+def test_forwarded_matter_ticket_uses_requester_as_claimant():
+    meta = {"from": "someone@bytedance.com"}
+    entries = ra.extract_claim_entries(FORWARDED_TICKET, "Fwd: [Matter Collective] Content Removal - Sam Business", meta)
+    ef = entries[0]
+    assert ef["upc"] == "5064078954943"
+    assert ef["claimant_name"] == "Mariana Fusaro"
+    assert ef["claimant_email"] == "N/A"          # support@matter.is is the relay, not the claimant
+    assert ef["claimant_company"] == "Sam Business (via Matter Collective)"
+    assert ef["email_source"] == "Matter Collective"
+    assert ef["claimant_message"].startswith("Hope everything is well")
+    assert "Zendesk" not in ef["claimant_message"] and "onerpm" not in ef["claimant_message"]
+
+
+def test_signature_fallback_no_longer_swallows_non_spotify_signatures():
+    body = "UPC: 5064078954943 Best regards, -- Some Person Copyright São Paulo, BR example.com"
+    ef = ra.extract_fields(body, "Fwd: claim", {})
+    assert "São Paulo" not in ef["claimant_name"]
