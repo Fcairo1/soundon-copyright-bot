@@ -13,6 +13,8 @@ Recognised (all verified against real emails, Oct 2026):
     Risk" mail with a table of already-known claims.
   * "Query regarding claim NNN" replies — Spotify answering our own reinstatement
     request, quoting it (with its UPC) below the fold.
+  * "Thank you for your inquiry" dispute acknowledgements — "The content will remain
+    taken down ... until the provider reaches a resolution with the claimant".
   * Contest-instruction auto-replies — Spotify answering a message we sent to the
     wrong place, quoting the claim's takedown-notification subject and the
     affected URI/UPC so we know which thread to reply to.
@@ -40,6 +42,13 @@ _CONTEST_REPLY = re.compile(
 # to you with the subject line ..." — quotes our own message (with its UPC), so the
 # UPC in it is not a new claim. Subject is "Query regarding claim NNN - ref:...".
 _QUERY_REPLY = re.compile(r"please\s+refer\s+to\s+our\s+email\s+sent\s+to\s+you\s+with\s+the\s+subject\s+line", re.IGNORECASE)
+# Spotify acknowledging OUR dispute/reply ("Thank you for letting us know. The content
+# will remain taken down ... until the provider reaches a resolution with the
+# claimant"). Subject is the generic "Thank you for your inquiry SoundOn".
+_DISPUTE_ACK = re.compile(
+    r"content\s+will\s+remain\s+taken\s+down.{0,120}?resolution\s+with\s+the\s+claimant",
+    re.IGNORECASE,
+)
 _QUERY_SUBJECT = re.compile(r"^\s*query\s+regarding\s+claim\b", re.IGNORECASE)
 
 
@@ -57,6 +66,8 @@ def non_claim_reason(body, subject="", meta=None):
         return "PPP / Excessive Infringement policy report (existing claims, not new)"
     if _CONTEST_REPLY.search(text):
         return "Spotify contest-instruction reply (points to an existing takedown notice)"
+    if _DISPUTE_ACK.search(text):
+        return "Spotify acknowledgement of our dispute (content stays down pending resolution)"
     if _QUERY_REPLY.search(text) or _QUERY_SUBJECT.match(str(subject or "")):
         return "Spotify 'Query regarding claim' reply (answers our own reinstatement/contest mail)"
     return None

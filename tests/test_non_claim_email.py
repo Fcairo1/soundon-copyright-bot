@@ -139,3 +139,22 @@ def test_signature_fallback_no_longer_swallows_non_spotify_signatures():
     body = "UPC: 5064078954943 Best regards, -- Some Person Copyright São Paulo, BR example.com"
     ef = ra.extract_fields(body, "Fwd: claim", {})
     assert "São Paulo" not in ef["claimant_name"]
+
+
+DISPUTE_ACK = (
+    "Hi, Thank you for letting us know. The content will remain taken down from the service until the "
+    "provider reaches a resolution with the claimant. Both parties should inform us once they reach a "
+    "resolution. We will make the content live upon the receipt of instructions and any necessary updates "
+    "from both parties. If they cannot reach a resolution, we reserve the right to act at our discretion. "
+    "The email we have for the claimant is x@example.com. Title: T Artist: A UPC: 751238998965 "
+    "Content Type: TRACK URI: spotify:track:abc"
+)
+
+
+def test_dispute_acknowledgement_is_flagged():
+    assert "dispute" in non_claim_reason(DISPUTE_ACK, "Thank you for your inquiry SoundOn")
+    assert ra.extract_claim_entries(DISPUTE_ACK, "Thank you for your inquiry SoundOn", {}) == []
+
+
+def test_generic_inquiry_subject_alone_is_not_flagged():
+    assert non_claim_reason(REAL_CLAIM, "Thank you for your inquiry SoundOn") is None
