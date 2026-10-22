@@ -31,6 +31,7 @@ from copyright_alert.engagement_format import (
 from copyright_alert.lark_auth import request_json_with_auth_retry
 from copyright_alert.manager_exclusions import is_manager_excluded
 from copyright_alert.upc_exclusions import is_upc_excluded
+from copyright_alert.non_claim_email import non_claim_reason
 from copyright_alert.region_guard import assert_region_allowed, assert_chat_matches_region
 from copyright_alert.paths import inner_skill
 
@@ -449,7 +450,13 @@ def _extract_claim_blocks(body):
 
 
 def extract_claim_entries(body, subject, meta):
-    """Return one extracted field dict per independently-actionable claim entry."""
+    """Return one extracted field dict per independently-actionable claim entry.
+
+    Empty for emails that are not new claims (PPP reports, contest-instruction
+    replies — see non_claim_email.py): they mention existing UPCs but must never
+    become a card or a tracker row."""
+    if non_claim_reason(body, subject, meta):
+        return []
     base_fields = extract_fields(body, subject, meta)
     blocks = _extract_claim_blocks(body)
     if not blocks:
@@ -935,6 +942,59 @@ def _extract_copyright_infringement_submission(body):
     return overrides
 
 
+_FORWARDED_RELAY_RE = re.compile(r"matter\.is|matter\s+collective|\brebel\b", re.IGNORECASE)
+_FORWARDED_RELAY_DOMAINS = ("matter.is", "zendesk.com")
+
+
+def _extract_forwarded_ticket(body):
+    """Claims forwarded to us from a collective's support desk (Matter Collective,
+    Rebel — YouTube-side MCNs) arrive as a Zendesk ticket: the From header is the
+    relay's support address, and the person who actually filed the claim is the
+    ticket requester ("A ticket (#5150) by Mariana Fusaro has been received").
+    Returns overrides for the claimant fields; empty when the body isn't one.
+    """
+    text = re.sub(r"\s+", " ", str(body or ""))
+    fm = re.search(r"-{2,}\s*Forwarded message\s*-{2,}\s*From:\s*(.*?)\s+Date:", text, re.IGNORECASE)
+    if not fm:
+        return {}
+    from_hdr = fm.group(1)
+    subj_m = re.search(r"Subject:\s*(.*?)\s+To:", text[fm.end():], re.IGNORECASE)
+    header_text = f"{from_hdr} {subj_m.group(1) if subj_m else ''}"
+    relay_m = _FORWARDED_RELAY_RE.search(header_text)
+    if not relay_m:
+        return {}
+    relay = "Rebel" if relay_m.group(0).lower() == "rebel" else "Matter Collective"
+
+    ticket_m = re.search(r"A ticket \(#\d+\) by (.+?) has been received", text, re.IGNORECASE)
+    if ticket_m:
+        name = ticket_m.group(1).strip()
+    else:
+        name = re.split(r"\s*[(<]", from_hdr.replace('"', "").strip())[0].strip()
+    msg_m = re.search(r"(?:Hello|Hi|Dear)\b[^,]{0,40},\s*(.*?)(?=\s+Best regards|\s+--\s|\Z)", text[ticket_m.end():] if ticket_m else text[fm.end():], re.IGNORECASE)
+    msg = msg_m.group(1).strip() if msg_m else ""
+
+    email = ""
+    for regex in (_EMAIL_TOKEN_RE,):
+        for m in regex.finditer(msg):
+            cand = m.group(0).strip(" <>()[]{};,:")
+            if _valid_real_claimant_email(cand) and _email_domain(cand) not in _FORWARDED_RELAY_DOMAINS:
+                email = cand
+                break
+
+    client_m = re.search(r"one of our (?:clients|artists|labels),?\s+([^.,;]+?)\s*[.,;]", msg, re.IGNORECASE)
+    company = f"{client_m.group(1).strip()} (via {relay})" if client_m else relay
+
+    overrides = {
+        "claimant_name": name or "N/A",
+        "claimant_email": email or "N/A",
+        "claimant_company": company,
+        "email_source": relay,
+    }
+    if msg:
+        overrides["claimant_message"] = msg[:1500]
+    return overrides
+
+
 def extract_fields(body, subject, meta):
     """Extract all needed fields from email body + subject."""
     fields = {}
@@ -993,7 +1053,7 @@ def extract_fields(body, subject, meta):
     # ref:...") and the address lives solely in the From header. Without these
     # fallbacks such emails are stored with claimant_name/claimant_email = N/A
     # (root cause for UPC 5063965113869 being ingested without a claimant).
-    if claimant_name == "N/A":
+    if claimant_name == "N/A" and fields["email_source"] == "Spotify":
         sig = first(
             body,
             r"(Spotify Content Protection)",
@@ -1080,6 +1140,11 @@ def extract_fields(body, subject, meta):
         current = fields.get(key, "N/A")
         if current in ("N/A", "no message"):
             fields[key] = _clean_email_value(value)
+
+    # Forwarded support-desk ticket: the requester, not the relay's support
+    # address, is the claimant. Authoritative over the generic pass above.
+    for key, value in _extract_forwarded_ticket(body).items():
+        fields[key] = _clean_email_value(value) if key != "email_source" else value
 
     if _is_relay_source(fields.get("email_source")):
         real_claimant_email = _extract_real_claimant_email_from_relay(body)

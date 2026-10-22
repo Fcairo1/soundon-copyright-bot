@@ -189,6 +189,8 @@ def _entry_for_upc(body: str, subject: str, meta: dict, upc: str) -> dict:
     except Exception as exc:
         print(f"dm_upc_lookup extract_claim_entries failed: {exc!r}")
         entries = [ra.extract_fields(body, subject, meta)]
+    if not entries:
+        raise ValueError("email is not a new infringement claim")
     for entry in entries:
         if _norm_upc(entry.get("upc") or "") == _norm_upc(upc):
             return entry

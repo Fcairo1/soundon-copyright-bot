@@ -58,6 +58,7 @@ from copyright_alert.run_alert import (  # noqa: E402
     parse_lark_json,
     fetch_email,
     extract_claim_entries,
+    non_claim_reason,
     extract_retraction_fields,
     is_retraction_email,
     is_retraction_already_processed,
@@ -644,6 +645,16 @@ def _parse_candidate(msg_id, subject, date, thread_id, seen_threads, summary):
     if not body:
         log("     ✗ Could not fetch body — will retry next run")
         return ("failed", "fetch body failed")
+
+    # Spotify mails that only MENTION existing claims (PPP excessive-infringement
+    # report, contest-instruction reply) are not new claims. Checked FIRST, before
+    # the notice handlers, since the PPP report's wording also looks like a
+    # rights-confirmation notice.
+    non_claim = non_claim_reason(body, subject, meta)
+    if non_claim:
+        log(f"     ⏭ Not a new claim — {non_claim}")
+        summary["skipped_non_claim"] = summary.get("skipped_non_claim", 0) + 1
+        return ("skip", "non-claim email")
 
     # Spotify Metadata / Misrepresentation notices are handled COMPLETELY
     # differently from infringement claims: no group card, no tracker row — just a
