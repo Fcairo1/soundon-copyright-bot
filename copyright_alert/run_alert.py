@@ -31,6 +31,7 @@ from copyright_alert.engagement_format import (
 from copyright_alert.lark_auth import request_json_with_auth_retry
 from copyright_alert.manager_exclusions import is_manager_excluded
 from copyright_alert.upc_exclusions import is_upc_excluded
+from copyright_alert.non_claim_email import non_claim_reason
 from copyright_alert.region_guard import assert_region_allowed, assert_chat_matches_region
 from copyright_alert.paths import inner_skill
 
@@ -449,7 +450,13 @@ def _extract_claim_blocks(body):
 
 
 def extract_claim_entries(body, subject, meta):
-    """Return one extracted field dict per independently-actionable claim entry."""
+    """Return one extracted field dict per independently-actionable claim entry.
+
+    Empty for emails that are not new claims (PPP reports, contest-instruction
+    replies — see non_claim_email.py): they mention existing UPCs but must never
+    become a card or a tracker row."""
+    if non_claim_reason(body, subject, meta):
+        return []
     base_fields = extract_fields(body, subject, meta)
     blocks = _extract_claim_blocks(body)
     if not blocks:
