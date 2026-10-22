@@ -53,6 +53,7 @@ from copyright_alert.manager_exclusions import (
 )
 from copyright_alert.upc_exclusions import is_upc_excluded
 from copyright_alert.engagement_format import importance, is_high, parse_count, streams_info, streams_suffix
+from copyright_alert.major_label_detector import CLAIMANT_GROUP_HEADER
 from copyright_alert.lark_auth import extract_sheet_values, sheet_values_api
 
 ADMIN_ACTION_HEADER = "Admin Action Taken"
@@ -330,6 +331,7 @@ def collect_pending(values):
     now_streams_i = idx.get(NOW_STREAMS_HEADER)
     baseline_streams_i = idx.get(BASELINE_STREAMS_HEADER)
     tier_i = idx.get(CLAIMANT_TIER_HEADER)
+    group_i = idx.get(CLAIMANT_GROUP_HEADER)
 
     managers = {}        # username -> {"display": str, "items": [(upc, title, received), ...]}
     pending_rows = []
@@ -354,14 +356,16 @@ def collect_pending(values):
         )
         pending_rows.append({"row": r, "upc": upc, "title": title,
                              "received": received, "status": status or "(empty)",
-                             "streams": streams, "tier": _cell(row, tier_i)})
+                             "streams": streams, "tier": _cell(row, tier_i),
+                             "group": _cell(row, group_i)})
         log(f"  Pending row {r}: UPC {upc} title={title!r} received={received!r} "
             f"status={status or '(empty)'} — resolving managers …")
         people = resolve_managers_for_row(row, idx)
         if not people:
             log(f"    ⚠ No manager could be resolved for row {r} (UPC {upc}).")
             no_manager_rows.append({"row": r, "upc": upc, "title": title, "received": received,
-                                    "streams": streams, "tier": _cell(row, tier_i)})
+                                    "streams": streams, "tier": _cell(row, tier_i),
+                                    "group": _cell(row, group_i)})
         for uname, display in people:
             entry = managers.setdefault(uname, {"display": display, "items": []})
             triple = (upc, title, received)
@@ -384,6 +388,11 @@ def tier_by_upc(pending_rows):
         except ValueError:
             continue
     return out
+
+
+def group_by_upc(pending_rows):
+    """{upc: claimant group} (e.g. "Sony Music Entertainment") for the major-label tags."""
+    return {r["upc"]: r.get("group") or "" for r in pending_rows if r.get("group")}
 
 
 def _tier_rank(tier) -> int:
@@ -440,7 +449,8 @@ def _manager_label(username: str, display_name: str, region: str = None) -> str:
     return f'<at email="{username}@{MENTION_DOMAIN}">{display_name}</at>'
 
 
-def build_tag_card(managers, no_manager_rows=None, region=None, streams_by_upc=None, tier_by_upc=None):
+def build_tag_card(managers, no_manager_rows=None, region=None, streams_by_upc=None, tier_by_upc=None,
+                   group_by_upc=None):
     """Build an interactive card that names each manager with their UPCs.
 
     Layout (per manager):
@@ -469,10 +479,21 @@ def build_tag_card(managers, no_manager_rows=None, region=None, streams_by_upc=N
     tier_by_upc = tier_by_upc or {}
     prioritize = bool(streams_by_upc or tier_by_upc)
 
+    group_by_upc = group_by_upc or {}
+
+    def _is_major(item):
+        return (tier_by_upc or {}).get(item[0]) == 1
+
+    def _major_tag(upc):
+        group = group_by_upc.get(upc, "")
+        return f"🏛️ **MAJOR · {group.split()[0] if group else 'Major'}** "
+
     def ordered(items):
         if not prioritize:
             return items
-        return sorted(items, key=lambda it: priority_key(it, today, streams_by_upc, tier_by_upc))
+        ranked = sorted(items, key=lambda it: priority_key(it, today, streams_by_upc, tier_by_upc))
+        # Major-label (tier 1) claims always come first, whatever their SLA band.
+        return [it for it in ranked if _is_major(it)] + [it for it in ranked if not _is_major(it)]
 
     region = (region or _current_region()).upper()
 
@@ -480,6 +501,12 @@ def build_tag_card(managers, no_manager_rows=None, region=None, streams_by_upc=N
         upc for upc, info in streams_by_upc.items() if is_high(importance(info))
     } & ({it[0] for info in managers.values() for it in info["items"]}
          | {r.get("upc") for r in no_manager_rows})
+    major_upcs = {it[0] for info in managers.values() for it in info["items"] if _is_major(it)} | {
+        r.get("upc") for r in no_manager_rows if (tier_by_upc or {}).get(r.get("upc")) == 1}
+    if major_upcs:
+        elements.insert(0, {"tag": "div", "text": {"tag": "lark_md", "content": (
+            f"🏛️ **{len(major_upcs)} major label claim{'s' if len(major_upcs) != 1 else ''}** "
+            "in this list — shown first, marked 🏛️ MAJOR.")}})
     if high_upcs:
         elements.insert(0, {"tag": "div", "text": {"tag": "lark_md", "content": (
             f"🔥 **{len(high_upcs)} high-streaming claim{'s' if len(high_upcs) != 1 else ''}** "
@@ -496,7 +523,7 @@ def build_tag_card(managers, no_manager_rows=None, region=None, streams_by_upc=N
         for upc, title, received in ordered(info["items"]):
             url = ADMIN_UPC_URL_TEMPLATE.format(upc=upc)
             sla = _format_sla_suffix(received, today)
-            upc_lines.append(f"• [{upc}]({url}) — {_md_escape(title)} — {sla}"
+            upc_lines.append(f"• {_major_tag(upc) if (tier_by_upc or {}).get(upc) == 1 else ''}[{upc}]({url}) — {_md_escape(title)} — {sla}"
                              + (streams_suffix(streams_by_upc.get(upc)) if streams_by_upc else ""))
         elements.append({
             "tag": "div",
@@ -515,7 +542,7 @@ def build_tag_card(managers, no_manager_rows=None, region=None, streams_by_upc=N
         for upc, title, received in no_mgr_items:
             url = ADMIN_UPC_URL_TEMPLATE.format(upc=upc)
             sla = _format_sla_suffix(received, today)
-            no_manager_lines.append(f"• [{upc}]({url}) — {_md_escape(title)} — {sla}"
+            no_manager_lines.append(f"• {_major_tag(upc) if (tier_by_upc or {}).get(upc) == 1 else ''}[{upc}]({url}) — {_md_escape(title)} — {sla}"
                                     + (streams_suffix(streams_by_upc.get(upc)) if streams_by_upc else ""))
         elements.append({
             "tag": "div",
@@ -605,7 +632,7 @@ def main():
         return {"pending_rows": len(pending_rows), "managers": 0, "no_manager_rows": 0, "posted": False}
 
     card = build_tag_card(managers, no_manager_rows, streams_by_upc=streams_by_upc(pending_rows),
-                          tier_by_upc=tier_by_upc(pending_rows))
+                          tier_by_upc=tier_by_upc(pending_rows), group_by_upc=group_by_upc(pending_rows))
 
     if dry_run:
         log("\n[DRY-RUN] Card that WOULD be posted:")

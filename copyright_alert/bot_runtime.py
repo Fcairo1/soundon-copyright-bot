@@ -681,6 +681,7 @@ def manual_scan_region(region: str, max_messages: int = 80) -> dict:
             ra.save_posted_card(posted_message_id, patched_card)
             ra.patch_card_message(posted_message_id, patched_card)
             tracker_row = ra.append_tracker_row(ef, ar, posted_message_id, status="")
+            ra.notify_major_label_claim(ef, ar, region, posted_message_id)
             ra._save_posted_claim(
                 dup_key,
                 {

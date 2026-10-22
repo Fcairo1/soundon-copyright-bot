@@ -32,6 +32,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from copyright_alert.lark_auth import request_json_with_auth_retry  # noqa: E402
+from copyright_alert.major_label_detector import classify_claimant  # noqa: E402
 from copyright_alert.run_alert import _get_bot_access_token  # noqa: E402
 # C1: unified 5-business-day BRT reply deadline (single source of truth).
 from copyright_alert.tag_managers import (  # noqa: E402
@@ -285,7 +286,21 @@ def build_dm_action_card(case: dict) -> dict:
             "value": value,
         }
 
+    # Tier 1 (major label): loud header + banner. The tracker's tier wins; otherwise
+    # classify from the claimant on the case so every path that builds this card
+    # (daily step, "Notify Ops" button, /card) behaves the same.
+    tier_raw = str(case.get("claimant_tier") or "").strip()
+    if tier_raw:
+        major_group = str(case.get("claimant_group") or "").strip() or "Major label"
+        is_major = tier_raw == "1"
+    else:
+        classification = classify_claimant(case.get("claimant_email", ""), case.get("claimant_name", ""))
+        is_major = classification.get("tier") == 1
+        major_group = classification.get("major") or "Major label"
+
     header_title = f"📋 Spotify Reply Needed – {artist} – {upc}"
+    if is_major:
+        header_title = f"🏛️ MAJOR LABEL — Spotify Reply Needed – {artist} – {upc}"
 
     detail_md = (
         f"**UPC:** {upc}\n"
@@ -303,10 +318,13 @@ def build_dm_action_card(case: dict) -> dict:
     card = {
         "config": {"wide_screen_mode": True, "update_multi": True},
         "header": {
-            "template": "orange",
+            "template": "carmine" if is_major else "orange",
             "title": {"tag": "plain_text", "content": header_title},
         },
         "elements": [
+            *([{"tag": "div", "text": {"tag": "lark_md", "content": (
+                f"**🏛️ MAJOR LABEL CLAIM — {major_group}** (Tier 1)\n"
+                "Priority: reply today — don't let the 5-day window run.")}}, {"tag": "hr"}] if is_major else []),
             {"tag": "div", "text": {"tag": "lark_md", "content": detail_md}},
             {"tag": "div", "text": {"tag": "lark_md", "content": action_requested_md}},
             {"tag": "hr"},
