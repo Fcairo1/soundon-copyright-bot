@@ -1757,8 +1757,32 @@ def _load_retracted_claims():
     return _json_file_dict(RETRACTED_CLAIMS_FILE)
 
 
-def is_retraction_already_processed(message_id):
-    return bool(message_id and _load_retracted_claims().get(str(message_id).strip()))
+def _retraction_state_key(message_id, region):
+    return f"{region}:{str(message_id).strip()}"
+
+
+def is_retraction_already_processed(message_id, region=None):
+    """True only if THIS region already applied the retraction.
+
+    The mailbox is shared by all regions, but each region has its own tracker: a
+    retraction for a US UPC is "unmatched" in the BR run and must stay open for the
+    US run. So state is per region, and only a MATCHED (applied) record counts —
+    an unmatched email is re-checked next run (it stays inside the 7-day search
+    window, so this is bounded). Legacy records (plain message_id key, written
+    before regions were separated) count only when matched for the same region.
+    """
+    if not message_id:
+        return False
+    data = _load_retracted_claims()
+    mid = str(message_id).strip()
+    if region:
+        rec = data.get(_retraction_state_key(mid, region))
+        if rec and rec.get("matched"):
+            return True
+        legacy = data.get(mid)
+        return bool(legacy and legacy.get("matched") and legacy.get("region") == region)
+    legacy = data.get(mid)
+    return bool(legacy and legacy.get("matched"))
 
 
 def _save_retracted_claim(message_id, record):
@@ -1770,7 +1794,9 @@ def _save_retracted_claim(message_id, record):
             data = {}
         payload = dict(record or {})
         payload.setdefault("processed_at", datetime.utcnow().replace(microsecond=0).isoformat() + "Z")
-        data[str(message_id).strip()] = payload
+        region = payload.get("region")
+        key = _retraction_state_key(message_id, region) if region else str(message_id).strip()
+        data[key] = payload
         return data
 
     update_json_state(RETRACTED_CLAIMS_FILE, mutate, default=dict, ensure_ascii=False, indent=2)

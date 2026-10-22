@@ -35,7 +35,7 @@ import re
 import subprocess
 import sys
 import urllib.request
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from copyright_alert.lark_auth import extract_sheet_values, request_json_with_auth_retry, sheet_values_api
@@ -132,6 +132,17 @@ RECIPIENT_CHAT_ID = ""  # optional confirmed DM chat_id for the ops owner
 FEISHU_IM_DIR = inner_skill("feishu-im-send")
 ADMIN_ACTION_HEADER = "Admin Action Taken"
 RETRACTED_HEADER = "Retracted"
+RETRACTION_LOOKBACK_DAYS = 7
+
+
+def retraction_window_start_iso(now=None):
+    """Start of the retraction mail search: a fixed 7-day lookback, not "since the
+    last checkpoint". The scan advances the checkpoint BEFORE the retraction pass
+    runs, so a failed pass (expired token, search error) would otherwise lose its
+    window for good. The overlap is harmless — already-processed emails are skipped
+    by message_id."""
+    now = now or datetime.now(timezone.utc)
+    return (now - timedelta(days=RETRACTION_LOOKBACK_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
 STATUS_TAKEDOWN = "🔴 Confirm Takedown"
 STATUS_RESOLVED = "✅ Resolved"
 
@@ -1361,7 +1372,7 @@ def run_retraction_pass(values, *, since_timestamp=None, full_history=False, not
         message_id = _norm(candidate.get("message_id"))
         if not message_id:
             continue
-        if is_retraction_already_processed(message_id):
+        if is_retraction_already_processed(message_id, region=ACTIVE_REGION):
             summary["already_processed"] += 1
             continue
 
@@ -2113,8 +2124,7 @@ def main(region=None, only=None, skip=None):
     run_part = {part: selector.should_run(part) for part in VALID_PARTS}
 
     results = {}
-    previous_checkpoint_state = load_checkpoint_state()
-    retraction_window_start = previous_checkpoint_state.get("updated_at")
+    retraction_window_start = retraction_window_start_iso()
 
     # A) Incremental scan
     if run_part["1A"]:
