@@ -138,3 +138,16 @@ def test_daily_workflow_main_aborts_before_any_work_on_a_dying_token(monkeypatch
     with pytest.raises(SystemExit) as exc:
         dw.main()
     assert exc.value.code == 3
+
+
+def test_full_scan_needs_40_min_but_partial_run_only_5(monkeypatch):
+    from copyright_alert import daily_workflow as dw
+    seen = []
+    monkeypatch.setattr(dw, "_setup_logging", lambda: "/dev/null")
+    monkeypatch.setattr(dw, "log", lambda *a, **k: None)
+    monkeypatch.setattr(dw, "_current_env_jwt_diag", lambda: "")
+    monkeypatch.setattr(lark_auth, "jwt_start_gate", lambda ctx, min_sec=None: seen.append(min_sec) or (False, 30))
+    for only in (None, ["K", "L"]):
+        with pytest.raises(SystemExit):
+            dw.main(only=only)
+    assert seen == [2400, 300]
