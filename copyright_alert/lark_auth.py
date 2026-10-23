@@ -621,6 +621,29 @@ def ensure_jwt_fresh(context: str = "jwt-preflight", margin_sec: Optional[int] =
     return ok
 
 
+JWT_START_MIN_SEC = int(os.getenv("LARK_JWT_START_MIN_SEC", "300"))   # scheduled runs take ~0.5-3 min
+
+
+def jwt_start_gate(context: str = "jwt-start-gate", min_sec: Optional[int] = None):
+    """Start-of-run gate: may a scan begin with the JWT currently in the environment?
+
+    ensure_jwt_fresh only warns (and its callers ignore the result), so a run that
+    starts with ~0 minutes left sails into the scan and dies half-way through the
+    inbox, leaving cards/rows posted but the checkpoint behind. Call this ONCE before
+    any work: it first tries to reload a fresher snapshot (alerting the operator if
+    none exists), then requires at least ``min_sec`` of life left.
+
+    Returns (ok, seconds_left); seconds_left is None when no JWT is configured
+    (OAuth-only setups always pass).
+    """
+    need = JWT_START_MIN_SEC if min_sec is None else min_sec
+    if not any(os.environ.get(k) for k in _JWT_ENV_KEYS):
+        return True, None
+    ensure_jwt_fresh(context)
+    left = _best_env_jwt_expiry() - int(time.time())
+    return left >= need, left
+
+
 def send_stale_token_alert(context: str, detail: str) -> bool:
     """Best-effort operator alert when auth still fails after one refresh retry."""
     # I4: persistent, cross-process throttle FIRST. Keyed by context only (not the

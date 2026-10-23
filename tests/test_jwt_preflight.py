@@ -101,3 +101,40 @@ def test_dot_env_with_older_token_does_not_downgrade(monkeypatch, tmp_path, _iso
     monkeypatch.setattr(lark_auth, "_ENV_FILE_CANDIDATES", (dotenv,))
     lark_auth._refresh_aime_credentials()
     assert os.environ["AIME_USER_CLOUD_JWT"] == current
+
+
+def test_start_gate_passes_with_plenty_of_time(monkeypatch, _isolate):
+    monkeypatch.setenv("AIME_USER_CLOUD_JWT", _jwt(time.time() + 3600))
+    ok, left = lark_auth.jwt_start_gate("t")
+    assert ok is True and left > 3000 and not _isolate
+
+
+def test_start_gate_blocks_a_token_with_about_zero_minutes_left(monkeypatch, tmp_path, _isolate):
+    monkeypatch.setenv("AIME_USER_CLOUD_JWT", _jwt(time.time() + 60))          # ~1 min: the failed-run case
+    _snapshot(tmp_path / "aime_env_refresh.json", _jwt(time.time() + 30))      # snapshot no better
+    ok, left = lark_auth.jwt_start_gate("t")
+    assert ok is False and left < 600
+    assert _isolate                                                            # operator was alerted
+
+
+def test_start_gate_reloads_a_fresher_snapshot_then_passes(monkeypatch, tmp_path, _isolate):
+    monkeypatch.setenv("AIME_USER_CLOUD_JWT", _jwt(time.time() + 60))
+    _snapshot(tmp_path / "aime_env_refresh.json", _jwt(time.time() + 7000))
+    ok, left = lark_auth.jwt_start_gate("t")
+    assert ok is True and left > 6000 and not _isolate
+
+
+def test_start_gate_noop_without_jwt(_isolate):
+    assert lark_auth.jwt_start_gate("t") == (True, None)
+
+
+def test_daily_workflow_main_aborts_before_any_work_on_a_dying_token(monkeypatch):
+    from copyright_alert import daily_workflow as dw
+    monkeypatch.setattr(dw, "_setup_logging", lambda: "/dev/null")
+    monkeypatch.setattr(dw, "log", lambda *a, **k: None)
+    monkeypatch.setattr(dw, "_current_env_jwt_diag", lambda: "")
+    monkeypatch.setattr(lark_auth, "jwt_start_gate", lambda *a, **k: (False, 30))
+    monkeypatch.setattr(dw, "run_scan", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not scan")))
+    with pytest.raises(SystemExit) as exc:
+        dw.main()
+    assert exc.value.code == 3
