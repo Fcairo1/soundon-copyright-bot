@@ -2123,10 +2123,13 @@ def main(region=None, only=None, skip=None):
     # Refuse to start a scan on a token about to expire: a half-finished run posts
     # cards/rows but leaves the checkpoint behind. Abort cleanly before touching
     # anything; the operator alert is sent by the gate.
-    jwt_ok, jwt_left = lark_auth.jwt_start_gate(f"daily_workflow start ({ACTIVE_REGION})")
+    # Full scans take ~14-30 min; a partial run (--only, e.g. the 07:00 digest task that
+    # takes under 3 min) only needs a few minutes of token.
+    need_sec = 300 if only else lark_auth.JWT_START_MIN_SEC
+    jwt_ok, jwt_left = lark_auth.jwt_start_gate(f"daily_workflow start ({ACTIVE_REGION})", min_sec=need_sec)
     if not jwt_ok:
         log(f"  ✗ ABORT: AIME JWT has only ~{max(jwt_left or 0, 0) // 60} min left "
-            f"(need ≥ {lark_auth.JWT_START_MIN_SEC // 60}) and no fresher snapshot is available. "
+            f"(need ≥ {need_sec // 60}) and no fresher snapshot is available. "
             f"Nothing was scanned or posted. Run refresh_lark_jwt.py from a fresh AIME shell, then rerun.")
         raise SystemExit(3)
 
