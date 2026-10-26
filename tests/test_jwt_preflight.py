@@ -140,7 +140,7 @@ def test_daily_workflow_main_aborts_before_any_work_on_a_dying_token(monkeypatch
     assert exc.value.code == 3
 
 
-def test_full_scan_needs_40_min_but_partial_run_only_5(monkeypatch):
+def test_full_scan_needs_60_min_but_partial_run_only_5(monkeypatch):
     from copyright_alert import daily_workflow as dw
     seen = []
     monkeypatch.setattr(dw, "_setup_logging", lambda: "/dev/null")
@@ -150,4 +150,4 @@ def test_full_scan_needs_40_min_but_partial_run_only_5(monkeypatch):
     for only in (None, ["K", "L"]):
         with pytest.raises(SystemExit):
             dw.main(only=only)
-    assert seen == [2400, 300]
+    assert seen == [3600, 300]

@@ -621,9 +621,10 @@ def ensure_jwt_fresh(context: str = "jwt-preflight", margin_sec: Optional[int] =
     return ok
 
 
-# Full daily scans take ~14-30 min (SPLA/US logs: 815-1811s), so a run needs well over that
-# much token life at start. (The ~0.5-3 min runs are only the "--only K L" digest task.)
-JWT_START_MIN_SEC = int(os.getenv("LARK_JWT_START_MIN_SEC", "2400"))
+# Full daily scans take 36-54 min (last completed runs: US 2158s, SPLA 2959s, BR 3220s), so
+# a run needs at least an hour of token life at start. (The ~0.5-3 min runs are only the
+# "--only K L" digest task.)
+JWT_START_MIN_SEC = int(os.getenv("LARK_JWT_START_MIN_SEC", "3600"))
 
 
 def jwt_start_gate(context: str = "jwt-start-gate", min_sec: Optional[int] = None):

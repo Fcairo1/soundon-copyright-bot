@@ -765,6 +765,31 @@ def resend_unanswered_notices() -> dict:
 
 
 # ── Button-click handler (called from the persistent callback daemon) ───────
+def build_draft_ready_card(*, title, upc, ref_id, region, outcome_label, draft_url="",
+                           thread_warning="", clicked_in_group=False) -> dict:
+    """Green "✉️ Draft ready" card for the ops owner, mirroring the claims flow
+    (persistent_callback._send_outcome_card): one button straight to the draft."""
+    who = "A manager confirmed in the group" if clicked_in_group else "Decision recorded"
+    intro = (f"{who}: **{outcome_label}**.\n\nA reply draft was created in the `soundon-copyright` "
+             "mailbox. Click the button below to review it and send it from your Lark mailbox.")
+    elements = [{"tag": "div", "text": {"tag": "lark_md", "content":
+        f"{intro}\n\n**Release:** {title}\n**UPC:** {upc}"}}]
+    if draft_url:
+        elements.append({"tag": "action", "actions": [{
+            "tag": "button", "text": {"tag": "plain_text", "content": "🔗 Review & Send Draft"},
+            "type": "default", "url": draft_url}]})
+    else:
+        elements[0]["text"]["content"] += ("\n\n⚠️ The draft URL was not returned by Lark Mail — "
+                                           "please open the `soundon-copyright` mailbox drafts folder.")
+    if thread_warning:
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": f"**{thread_warning}**"}})
+    elements.append({"tag": "note", "elements": [{"tag": "plain_text", "content": f"Region {region} · {ref_id}"}]})
+    return {"config": {"wide_screen_mode": True},
+            "header": {"template": "green",
+                       "title": {"tag": "plain_text", "content": f"✉️ Draft ready – {outcome_label}"}},
+            "elements": elements}
+
+
 def _notify_click_failure(value: dict, reason: str) -> None:
     """Tell the regional ops owner a rights-confirmation click did NOT go through.
 
@@ -912,22 +937,16 @@ def _handle_reply_callback(value: dict, *, message_id: str = "", explanation: st
     # A manager resolving it from the group card is new information ops
     # hasn't seen yet (their own action-request DM is patched above, but
     # that's passive — proactively tell them a decision was already made).
-    if source == "group":
-        notice_card = {
-            "config": {"wide_screen_mode": True},
-            "header": {"template": "green", "title": {"tag": "plain_text", "content": "✅ Rights confirmation resolved"}},
-            "elements": [
-                {"tag": "div", "text": {"tag": "lark_md", "content":
-                    f"**{title}** — UPC {upc}\nA manager confirmed in the group: **{outcome_label}**."}},
-                {"tag": "div", "text": {"tag": "lark_md", "content":
-                    f"Reply draft ready: {draft_url}" if draft_url else "Reply draft could not be created — check the logs."}},
-                {"tag": "note", "elements": [{"tag": "plain_text", "content": f"Region {region} · {ref_id}"}]},
-            ],
-        }
-        try:
-            _send_to_ops(region, notice_card, log_context=f"UPC {upc} resolved via group")
-        except Exception as exc:
-            print(f"  ⚠ Could not notify ops of group resolution: {exc!r}", flush=True)
+    # Same as the infringement-claim reply flow: a NEW "Draft ready" card with a
+    # "Review & Send Draft" button goes to the regional ops owner on EVERY click
+    # (group or DM). Editing the old cards above is passive and pings nobody.
+    try:
+        _send_to_ops(region, build_draft_ready_card(
+            title=title, upc=upc, ref_id=ref_id, region=region, outcome_label=outcome_label,
+            draft_url=draft_url, thread_warning=thread_warning,
+            clicked_in_group=(source == "group")), log_context=f"UPC {upc} draft ready ({source})")
+    except Exception as exc:
+        print(f"  ⚠ Could not send draft-ready card to ops: {exc!r}", flush=True)
 
     return f"{choice}:{key}:ok"
 
