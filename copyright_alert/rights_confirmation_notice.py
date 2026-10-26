@@ -765,7 +765,49 @@ def resend_unanswered_notices() -> dict:
 
 
 # ── Button-click handler (called from the persistent callback daemon) ───────
+def _notify_click_failure(value: dict, reason: str) -> None:
+    """Tell the regional ops owner a rights-confirmation click did NOT go through.
+
+    The click toast ("Creating reply draft...") is returned before the worker runs,
+    so any early return or uncaught exception in the worker used to look, from the
+    clicker's side, exactly like nothing happened (seen 2026-10-26: toast, then no
+    draft, no card, no DM)."""
+    region = str((value or {}).get("region", "") or "BR").strip() or "BR"
+    choice = str((value or {}).get("choice", "") or "?")
+    upc = str((value or {}).get("upc", "") or "N/A")
+    card = {
+        "config": {"wide_screen_mode": True},
+        "header": {"template": "red", "title": {"tag": "plain_text", "content": "⚠️ Rights confirmation click failed"}},
+        "elements": [
+            {"tag": "div", "text": {"tag": "lark_md", "content":
+                f"The **{choice}** click for UPC **{upc}** was NOT processed — no reply draft was created.\n\n"
+                f"Reason: {reason}\n\nPlease click the button again; if it fails again, tell the bot owner."}},
+            {"tag": "note", "elements": [{"tag": "plain_text", "content": f"Region {region}"}]},
+        ],
+    }
+    try:
+        _send_to_ops(region, card, log_context=f"UPC {upc} click failure")
+    except Exception as exc:
+        print(f"  ⚠ Could not send rights-confirmation click-failure notice: {exc!r}", flush=True)
+
+
 def handle_reply_callback(value: dict, *, message_id: str = "", explanation: str = "") -> str:
+    """Worker for the two rights-confirmation buttons. Never fails silently: an early
+    return or an uncaught exception is turned into a visible card for ops."""
+    import traceback
+    try:
+        outcome = _handle_reply_callback(value, message_id=message_id, explanation=explanation)
+    except Exception as exc:
+        print(f"  ✗ rights-confirmation callback crashed: {exc!r}\n{traceback.format_exc()}", flush=True)
+        _notify_click_failure(value, f"unexpected error: {exc!r}")
+        return "error"
+    if outcome == "no key" or str(outcome).startswith("unknown choice"):
+        print(f"  ✗ rights-confirmation click not processed: {outcome}", flush=True)
+        _notify_click_failure(value, f"the card is missing data ({outcome})")
+    return outcome
+
+
+def _handle_reply_callback(value: dict, *, message_id: str = "", explanation: str = "") -> str:
     choice = str((value or {}).get("choice", "") or "").strip()
     key = str((value or {}).get("key", "") or "").strip()
     region = str((value or {}).get("region", "") or "BR").strip() or "BR"
