@@ -810,6 +810,9 @@ def handle_card_action(data):
     try:
         payload = _obj_to_dict(data)
         print("card.action.trigger payload:", json.dumps(payload, ensure_ascii=False), flush=True)
+        # Every button handler may shell out to lark-cli (mail drafts, sheet writes), which
+        # inherits this long-running process's AIME JWT; reload a fresher one if available.
+        _refresh_callback_credentials("card action")
         event = getattr(data, "event", None)
         action = getattr(event, "action", None) if event else None
         context = getattr(event, "context", None) if event else None
