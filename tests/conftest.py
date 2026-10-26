@@ -25,3 +25,30 @@ def _no_live_status_overrides(monkeypatch):
     from copyright_alert import acr_digest
 
     monkeypatch.setattr(acr_digest, "read_status_overrides", lambda: {})
+
+
+@pytest.fixture(autouse=True)
+def _never_talk_to_live_lark(monkeypatch):
+    """No test may post cards/DMs, patch messages or call lark-cli for real.
+
+    Several tests build real notification cards with obviously fake data (UPC 999,
+    title "T"); when the suite runs on a machine that has live bot credentials
+    (the AIME sandbox does) those went out as real DMs to ops. Tests that need a
+    sender patch it themselves — that overrides these guards."""
+    import subprocess
+    from copyright_alert import bot_runtime
+
+    def _blocked_post(path, body=None, method="POST"):
+        raise RuntimeError(f"live Lark API call blocked in tests: {method} {path}")
+
+    monkeypatch.setattr(bot_runtime, "_post_api", _blocked_post)
+
+    real_run = subprocess.run
+
+    def _guarded_run(cmd, *a, **k):
+        argv = cmd if isinstance(cmd, (list, tuple)) else [cmd]
+        if argv and str(argv[0]).split("/")[-1] == "lark-cli":
+            raise RuntimeError(f"live lark-cli call blocked in tests: {' '.join(map(str, argv[:4]))}")
+        return real_run(cmd, *a, **k)
+
+    monkeypatch.setattr(subprocess, "run", _guarded_run)
