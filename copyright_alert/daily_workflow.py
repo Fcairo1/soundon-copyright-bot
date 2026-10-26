@@ -277,7 +277,7 @@ def section(title):
     # steps) hasn't expired during an earlier, possibly hours-long, part.
     lark_auth.ensure_jwt_fresh(f"daily_workflow {title[:40]}")
     log("\n" + "=" * 72)
-    log(title)
+    log(f"{title}   [{datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC]")
     log("=" * 72)
 
 

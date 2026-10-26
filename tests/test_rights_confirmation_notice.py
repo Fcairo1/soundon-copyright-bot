@@ -200,7 +200,7 @@ def test_handle_reply_callback_no_rights(monkeypatch):
     assert result == "no_rights:k1:ok"
 
 
-def test_handle_reply_callback_from_group_patches_both_cards_and_notifies_ops(monkeypatch):
+def test_handle_reply_callback_from_group_patches_both_cards_and_sends_draft_ready_card(monkeypatch):
     monkeypatch.setattr(rc, "get_notice", lambda key: {
         "fields": {"title": "T", "ref_id": "ref:1"},
         "source_email_message_id": "msg1",
@@ -224,11 +224,12 @@ def test_handle_reply_callback_from_group_patches_both_cards_and_notifies_ops(mo
 
     assert set(patched.keys()) == {"dm_msg_1", "group_msg_1"}
     assert "We have rights" in notified["card"]["elements"][0]["text"]["content"]
-    assert "https://mail/draft1" in notified["card"]["elements"][1]["text"]["content"]
+    assert "manager confirmed in the group" in notified["card"]["elements"][0]["text"]["content"]
+    assert notified["card"]["elements"][1]["actions"][0]["url"] == "https://mail/draft1"
     assert result == "have_rights:k1:ok"
 
 
-def test_handle_reply_callback_from_dm_does_not_notify_ops(monkeypatch):
+def test_handle_reply_callback_from_dm_also_sends_draft_ready_card(monkeypatch):
     monkeypatch.setattr(rc, "get_notice", lambda key: {
         "fields": {"title": "T", "ref_id": "ref:1"}, "source_email_message_id": "msg1",
         "aeolus_row": {}, "group_message_id": "group_msg_1",
@@ -238,12 +239,15 @@ def test_handle_reply_callback_from_dm_does_not_notify_ops(monkeypatch):
     monkeypatch.setattr(rc, "update_json_state", lambda *a, **k: None)
     patched = {}
     monkeypatch.setattr(rc, "patch_card_message", lambda mid, card: patched.setdefault(mid, card))
-    monkeypatch.setattr(rc, "_send_to_ops", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not notify ops")))
+    sent = []
+    monkeypatch.setattr(rc, "_send_to_ops", lambda region, card, **k: sent.append(card) or {"ok": True})
 
     rc.handle_reply_callback({"choice": "no_rights", "key": "k1", "region": "BR", "upc": "999", "source": "dm"},
                               message_id="dm_msg_1")
     # ops's own DM card (the one clicked) and the group card both get patched
     assert set(patched.keys()) == {"dm_msg_1", "group_msg_1"}
+    # ...and ops still gets a NEW "Draft ready" card with the button (a patch pings nobody)
+    assert len(sent) == 1 and sent[0]["header"]["title"]["content"].startswith("✉️ Draft ready")
 
 
 import pytest  # noqa: E402
@@ -526,3 +530,19 @@ def test_successful_callback_sends_no_failure_notice(monkeypatch):
     monkeypatch.setattr(rc, "_send_to_ops", lambda region, card, **k: sent.append(card) or {})
     monkeypatch.setattr(rc, "_handle_reply_callback", lambda *a, **k: "have_rights:k:ok")
     assert rc.handle_reply_callback({"choice": "have_rights"}) == "have_rights:k:ok" and not sent
+
+
+def test_draft_ready_card_has_button_to_the_draft():
+    card = rc.build_draft_ready_card(title="T", upc="123", ref_id="ref:x", region="BR",
+                                     outcome_label="We have rights", draft_url="https://mail/draft/1",
+                                     clicked_in_group=True)
+    assert card["header"]["template"] == "green" and "Draft ready" in card["header"]["title"]["content"]
+    btn = card["elements"][1]["actions"][0]
+    assert btn["url"] == "https://mail/draft/1" and "Review & Send Draft" in btn["text"]["content"]
+    assert "manager confirmed in the group" in card["elements"][0]["text"]["content"]
+
+
+def test_draft_ready_card_without_url_points_to_drafts_folder():
+    card = rc.build_draft_ready_card(title="T", upc="1", ref_id="r", region="US", outcome_label="We do not have rights")
+    assert not any(e.get("tag") == "action" for e in card["elements"])
+    assert "drafts folder" in card["elements"][0]["text"]["content"]
