@@ -36,6 +36,7 @@ import subprocess
 import sys
 import urllib.request
 from datetime import date, datetime, timedelta, timezone
+from copyright_alert import run_log
 from pathlib import Path
 
 from copyright_alert.lark_auth import extract_sheet_values, request_json_with_auth_retry, sheet_values_api
@@ -272,7 +273,11 @@ def _current_env_jwt_diag() -> str:
     return "JWT env diag: no JWT env var set"
 
 
+_PARTS_SEEN = []
+
+
 def section(title):
+    _PARTS_SEEN.append(str(title).split(" — ")[0].replace("PART ", "").strip())
     # Every PART starts here: make sure the AIME JWT (used by the lark-cli mail
     # steps) hasn't expired during an earlier, possibly hours-long, part.
     lark_auth.ensure_jwt_fresh(f"daily_workflow {title[:40]}")
@@ -2110,6 +2115,22 @@ def main(region=None, only=None, skip=None):
     if region:
         configure_region(region)
     log_path = _setup_logging()
+    _PARTS_SEEN.clear()
+    automation = "Daily Scan" + (f" (--only {' '.join(only)})" if only else "")
+    rl = run_log.RunLog(automation, ACTIVE_REGION, log_file=log_path)
+    try:
+        results = _main(only, skip, log_path, rl)
+    except SystemExit:
+        raise
+    except Exception as exc:
+        rl.finish("FAILED", "The run crashed.", problem=repr(exc))
+        raise
+    status, summary, problem, numbers = run_log.summarize_results(results, list(_PARTS_SEEN))
+    rl.finish(status, summary, problem=problem, numbers=numbers)
+    return results
+
+
+def _main(only, skip, log_path, rl):
     started = datetime.now()
     log(f"Copyright alert daily workflow — started {started.strftime('%Y-%m-%d %H:%M:%S')}")
     log(f"Region: {ACTIVE_REGION}")
@@ -2127,10 +2148,15 @@ def main(region=None, only=None, skip=None):
     # takes under 3 min) only needs a few minutes of token.
     need_sec = 300 if only else lark_auth.JWT_START_MIN_SEC
     jwt_ok, jwt_left = lark_auth.jwt_start_gate(f"daily_workflow start ({ACTIVE_REGION})", min_sec=need_sec)
+    rl.start(token_minutes=None if jwt_left is None else max(jwt_left, 0) // 60,
+             mode="partial" if only else "full")
     if not jwt_ok:
         log(f"  ✗ ABORT: AIME JWT has only ~{max(jwt_left or 0, 0) // 60} min left "
             f"(need ≥ {need_sec // 60}) and no fresher snapshot is available. "
             f"Nothing was scanned or posted. Run refresh_lark_jwt.py from a fresh AIME shell, then rerun.")
+        rl.finish("FAILED", "Aborted before scanning: JWT too close to expiry.",
+                  problem=f"ABORT: token had ~{max(jwt_left or 0, 0) // 60} min, needs >= {need_sec // 60}",
+                  action="Refresh the JWT, then rerun the daily scan.")
         raise SystemExit(3)
 
     selector = PartSelector(only=only, skip=skip)
