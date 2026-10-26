@@ -503,3 +503,26 @@ def test_callback_passes_the_parsed_email_fields_to_the_reply(monkeypatch):
     monkeypatch.setattr(rc, "patch_card_message", lambda *a, **k: None)
     rc.handle_reply_callback({"choice": "have_rights", "key": "k1", "region": "BR", "upc": "5064079652602"}, message_id="x")
     assert seen["k"]["fields"]["label"] == "Music Eve"
+
+
+def test_callback_crash_is_reported_to_ops_not_swallowed(monkeypatch):
+    sent = []
+    monkeypatch.setattr(rc, "_send_to_ops", lambda region, card, **k: sent.append((region, card)) or {})
+    monkeypatch.setattr(rc, "_handle_reply_callback", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    out = rc.handle_reply_callback({"choice": "have_rights", "upc": "123", "region": "BR", "key": "k"})
+    assert out == "error" and len(sent) == 1
+    assert "failed" in sent[0][1]["header"]["title"]["content"] and "boom" in str(sent[0][1])
+
+
+def test_missing_key_is_reported_to_ops(monkeypatch):
+    sent = []
+    monkeypatch.setattr(rc, "_send_to_ops", lambda region, card, **k: sent.append(card) or {})
+    out = rc.handle_reply_callback({"choice": "have_rights", "upc": "123", "region": "US"})
+    assert out == "no key" and len(sent) == 1
+
+
+def test_successful_callback_sends_no_failure_notice(monkeypatch):
+    sent = []
+    monkeypatch.setattr(rc, "_send_to_ops", lambda region, card, **k: sent.append(card) or {})
+    monkeypatch.setattr(rc, "_handle_reply_callback", lambda *a, **k: "have_rights:k:ok")
+    assert rc.handle_reply_callback({"choice": "have_rights"}) == "have_rights:k:ok" and not sent
