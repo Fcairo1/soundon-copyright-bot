@@ -25,6 +25,7 @@ def _no_live_status_overrides(monkeypatch):
     from copyright_alert import acr_digest
 
     monkeypatch.setattr(acr_digest, "read_status_overrides", lambda: {})
+    monkeypatch.setattr(acr_digest, "read_filed_claims", lambda: [])
 
 
 @pytest.fixture(autouse=True)

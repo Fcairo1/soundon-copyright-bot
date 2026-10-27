@@ -12,7 +12,7 @@ always_td_data.py, no_claim_data.py).
      claims reminders use) to tick "Do NOT claim" on the dashboard.
   2. Day-5 alarm. The first daily run after the deadline sends each region's
      product ops owner one message: what is still open to claim, per label
-     manager, plus any always-take-down cases not requested yet. Once per
+     manager, plus any always-take-down cases not filed yet. Once per
      cycle and region (retries only the regions that failed).
   3. Monday reminder. While a window is open, every Monday the digest card is
      re-posted in the group with fresh numbers, tagging only managers who
@@ -20,6 +20,8 @@ always_td_data.py, no_claim_data.py).
   4. Always-take-down accounts. The source is a plain Lark sheet of SoundOn
      user IDs; this mirrors it daily into the "Always TD Accounts" tab, which
      the dashboard reads (its Lark app already has access to that workbook).
+  5. Claim follow-up. Every day, claim_followup.py checks Spotify 2 and 7
+     days after a case was ticked ✅ Claim filed (see that module).
 
 A case is always-take-down only when its SO User ID is on the list AND an
 analyst marked it "Other Party" — an account's own releases also show up in
@@ -187,21 +189,14 @@ def sync_always_td_accounts(*, dry_run: bool = False) -> Dict[str, object]:
 # ── The day-5 alarm ─────────────────────────────────────────────────────────
 
 def _key_sets():
-    """(do-not-claim keys, requested keys) — requested = already has a row in
-    the Takedown Stream Tracker, keyed so_song_id|matched_isrc like the dashboard."""
+    """(do-not-claim keys, claim-filed keys) — filed = has a row in the Takedown
+    Stream Tracker (the dashboard's ✅ Claim filed box), keyed like the dashboard."""
     no_claim = ad.read_do_not_claim_keys()
     requested: Set[str] = set()
     try:
-        grid = ad.read_tab(WORKBOOK_URL, ad.TAKEDOWN_STREAMS_SHEET_ID)
-        if grid:
-            idx = ad._header_index(grid[0])
-            s_i, m_i = idx.get("so_song_id"), idx.get("matched_isrc")
-            for row in grid[1:]:
-                sid, mi = ad._cell(row, s_i), ad._cell(row, m_i)
-                if sid or mi:
-                    requested.add(f"{sid}|{mi}")
+        requested = {r["key"] for r in ad.read_filed_claims()}
     except Exception as exc:
-        print(f"  ⚠ claim alarm: could not read the Takedown Stream Tracker ({exc!r}) — requested cases may be over-counted", flush=True)
+        print(f"  ⚠ claim alarm: could not read the Takedown Stream Tracker ({exc!r}) — filed cases may be over-counted", flush=True)
     return no_claim, requested
 
 
@@ -288,7 +283,7 @@ def build_alarm_card(region: str, cycle: str, summary: Dict[str, object]) -> dic
                 "type": "primary", "url": ad.DASHBOARD_URL,
             }]},
             {"tag": "note", "elements": [{"tag": "plain_text", "content":
-                "Sent once per cycle. Tick 🔔 Takedown on the dashboard after filing so the case leaves the list."}]},
+                "Sent once per cycle. Tick ✅ Claim filed on the dashboard after filing so the case leaves the list."}]},
         ],
     }
 
@@ -386,6 +381,7 @@ def run_weekly_reminders(*, today: Optional[date] = None, dry_run: bool = False)
             continue
         data = ad.build_digest_data(rows, excluded_keys=inputs["no_claim"], always_td_ids=inputs["accounts"],
                                     requested_keys=inputs["requested"])
+        data.update(ad.filed_stats())
         card = ad.build_card(cycle, data, [], waiting=waiting)
         if dry_run:
             result["posted"].append({"cycle": cycle, "managers": len(waiting["managers"]), "dry_run": True})
@@ -409,7 +405,10 @@ def ad_parse_date(text) -> Optional[date]:
 
 def run_daily_jobs(*, dry_run: bool = False) -> Dict[str, object]:
     out: Dict[str, object] = {}
-    for name, fn in (("always_td_sync", sync_always_td_accounts), ("alarm", run_daily_alarm), ("weekly", run_weekly_reminders)):
+    from copyright_alert import claim_followup  # imports this module
+
+    for name, fn in (("always_td_sync", sync_always_td_accounts), ("alarm", run_daily_alarm),
+                     ("weekly", run_weekly_reminders), ("filed_followup", claim_followup.run_followups)):
         try:
             out[name] = fn(dry_run=dry_run)
         except Exception as exc:  # one failing job must not stop the other, or the daily workflow
