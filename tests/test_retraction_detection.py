@@ -110,3 +110,112 @@ def test_legacy_retraction_records_only_count_when_matched_for_same_region(tmp_p
     assert ra.is_retraction_already_processed("old_matched_br", region="US") is False
     assert ra.is_retraction_already_processed("old_unmatched_br", region="US") is False
     assert ra.is_retraction_already_processed("old_unmatched_br", region="BR") is False
+
+
+# ── 2026-10-27: Spotify's "withdrawn" wording (no "retracted" anywhere) ─────────────
+WITHDRAWN_META = {
+    "head_from": {"mail_address": "infringement-claim-response@spotify.com"},
+    "date_formatted": "2026-10-26T15:00:00Z",
+}
+WITHDRAWN_BODY = (
+    "Hi,\n\nThe claim has been withdrawn and the content will be reinstated within 48 hours. "
+    "No strike will be applied.\n\nAffected Content\n\nLabel Name: Music Eve\n"
+    "Artist: Israel Novaes, MusicEve, Maestro Pinocchio\nTitle: Comigo é Assim / Lapada Lapada\n"
+    "UPC: 5064079652602\nURI: spotify:track:6cBNGZZVoF1OTaKbYzDyDJ\n"
+)
+
+
+def test_withdrawn_wording_is_a_retraction():
+    assert ra.is_retraction_email(WITHDRAWN_BODY, meta=WITHDRAWN_META) is True
+    # still requires the exact Spotify sender
+    assert ra.is_retraction_email(WITHDRAWN_BODY, meta={"head_from": {"mail_address": "x@fuga.com"}}) is False
+    # other phrasings stay detected / unrelated text stays ignored
+    assert ra.is_retraction_email("The claimant has withdrawn the claim.", meta=WITHDRAWN_META) is True
+    assert ra.is_retraction_email("Please keep the claim withdrawn from review.", meta=WITHDRAWN_META) is False
+
+
+def test_withdrawn_email_fields_and_searches():
+    entries = ra.extract_retraction_entries(WITHDRAWN_BODY, meta=WITHDRAWN_META)
+    assert len(entries) == 1
+    assert entries[0]["upc"] == "5064079652602"
+    assert entries[0]["title"] == "Comigo é Assim / Lapada Lapada"
+    assert entries[0]["spotify_uri"] == "spotify:track:6cBNGZZVoF1OTaKbYzDyDJ"
+    assert {"retracted", "withdrawn"} <= set(ra.RETRACTION_SEARCH_QUERIES)
+
+
+def test_withdrawn_email_listing_several_releases_yields_one_entry_per_upc():
+    body = WITHDRAWN_BODY + (
+        "\nLabel Name: Music Eve\nArtist: B\nTitle: Second Song\nUPC: 644401000933\n"
+        "URI: spotify:track:7b8vUjIdQ4l7VfdBajSdoz\n"
+    )
+    entries = ra.extract_retraction_entries(body, meta=WITHDRAWN_META)
+    assert [e["upc"] for e in entries] == ["5064079652602", "644401000933"]
+    assert entries[1]["title"] == "Second Song"
+    assert entries[1]["spotify_uri"] == "spotify:track:7b8vUjIdQ4l7VfdBajSdoz"
+
+
+def test_withdrawn_email_is_never_a_new_claim():
+    from copyright_alert.non_claim_email import non_claim_reason
+    assert "retraction" in non_claim_reason(WITHDRAWN_BODY, "Infringement Claim Response")
+    assert ra.extract_claim_entries(WITHDRAWN_BODY, "Infringement Claim Response", WITHDRAWN_META) == []
+
+
+def test_retraction_pass_marks_every_upc_in_a_withdrawal_email(monkeypatch):
+    body = WITHDRAWN_BODY + "\nLabel Name: X\nArtist: B\nTitle: Second\nUPC: 644401000933\nURI: spotify:track:abc\n"
+    values = [
+        ["UPC", "Title", "Artist", "Status", "ref_code", "Retracted"],
+        ["5064079652602", "Comigo", "A", "🔍 Investigating", "", ""],
+        ["644401000933", "Second", "B", "", "", ""],
+    ]
+    writes = []
+    monkeypatch.setattr(dw, "search_inbox_messages", lambda q, **k: [{"message_id": "m1", "subject": "x"}] if q == "withdrawn" else [])
+    monkeypatch.setattr(dw, "fetch_email", lambda mid: (body, WITHDRAWN_META))
+    monkeypatch.setattr(dw, "is_retraction_already_processed", lambda *a, **k: False)
+    monkeypatch.setattr(dw, "write_cell", lambda col, row, val: writes.append((col, row, val)) or True)
+    saved = []
+    monkeypatch.setattr(dw, "_save_retracted_claim", lambda mid, rec: saved.append((mid, rec)))
+    monkeypatch.setattr(dw, "post_card", lambda *a, **k: (True, None))
+    monkeypatch.setattr(dw, "ACTIVE_REGION", "BR")
+
+    summary = dw.run_retraction_pass(values, notify=True)
+
+    assert summary["candidates"] == 1 and summary["matched"] == 2 and summary["updated"] == 2
+    assert {w[1] for w in writes} == {2, 3}
+    assert saved and saved[-1][1]["matched"] is True and saved[-1][1]["upcs"] == ["5064079652602", "644401000933"]
+
+
+def test_retraction_pass_leaves_email_open_when_an_upc_is_not_in_this_tracker(monkeypatch):
+    body = WITHDRAWN_BODY + "\nLabel Name: X\nArtist: B\nTitle: Second\nUPC: 644401000933\nURI: spotify:track:abc\n"
+    values = [["UPC", "Title", "Artist", "Status", "ref_code", "Retracted"],
+              ["5064079652602", "Comigo", "A", "🔍 Investigating", "", ""]]
+    monkeypatch.setattr(dw, "search_inbox_messages", lambda q, **k: [{"message_id": "m1", "subject": "x"}] if q == "withdrawn" else [])
+    monkeypatch.setattr(dw, "fetch_email", lambda mid: (body, WITHDRAWN_META))
+    monkeypatch.setattr(dw, "is_retraction_already_processed", lambda *a, **k: False)
+    monkeypatch.setattr(dw, "write_cell", lambda *a, **k: True)
+    saved = []
+    monkeypatch.setattr(dw, "_save_retracted_claim", lambda mid, rec: saved.append((mid, rec)))
+    monkeypatch.setattr(dw, "post_card", lambda *a, **k: (True, None))
+    monkeypatch.setattr(dw, "ACTIVE_REGION", "BR")
+
+    summary = dw.run_retraction_pass(values, notify=False)
+
+    assert summary["matched"] == 1 and summary["unmatched"] == 1
+    assert not any(rec.get("matched") for _, rec in saved)     # stays re-checkable
+
+
+def test_retraction_pass_dry_run_writes_nothing(monkeypatch):
+    values = [["UPC", "Title", "Artist", "Status", "ref_code", "Retracted"],
+              ["5064079652602", "Comigo", "A", "🔍 Investigating", "", ""]]
+    writes, saved, cards = [], [], []
+    monkeypatch.setattr(dw, "search_inbox_messages", lambda q, **k: [{"message_id": "m1", "subject": "x"}] if q == "withdrawn" else [])
+    monkeypatch.setattr(dw, "fetch_email", lambda mid: (WITHDRAWN_BODY, WITHDRAWN_META))
+    monkeypatch.setattr(dw, "is_retraction_already_processed", lambda *a, **k: False)
+    monkeypatch.setattr(dw, "write_cell", lambda *a, **k: writes.append(a) or True)
+    monkeypatch.setattr(dw, "_save_retracted_claim", lambda mid, rec: saved.append(mid))
+    monkeypatch.setattr(dw, "post_card", lambda *a, **k: cards.append(1) or (True, None))
+    monkeypatch.setattr(dw, "ACTIVE_REGION", "BR")
+
+    summary = dw.run_retraction_pass(values, notify=True, dry_run=True)
+
+    assert summary["matched"] == 1 and summary["updated"] == 1      # reports what it WOULD do
+    assert not writes and not saved and not cards
