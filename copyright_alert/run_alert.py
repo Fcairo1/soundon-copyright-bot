@@ -105,6 +105,16 @@ POSTED_CLAIMS_FILE = str(STATE_DIR / "posted_claims.json")
 RETRACTED_CLAIMS_FILE = str(RUNTIME_DIR / "retracted_claims.json")
 RETRACTION_SENDER = "infringement-claim-response@spotify.com"
 RETRACTION_SIGNAL_PHRASE = "The claimant has retracted the claim."
+# Spotify words a retraction two ways (both from infringement-claim-response@spotify.com):
+#   "The claimant has retracted the claim."                      (original template)
+#   "The claim has been withdrawn and the content will be reinstated within 48 hours.
+#    No strike will be applied."                                  (found 2026-10-27; no "retracted")
+RETRACTION_SIGNAL_RE = re.compile(
+    r"the\s+claimant\s+has\s+(?:retracted|withdrawn)\s+the\s+claim"
+    r"|the\s+claim\s+has\s+been\s+(?:withdrawn|retracted)",
+    re.IGNORECASE,
+)
+RETRACTION_SEARCH_QUERIES = ("retracted", "withdrawn", "reinstated")
 TRIAGE_QUERY = "Infringement Claim"
 TRIAGE_MAX = 50
 # B3: BASE_EXCLUDED_MENTIONS is the permanent, region-independent baseline of
@@ -747,7 +757,7 @@ def is_retraction_email(body, subject="", meta=None):
     sender = _sender_email_from_meta(meta)
     if sender != RETRACTION_SENDER:
         return False
-    return RETRACTION_SIGNAL_PHRASE in str(body or "")
+    return bool(RETRACTION_SIGNAL_RE.search(re.sub(r"\s+", " ", str(body or ""))))
 
 
 def extract_retraction_fields(body, subject="", meta=None):
@@ -768,6 +778,38 @@ def extract_retraction_fields(body, subject="", meta=None):
         "retracted_at": meta.get("date_formatted") or meta.get("date") or "N/A",
         "retraction_sender": _sender_email_from_meta(meta),
     }
+
+
+def extract_retraction_entries(body, subject="", meta=None):
+    """One retraction field dict per released UPC in the email.
+
+    A withdrawal can list several releases ("Affected Content" repeated); the original
+    extractor only returned the first UPC. Falls back to the single base entry."""
+    base = extract_retraction_fields(body, subject, meta)
+    text = _normalized_body(body)
+    matches = list(re.finditer(r"UPC(?:\(s\))?\s*:\s*(\d{10,14})", text, re.IGNORECASE))
+    upcs = []
+    for m in matches:
+        if m.group(1) not in upcs:
+            upcs.append(m.group(1))
+    if len(upcs) <= 1:
+        return [base]
+    entries, prev_end, seen = [], 0, set()
+    for m in matches:
+        upc = m.group(1)
+        segment = text[prev_end:m.start()]
+        prev_end = m.end()
+        if upc in seen:
+            continue
+        seen.add(upc)
+        titles = re.findall(r"(?:Content Title|Release Title|Title)\s*:[ \t]*(.+)", segment, re.IGNORECASE)
+        entry = dict(base)
+        entry["upc"] = upc
+        entry["title"] = _clean_email_value(titles[-1]) if titles else "N/A"
+        uri = re.search(r"(spotify:(?:track|album|artist):[A-Za-z0-9]+)", text[m.end():m.end() + 200], re.IGNORECASE)
+        entry["spotify_uri"] = uri.group(1) if uri else ""
+        entries.append(entry)
+    return entries or [base]
 
 
 def detect_dsp(email):

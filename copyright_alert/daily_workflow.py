@@ -61,6 +61,8 @@ from copyright_alert.run_alert import (  # noqa: E402
     extract_claim_entries,
     non_claim_reason,
     extract_retraction_fields,
+    extract_retraction_entries,
+    RETRACTION_SEARCH_QUERIES,
     is_retraction_email,
     is_retraction_already_processed,
     _save_retracted_claim,
@@ -1303,7 +1305,7 @@ def build_retraction_summary_card(entries):
 
 
 
-def run_retraction_pass(values, *, since_timestamp=None, full_history=False, notify=False):
+def run_retraction_pass(values, *, since_timestamp=None, full_history=False, notify=False, dry_run=False):
     section_title = "PART 1A.2 — Backfill claim retractions" if full_history else "PART 1A.2 — Detect retracted claims"
     section(section_title)
     if not values or len(values) < 2:
@@ -1345,7 +1347,16 @@ def run_retraction_pass(values, *, since_timestamp=None, full_history=False, not
         search_kwargs["limit"] = 200
 
     try:
-        candidates = search_inbox_messages("retracted", **search_kwargs)
+        # Spotify words retractions more than one way (no "retracted" in the newer
+        # "claim has been withdrawn ... reinstated within 48 hours" mail), so search each
+        # keyword and merge by message id; is_retraction_email() decides what counts.
+        candidates, _seen_ids = [], set()
+        for _query in RETRACTION_SEARCH_QUERIES:
+            for _c in search_inbox_messages(_query, **search_kwargs):
+                _mid = _norm(_c.get("message_id"))
+                if _mid and _mid not in _seen_ids:
+                    _seen_ids.add(_mid)
+                    candidates.append(_c)
     except Exception as exc:
         log(f"  ✗ Retraction mailbox search failed: {exc!r}")
         return {
@@ -1393,60 +1404,90 @@ def run_retraction_pass(values, *, since_timestamp=None, full_history=False, not
             continue
 
         summary["candidates"] += 1
-        retraction = extract_retraction_fields(body, subject, meta)
-        match = match_tracker_row_for_retraction(values, retraction)
-        state_record = {
-            "region": ACTIVE_REGION,
-            "message_id": message_id,
-            "upc": _norm(retraction.get("upc")),
-            "title": _norm(retraction.get("title")),
-            "ref_code": _norm(retraction.get("ref_id")),
-            "retracted_at": _norm(retraction.get("retracted_at") or candidate.get("date")),
-            "matched": False,
-        }
+        entries = extract_retraction_entries(body, subject, meta)
+        # One email can withdraw several releases. Process every UPC; the email counts
+        # as processed for this region only if EVERY entry was matched and written
+        # (an unmatched entry may belong to another region's tracker, or its row may not
+        # exist yet — it is re-checked next run inside the lookback window; re-applying
+        # an already-marked row is a no-op).
+        all_ok = True
+        any_matched = False
+        first_record = None
+        for retraction in entries:
+            match = match_tracker_row_for_retraction(values, retraction)
+            state_record = {
+                "region": ACTIVE_REGION,
+                "message_id": message_id,
+                "upc": _norm(retraction.get("upc")),
+                "title": _norm(retraction.get("title")),
+                "ref_code": _norm(retraction.get("ref_id")),
+                "retracted_at": _norm(retraction.get("retracted_at") or candidate.get("date")),
+                "matched": False,
+            }
+            first_record = first_record or state_record
 
-        if not match:
-            summary["unmatched"] += 1
-            log(f"  ↷ Retraction email {message_id} UPC {_norm(retraction.get('upc')) or 'N/A'} not found in tracker; skipping row creation.")
-            _save_retracted_claim(message_id, state_record)
-            continue
+            if not match:
+                summary["unmatched"] += 1
+                all_ok = False
+                log(f"  ↷ Retraction email {message_id} UPC {_norm(retraction.get('upc')) or 'N/A'} not found in tracker; skipping row creation.")
+                continue
 
-        summary["matched"] += 1
-        row_num = match["row_num"]
-        state_record.update({"matched": True, "tracker_row": row_num})
-        wrote_ok = True
-        changed = False
+            summary["matched"] += 1
+            any_matched = True
+            row_num = match["row_num"]
+            state_record.update({"matched": True, "tracker_row": row_num})
+            first_record = state_record if first_record.get("matched") is False else first_record
+            wrote_ok = True
+            changed = False
 
-        if not _is_retracted_value(match["retracted"]):
-            wrote_ok = write_cell(_col_letter(retracted_i), row_num, "Yes") and wrote_ok
-            changed = True
-        if not _is_resolved_status(match["status"]):
-            wrote_ok = write_cell(_col_letter(status_i), row_num, STATUS_RESOLVED) and wrote_ok
-            changed = True
+            if not _is_retracted_value(match["retracted"]):
+                if dry_run:
+                    log(f"  [dry-run] would set Retracted=Yes on row {row_num} (UPC {match.get('upc')})")
+                else:
+                    wrote_ok = write_cell(_col_letter(retracted_i), row_num, "Yes") and wrote_ok
+                changed = True
+            if not _is_resolved_status(match["status"]):
+                if dry_run:
+                    log(f"  [dry-run] would set Status={STATUS_RESOLVED} on row {row_num} (UPC {match.get('upc')})")
+                else:
+                    wrote_ok = write_cell(_col_letter(status_i), row_num, STATUS_RESOLVED) and wrote_ok
+                changed = True
 
-        if not wrote_ok:
-            summary["update_failures"] += 1
-            log(f"  ⚠ Retraction update failed for tracker row {row_num}; leaving email uncheckpointed for retry.")
-            continue
+            if not wrote_ok:
+                summary["update_failures"] += 1
+                all_ok = False
+                log(f"  ⚠ Retraction update failed for tracker row {row_num}; leaving email uncheckpointed for retry.")
+                continue
 
-        if changed:
-            summary["updated"] += 1
-        else:
-            summary["already_marked"] += 1
+            if changed:
+                summary["updated"] += 1
+            else:
+                summary["already_marked"] += 1
 
-        _set_row_value(values, row_num, retracted_i, "Yes")
-        _set_row_value(values, row_num, status_i, STATUS_RESOLVED)
-        _save_retracted_claim(message_id, state_record)
+            _set_row_value(values, row_num, retracted_i, "Yes")
+            _set_row_value(values, row_num, status_i, STATUS_RESOLVED)
 
-        if notify:
-            notifications.append({
-                "title": match.get("title") or _norm(retraction.get("title")) or "Unknown title",
-                "artist": match.get("artist") or "Unknown artist",
-                "upc": match.get("upc") or _norm(retraction.get("upc")) or "N/A",
-                "retracted_at": _format_retraction_date(retraction.get("retracted_at") or candidate.get("date")),
-            })
+            if notify and changed:
+                notifications.append({
+                    "title": match.get("title") or _norm(retraction.get("title")) or "Unknown title",
+                    "artist": match.get("artist") or "Unknown artist",
+                    "upc": match.get("upc") or _norm(retraction.get("upc")) or "N/A",
+                    "retracted_at": _format_retraction_date(retraction.get("retracted_at") or candidate.get("date")),
+                })
 
-    if notify and notifications:
+        if dry_run:
+            continue          # preview only: no state is saved, so nothing is "processed"
+        if all_ok and any_matched:
+            record = dict(first_record or {})
+            record["matched"] = True
+            record["upcs"] = [_norm(e.get("upc")) for e in entries]
+            _save_retracted_claim(message_id, record)
+        elif not any_matched and first_record:
+            # Nothing matched in this region: per-region state keeps it open (see
+            # run_alert.is_retraction_already_processed), so just log it.
+            _save_retracted_claim(message_id, first_record)
+
+    if notify and notifications and not dry_run:
         ok, _ = post_card(
             build_retraction_summary_card(notifications),
             chat_id=TARGET_CHAT_ID,
@@ -1458,7 +1499,7 @@ def run_retraction_pass(values, *, since_timestamp=None, full_history=False, not
             log(f"  ✓ Posted batched retraction summary card with {len(notifications)} entries.")
         else:
             log(f"  ⚠ Failed to post retraction summary card with {len(notifications)} entries.")
-    elif notify:
+    elif notify and not dry_run:
         log("  No new matched retractions in the scan window; no group card posted.")
 
     log(f"  Retraction summary: {json.dumps(summary, ensure_ascii=False)}")

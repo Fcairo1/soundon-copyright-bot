@@ -49,6 +49,12 @@ _DISPUTE_ACK = re.compile(
     r"content\s+will\s+remain\s+taken\s+down.{0,120}?resolution\s+with\s+the\s+claimant",
     re.IGNORECASE,
 )
+# Retraction / withdrawal notices (handled by the retraction pass, never a new claim).
+_RETRACTION_NOTICE = re.compile(
+    r"the\s+claimant\s+has\s+(?:retracted|withdrawn)\s+the\s+claim"
+    r"|the\s+claim\s+has\s+been\s+(?:withdrawn|retracted)",
+    re.IGNORECASE,
+)
 _QUERY_SUBJECT = re.compile(r"^\s*query\s+regarding\s+claim\b", re.IGNORECASE)
 
 
@@ -66,6 +72,8 @@ def non_claim_reason(body, subject="", meta=None):
         return "PPP / Excessive Infringement policy report (existing claims, not new)"
     if _CONTEST_REPLY.search(text):
         return "Spotify contest-instruction reply (points to an existing takedown notice)"
+    if _RETRACTION_NOTICE.search(text):
+        return "Spotify claim retraction/withdrawal notice (handled by the retraction pass)"
     if _DISPUTE_ACK.search(text):
         return "Spotify acknowledgement of our dispute (content stays down pending resolution)"
     if _QUERY_REPLY.search(text) or _QUERY_SUBJECT.match(str(subject or "")):
