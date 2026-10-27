@@ -23,7 +23,7 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
-from copyright_alert.lark_auth import extract_sheet_values, request_json_with_auth_retry, sheet_values_api
+from copyright_alert.lark_auth import extract_sheet_values, request_json_with_auth_retry, run_lark_cli, sheet_values_api
 from copyright_alert.run_alert import BOT_APP_ID, BOT_SECRET, build_card, _get_bot_access_token, load_posted_card
 from copyright_alert import run_alert as ra
 
@@ -153,7 +153,7 @@ def _read_sheet_values_cli(sheet_url, sheet_id):
                 print(f"Sheet read: refreshed {refreshed} AIME credential key(s) before lark-cli attempt {attempt}", flush=True)
         except Exception as refresh_exc:
             print(f"Sheet read user-credential refresh skipped before lark-cli attempt {attempt}: {refresh_exc!r}", flush=True)
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+        res = run_lark_cli(cmd, context="callback sheet read", timeout=90)
         combined = (res.stdout or "") + (res.stderr or "")
         parsed, rows, _ = ra.parse_lark_annotated_csv(res.stdout)
         if res.returncode == 0 and parsed:
@@ -179,7 +179,7 @@ def _write_sheet_cell_cli(sheet_url, sheet_id, cell, value):
             print(f"Sheet write: refreshed {refreshed} AIME credential key(s) before lark-cli update {cell}", flush=True)
     except Exception as refresh_exc:
         print(f"Sheet write user-credential refresh skipped before lark-cli update {cell}: {refresh_exc!r}", flush=True)
-    res = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    res = run_lark_cli(cmd, context="callback sheet write", timeout=60)
     if res.returncode != 0:
         raise RuntimeError((res.stdout + res.stderr)[:1200])
     return True

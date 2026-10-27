@@ -159,11 +159,34 @@ def test_failed_inbox_search_is_reported_not_treated_as_no_claims(monkeypatch):
     class Res:
         returncode, stdout, stderr = 1, "", "token is expired by 2h42m"
     monkeypatch.setattr(dul.subprocess, "run", lambda *a, **k: Res())
+    monkeypatch.setattr(dul.lark_auth, "ensure_jwt_fresh", lambda *a, **k: True)
+    monkeypatch.setattr(dul.lark_auth, "_refresh_aime_credentials", lambda: 0)
+    alerts = []
+    monkeypatch.setattr(dul.lark_auth, "send_stale_token_alert", lambda ctx, detail: alerts.append(ctx))
 
     result = dul.lookup_upc(TARGET_UPC)
 
     assert "No infringement claims found" not in result
-    assert "couldn't confirm" in result and "token is expired" in result
+    # people get a plain sentence, not lark-cli's raw stderr / "tip: run lark-cli ..." text
+    assert "couldn't confirm" in result and "mail login expired" in result and "try again" in result
+    assert "token is expired" not in result and "lark-cli" not in result
+    assert alerts   # ops were told
+
+
+def test_expired_login_is_refreshed_and_retried_so_the_lookup_still_answers(monkeypatch):
+    class Expired:
+        returncode, stdout, stderr = 4, "", "failed to validate jwt token: token is expired by 70h38m"
+    class Ok:
+        returncode, stdout, stderr = 0, '{"messages": []}', ""
+    results = iter([Expired(), Ok(), Ok(), Ok(), Ok(), Ok(), Ok(), Ok(), Ok(), Ok()])
+    monkeypatch.setattr(dul.subprocess, "run", lambda *a, **k: next(results))
+    monkeypatch.setattr(dul.lark_auth, "ensure_jwt_fresh", lambda *a, **k: True)
+    monkeypatch.setattr(dul.lark_auth, "_refresh_aime_credentials", lambda: 1)
+    monkeypatch.setattr(dul, "_tracker_lookup", lambda upc: [])
+
+    result = dul.lookup_upc(TARGET_UPC)
+
+    assert "couldn't confirm" not in result
 
 
 def test_tracker_hit_answers_even_when_the_inbox_has_nothing(monkeypatch):

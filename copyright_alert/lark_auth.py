@@ -621,6 +621,55 @@ def ensure_jwt_fresh(context: str = "jwt-preflight", margin_sec: Optional[int] =
     return ok
 
 
+def looks_like_expired_jwt(text: str) -> bool:
+    """True when lark-cli output says the injected AIME JWT is expired/invalid."""
+    t = (text or "").lower()
+    return "token is expired" in t or "failed to validate jwt" in t
+
+
+LOGIN_EXPIRED_USER_MSG = (
+    "the bot's mail login expired and could not be renewed automatically "
+    "(ops has been alerted) — please try again in about 5 minutes"
+)
+_jwt_reload_lock = threading.Lock()
+
+
+def run_lark_cli(cmd, *, context: str, timeout: int, **kwargs):
+    """subprocess.run for a lark-cli command: try -> reload JWT -> try again.
+
+    lark-cli inherits this process's AIME JWT. The long-lived callback daemon keeps
+    one for hours, so a call can fail with "token is expired". On that specific error
+    we reload a fresher JWT from aime_env_refresh.json / .env and run the command ONCE
+    more. Any other failure, or a successful call, is returned untouched. When the
+    retry is impossible (no fresher JWT exists yet) or fails too, ops get one
+    throttled alert and the failed result is returned, so callers keep their normal
+    error handling and can show LOGIN_EXPIRED_USER_MSG via looks_like_expired_jwt().
+
+    Pass no ``env=``: the retry must see the reloaded os.environ.
+    """
+    try:
+        ensure_jwt_fresh(context)
+    except Exception as exc:  # pragma: no cover - defensive
+        print(f"  ⚠ JWT preflight before lark-cli ({context}) failed: {exc!r}", flush=True)
+    before = _best_env_jwt_expiry()
+    res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, **kwargs)
+    if res.returncode == 0 or not looks_like_expired_jwt((res.stdout or "") + (res.stderr or "")):
+        return res
+    with _jwt_reload_lock:
+        reloaded = _refresh_aime_credentials()
+        newer = _best_env_jwt_expiry() > before   # another thread may have reloaded already
+    if not (reloaded or newer):
+        print(f"  ✗ {context}: JWT expired and no fresher snapshot yet; not retrying", flush=True)
+        send_stale_token_alert(context, json.dumps({"jwt_seconds_left": _best_env_jwt_expiry() - int(time.time()),
+                                                    "snapshot_keys_reloaded": 0}))
+        return res
+    print(f"  ↻ {context}: expired-JWT error; reloaded a fresher JWT, retrying once", flush=True)
+    res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, **kwargs)
+    if res.returncode != 0 and looks_like_expired_jwt((res.stdout or "") + (res.stderr or "")):
+        send_stale_token_alert(context, json.dumps({"retry": "still expired after reload"}))
+    return res
+
+
 # Full daily scans take 36-54 min (last completed runs: US 2158s, SPLA 2959s, BR 3220s), so
 # a run needs at least an hour of token life at start. (The ~0.5-3 min runs are only the
 # "--only K L" digest task.)

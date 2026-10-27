@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from copyright_alert.lark_auth import request_json_with_auth_retry
+from copyright_alert.lark_auth import request_json_with_auth_retry, run_lark_cli
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -362,7 +362,7 @@ def read_tracker_rows(region: str) -> Tuple[List[str], List[Dict[str, str]]]:
         # counts/status from the sheet.
         "A1:AF2000",
     ]
-    res = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True, timeout=90)
+    res = run_lark_cli(cmd, context="bot tracker read", timeout=90, cwd=str(ROOT))
     if res.returncode != 0:
         raise RuntimeError((res.stdout + res.stderr)[:800])
     parsed, rows, row_numbers = ra.parse_lark_annotated_csv(res.stdout)

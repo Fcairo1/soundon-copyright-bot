@@ -63,17 +63,20 @@ def _triage_search(query: str, *, max_results: int) -> List[dict]:
         "--max", str(max_results),
         "--format", "json",
     ]
-    # The long-lived daemon's AIME JWT can expire between DMs.
-    lark_auth.ensure_jwt_fresh("dm_upc_lookup mail triage")
+    # The long-lived daemon's AIME JWT can expire between DMs: run_lark_cli reloads a
+    # fresher one and retries once.
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        res = lark_auth.run_lark_cli(cmd, context="dm_upc_lookup mail triage", timeout=180)
     except Exception as exc:  # timeout etc.
         print(f"dm_upc_lookup triage raised query={query!r}: {exc!r}")
         _note_error(f"inbox search failed ({type(exc).__name__})")
         return []
     if res.returncode != 0:
         print(f"dm_upc_lookup triage failed query={query!r} rc={res.returncode}: {(res.stdout + res.stderr)[:500]}")
-        _note_error("inbox search failed: " + ((res.stderr or res.stdout).strip().splitlines() or ["unknown error"])[0][:120])
+        if lark_auth.looks_like_expired_jwt((res.stdout or "") + (res.stderr or "")):
+            _note_error("inbox search failed: " + lark_auth.LOGIN_EXPIRED_USER_MSG)
+        else:
+            _note_error("inbox search failed: " + ((res.stderr or res.stdout).strip().splitlines() or ["unknown error"])[0][:120])
         return []
     parsed = ra.parse_lark_json(res.stdout)
     if not parsed:

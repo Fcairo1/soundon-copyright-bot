@@ -303,8 +303,8 @@ def _message_reference(value: str) -> str:
 
 
 def _looks_like_expired_jwt(text: str) -> bool:
-    t = (text or "").lower()
-    return "token is expired" in t or "failed to validate jwt" in t
+    from copyright_alert import lark_auth  # lazy: avoid import cycle
+    return lark_auth.looks_like_expired_jwt(text)
 
 
 def _lark_cli_json(args: List[str], timeout: int = 90, cwd: Optional[Path] = None) -> Dict[str, Any]:
@@ -316,30 +316,11 @@ def _lark_cli_json(args: List[str], timeout: int = 90, cwd: Optional[Path] = Non
     # lark-cli inherits THIS process's environment, including the AIME JWT. In the
     # long-running callback daemon that token expires ~2h after the daemon started
     # (2026-10-26: "token is expired by 70h38m" -> the rights-confirmation reply draft
-    # was never created). Reload a fresher one from the snapshot before every call.
-    def _run():
-        return subprocess.run(
-            ["lark-cli", "mail", *args],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            cwd=str(cwd or ROOT),
-        )
-
+    # was never created); run_lark_cli reloads a fresher one and retries once.
     try:
         from copyright_alert import lark_auth  # lazy: avoid import cycle
-        lark_auth.ensure_jwt_fresh("lark_mail_draft")
-    except Exception as exc:  # pragma: no cover - defensive
-        print(f"  ⚠ JWT preflight before lark-cli mail failed: {exc!r}", flush=True)
-    try:
-        proc = _run()
-        if proc.returncode != 0 and _looks_like_expired_jwt((proc.stdout or "") + (proc.stderr or "")):
-            # One forced reload + retry: a newer snapshot may have landed meanwhile.
-            from copyright_alert import lark_auth
-            reloaded = lark_auth._refresh_aime_credentials()
-            print(f"  ↻ lark-cli mail: expired-JWT error; reloaded {reloaded} credential key(s), retrying once", flush=True)
-            if reloaded:
-                proc = _run()
+        proc = lark_auth.run_lark_cli(["lark-cli", "mail", *args], context="lark_mail_draft",
+                                      timeout=timeout, cwd=str(cwd or ROOT))
     except Exception as exc:  # pragma: no cover - defensive
         print(f"  ⚠ lark-cli invocation failed: {exc!r}", flush=True)
         return {}

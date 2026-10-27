@@ -28,7 +28,7 @@ from copyright_alert.major_label_detector import MAJOR_LABEL_HEADERS, classify_c
 from copyright_alert.engagement_format import (
     format_compact, importance, is_high, parse_count, streams_info, streams_line,
 )
-from copyright_alert.lark_auth import request_json_with_auth_retry
+from copyright_alert.lark_auth import request_json_with_auth_retry, run_lark_cli
 from copyright_alert.manager_exclusions import is_manager_excluded
 from copyright_alert.upc_exclusions import is_upc_excluded
 from copyright_alert.non_claim_email import non_claim_reason
@@ -239,7 +239,7 @@ def _send_interactive_via_lark_cli(*, receive_id_type: str, receive_id: str, con
     else:
         raise ValueError(f"Unsupported receive_id_type for lark-cli send: {receive_id_type}")
 
-    res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    res = run_lark_cli(cmd, context="run_alert im send", timeout=timeout)
     combined = (res.stdout or "") + (res.stderr or "")
     parsed = parse_lark_json(combined) or {}
     if res.returncode != 0:
@@ -257,7 +257,7 @@ def fetch_recent_candidates():
         "--format", "json",
     ]
     print(f"Fetching latest mailbox candidates: query={TRIAGE_QUERY!r}, max={TRIAGE_MAX}, mailbox={MAILBOX}")
-    res = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    res = run_lark_cli(cmd, context="run_alert mail triage", timeout=180)
     if res.returncode != 0:
         print(f"  ✗ lark-cli triage failed rc={res.returncode}: {(res.stdout + res.stderr)[:1000]}")
         return []
@@ -346,8 +346,6 @@ def labeled_value(text, *labels, default="N/A"):
     return value if value else default
 
 def fetch_email(msg_id):
-    from copyright_alert import lark_auth as _lark_auth  # local: avoid import-order surprises
-    _lark_auth.ensure_jwt_fresh("run_alert fetch_email")
     cmd = [
         "lark-cli", "mail", "+message",
         "--mailbox", MAILBOX,
@@ -355,7 +353,7 @@ def fetch_email(msg_id):
         "--html=false",
         "--format", "json",
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    proc = run_lark_cli(cmd, context="run_alert fetch_email", timeout=120)
     out = (proc.stdout or "").strip()
     parsed = parse_lark_json(out)
     if not parsed:
@@ -2385,7 +2383,7 @@ def update_tracker_message_ids(row_num, message_id):
             "--sheet-id", TRACKER_SHEET_ID, "--range", cell_addr,
             "--cells", json.dumps([[cell]], ensure_ascii=False),
         ]
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        res = run_lark_cli(cmd, context="run_alert tracker sheet", timeout=60)
         print(f"  Tracker message-id update {cell_addr} rc:", res.returncode)
         print((res.stdout + res.stderr)[:500])
         ok = ok and res.returncode == 0
@@ -2413,7 +2411,7 @@ def _tracker_physical_row_count(default=2000):
         "lark-cli", "sheets", "+workbook-info", "--url", TRACKER_SHEET_URL,
     ]
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        res = run_lark_cli(cmd, context="run_alert tracker sheet", timeout=60)
         parsed = parse_lark_json(res.stdout)
         sheets = ((parsed or {}).get("data") or {}).get("sheets") or []
         for sheet in sheets:
@@ -2456,7 +2454,7 @@ def _tracker_next_row():
             "--sheet-id", TRACKER_SHEET_ID, "--range", f"A{start_row}:T{end_row}",
             "--max-chars", "200000",
         ]
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        res = run_lark_cli(cmd, context="run_alert tracker sheet", timeout=60)
         parsed, rows, row_numbers = parse_lark_annotated_csv(res.stdout)
         if res.returncode != 0 or not parsed:
             print("  ⚠ Could not inspect tracker before append:", (res.stdout + res.stderr)[:500])
@@ -2500,7 +2498,7 @@ def _tracker_header_row(max_col="AF"):
         "--sheet-id", TRACKER_SHEET_ID, "--range", f"A1:{max_col}1",
         "--max-chars", "20000",
     ]
-    res = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    res = run_lark_cli(cmd, context="run_alert tracker sheet", timeout=60)
     parsed, rows, _row_numbers = parse_lark_annotated_csv(res.stdout)
     if res.returncode != 0 or not parsed or not rows:
         print("  ⚠ Could not read tracker headers before append:", (res.stdout + res.stderr)[:500])
@@ -2527,7 +2525,7 @@ def _ensure_major_label_tracker_columns(headers):
         "--allow-overwrite=false",
         "--cells", json.dumps(cells, ensure_ascii=False),
     ]
-    res = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    res = run_lark_cli(cmd, context="run_alert tracker sheet", timeout=60)
     print("  Major label header write rc:", res.returncode)
     print("  Major label header write range:", target_range)
     print("  Major label header write output:", (res.stdout + res.stderr)[:500])
@@ -2604,7 +2602,7 @@ def append_tracker_row(ef, ar, message_id, status=""):
         "--allow-overwrite=false",
         "--cells", json.dumps(row, ensure_ascii=False),
     ]
-    res = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    res = run_lark_cli(cmd, context="run_alert tracker sheet", timeout=60)
     print("  Tracker write rc:", res.returncode)
     print("  Tracker write range:", target_range)
     print("  Tracker write output:", (res.stdout + res.stderr)[:500])
