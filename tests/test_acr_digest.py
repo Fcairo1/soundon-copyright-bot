@@ -418,8 +418,8 @@ def test_always_td_bottom_line_shows_requested_split_when_known():
     rows = [AUG19_HEADER, _td_row("s1", "I1", "111", 9000), _td_row("s2", "I2", "111", 8000), _td_row("s3", "I3", "111", 7000)]
     data = ad.build_digest_data(rows, always_td_ids=frozenset({"111"}))
     text = _card_text(ad.build_card("Aug19", data, [], waiting=dict(WAITING, always_td_open=2)))
-    assert "3 always take down**: 1 requested, 2 to request" in text
-    assert "ops to request" in _card_text(ad.build_card("Aug19", data, []))
+    assert "3 always take down**: 1 claim filed, 2 to file" in text
+    assert "ops to file" in _card_text(ad.build_card("Aug19", data, []))
 
 
 # ── Everything counts (all tabs), and "to claim" means Online + not filed yet ──

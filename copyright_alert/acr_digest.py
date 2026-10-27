@@ -206,6 +206,32 @@ def _norm_status(value: str) -> str:
     return v.capitalize() if v in ("online", "offline") else ""
 
 
+# Takedown Stream Tracker columns, by position (header cells carry stray spaces).
+# A-M are the stream-impact columns; N-Q were added for the ✅ Claim filed box.
+TRACKER_COLUMNS = [
+    "so_song_id", "so_isrc", "song", "artist", "matched_title", "matched_isrc",
+    "region", "takedown_date", "baseline_7d_streams", "latest_7d_streams",
+    "streams_delta_abs", "streams_delta_pct", "last_checked",
+    "filed_by", "case_key", "check_2d", "check_7d",
+]
+
+
+def read_filed_claims() -> List[Dict[str, object]]:
+    """One dict per case ticked ✅ Claim filed on the dashboard (a row in the
+    Takedown Stream Tracker; unticking blanks the row). "key" is the dashboard's
+    case key, "_row" the sheet row number."""
+    grid = read_tab(TAKEDOWN_STREAMS_SHEET_URL, TAKEDOWN_STREAMS_SHEET_ID)
+    out = []
+    for n, raw in enumerate(grid[1:], start=2):
+        row = {c: _cell(raw, i) for i, c in enumerate(TRACKER_COLUMNS)}
+        if not (row["so_song_id"] or row["so_isrc"]):
+            continue
+        row["key"] = row["case_key"] or f"{row['so_song_id']}|{row['matched_isrc']}"
+        row["_row"] = n
+        out.append(row)
+    return out
+
+
 def read_status_overrides() -> Dict[str, Dict[str, str]]:
     """Online/Offline corrections made on the dashboard (an append-only log in the
     "Status Changes" tab of the Takedown Stream Tracker workbook — see
@@ -533,7 +559,7 @@ def _always_td_line(data: Dict[str, object], waiting: Optional[Dict[str, object]
     if not n:
         return "⚡ **0 always take down** — no track infringing on an always-take-down account is online"
     open_ = waiting.get("always_td_open") if waiting else None
-    split = f"{n - open_} requested, {open_} to request" if open_ is not None else "ops to request"
+    split = f"{n - open_} claim filed, {open_} to file" if open_ is not None else "ops to file"
     return (f"⚡ **{n} always take down**: {split} — track{'s' if n != 1 else ''} infringing on "
             f"always-take-down accounts, still online · no manager review needed")
 
@@ -556,6 +582,10 @@ def build_card(latest_scan: str, data: Dict[str, object], recovery_lines: List[s
         bottom.append(f"⚠️ **{data['escalated']} escalated** to account managers")
     if do_not_claim:
         bottom.append(f"🚫 **{do_not_claim} marked do not claim**")
+    if data.get("claims_filed"):
+        still = int(data.get("filed_still_online") or 0)
+        bottom.append(f"📨 **{data['claims_filed']} claims filed**"
+                      + (f" ({still} still online 7+ days later)" if still else ""))
 
     elements: List[dict] = []
     scope = "Counts every scan cycle" + (f" · latest scan **{latest_scan}**" if latest_scan else "")
@@ -638,7 +668,20 @@ def build_all_cycles_card(latest_scan: str, *, weekly: bool = False, today=None)
         print(f"  ⚠ ACR digest: claim-window extras unavailable ({exc!r}) — posting the plain digest", flush=True)
     data = build_digest_data(rows, excluded_keys=inputs["no_claim"], always_td_ids=frozenset(inputs["accounts"]),
                              requested_keys=frozenset(inputs["requested"]))
+    data.update(filed_stats())
     return build_card(latest_scan, data, build_recovery_lines(), waiting=waiting), data
+
+
+def filed_stats() -> Dict[str, int]:
+    """Claims ticked ✅ Claim filed, and how many were still online at the day-7
+    Spotify check. Empty when the tracker can't be read (the line is then left out)."""
+    try:
+        filed = read_filed_claims()
+    except Exception as exc:
+        print(f"  ⚠ ACR digest: could not read filed claims ({exc!r})", flush=True)
+        return {}
+    return {"claims_filed": len(filed),
+            "filed_still_online": sum(1 for r in filed if str(r["check_7d"]).lower().startswith("online"))}
 
 
 def run_daily_check(*, dry_run: bool = False) -> Dict[str, object]:

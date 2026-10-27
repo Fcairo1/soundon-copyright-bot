@@ -2356,9 +2356,11 @@ def _main(only, skip, log_path, rl):
             results["acr_digest"] = {"error": repr(e)}
 
     # L) Claim workflow — mirror the always-take-down account list for the
-    # dashboard, and send the day-5 "claim window closed" alarm to each region's
-    # ops owner once a cycle's 5 workdays are over. Each job is self-guarded and
-    # the alarm is once per cycle+region, so every regional run can call it.
+    # dashboard, send the day-5 "claim window closed" alarm to each region's
+    # ops owner once a cycle's 5 workdays are over, and check Spotify 2 and 7
+    # days after each ✅ Claim filed (claim_followup.py). Each job is
+    # self-guarded and runs at most once per case/cycle, so every regional run
+    # can call it.
     if run_part["L"]:
         try:
             section("PART L — Claim window (always-TD sync + day-5 alarm)")
