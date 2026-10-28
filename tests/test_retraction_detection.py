@@ -219,3 +219,22 @@ def test_retraction_pass_dry_run_writes_nothing(monkeypatch):
 
     assert summary["matched"] == 1 and summary["updated"] == 1      # reports what it WOULD do
     assert not writes and not saved and not cards
+
+
+def test_mail_search_targets_the_shared_mailbox_not_me(monkeypatch):
+    """Regression: user_mailbox_id "me" is the JWT user's personal mailbox -> 0 hits ever."""
+    import json
+    import subprocess
+    import types
+
+    seen = []
+
+    def fake_run(cmd, *a, **k):
+        seen.append(cmd)
+        return types.SimpleNamespace(returncode=0, stdout='{"items": [], "has_more": false}', stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(dw.lark_auth, "ensure_jwt_fresh", lambda *a, **k: True)
+    assert dw.search_inbox_messages("withdrawn", sender="infringement-claim-response@spotify.com") == []
+    params = json.loads(seen[0][seen[0].index("--params") + 1])
+    assert params["user_mailbox_id"] == dw.MAILBOX == "soundon-copyright@bytedance.com"
