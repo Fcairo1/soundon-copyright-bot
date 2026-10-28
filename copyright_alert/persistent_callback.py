@@ -1167,8 +1167,7 @@ def _read_tracker_fresh(region: str):
     # that are inherited by subprocesses and make tracker reads fail even after a
     # daemon restart.
     _refresh_callback_credentials("lark-cli sheet read")
-    env = os.environ.copy()
-    res = subprocess.run(cmd, capture_output=True, text=True, timeout=90, env=env)
+    res = lark_auth.run_lark_cli(cmd, context="callback tracker read", timeout=90)
     combined = (res.stdout or "") + (res.stderr or "")
     # B7: keep row_numbers so callers can map a list index back to the real
     # sheet row number (blank/skipped rows make `idx + 1` wrong).
