@@ -1160,13 +1160,17 @@ def send_dm_post(title, content_lines):
     """Send a Lark post (rich text) DM to the region's Ops owner.
 
     Routes by confirmed P2P chat_id when available, then by bot-domain open_id,
-    otherwise falls back to the feishu-im-send path keyed on RECIPIENT_EMAIL
-    (BR default).
+    then by the bot to RECIPIENT_EMAIL, and finally (only if the bot cannot send) the
+    feishu-im-send helper script. That script is absent in the AIME sandbox, so before
+    the bot-by-email step the takedown/assert action alerts were silently never
+    delivered there ("DM helper not found ... skipping DM fallback").
     """
     if RECIPIENT_CHAT_ID:
         return _send_dm_post_via_bot(RECIPIENT_CHAT_ID, title, content_lines, "chat_id")
     if RECIPIENT_OPEN_ID:
         return _send_dm_post_via_bot(RECIPIENT_OPEN_ID, title, content_lines, "open_id")
+    if RECIPIENT_EMAIL and _send_dm_post_via_bot(RECIPIENT_EMAIL, title, content_lines, "email"):
+        return True
     content = []
     for line in content_lines:
         if line == "__HR__":
@@ -1179,7 +1183,7 @@ def send_dm_post(title, content_lines):
     msg_json = json.dumps(payload, ensure_ascii=False)
     helper_script = FEISHU_IM_DIR / "scripts" / "im_send.py"
     if not helper_script.exists():
-        log(f"  ⚠ DM helper not found at {helper_script}; skipping DM fallback.")
+        log(f"  ✗ DM NOT delivered: bot send to {RECIPIENT_EMAIL} failed and DM helper not found at {helper_script}.")
         return False
     cmd = ["python3", "scripts/im_send.py", "send", RECIPIENT_EMAIL, "post", msg_json]
     try:
