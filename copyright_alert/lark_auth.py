@@ -696,6 +696,34 @@ def jwt_start_gate(context: str = "jwt-start-gate", min_sec: Optional[int] = Non
     return left >= need, left
 
 
+def _send_alert_via_bot(receive_id: str, receive_id_type: str, msg_json: str) -> bool:
+    """Post the alert with the bot's own tenant token (no AIME JWT, no helper script).
+
+    Deliberately NOT bot_runtime._post_api: that goes through request_json_with_auth_retry,
+    which can itself raise a stale-token alert (recursion). One plain POST, never raises."""
+    try:
+        from copyright_alert import run_alert as ra  # lazy: avoid import cycle
+        token = ra._get_bot_access_token()
+        if not token:
+            print("⚠ stale-token alert: no bot access token available", flush=True)
+            return False
+        req = urllib.request.Request(
+            f"https://open.larksuite.com/open-apis/im/v1/messages?receive_id_type={receive_id_type}",
+            data=json.dumps({"receive_id": receive_id, "msg_type": "post", "content": msg_json},
+                            ensure_ascii=False).encode("utf-8"),
+            method="POST",
+            headers={"Content-Type": "application/json; charset=utf-8", "Authorization": f"Bearer {token}"},
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            payload = json.loads(resp.read().decode("utf-8") or "{}")
+        if payload.get("code") == 0:
+            return True
+        print(f"⚠ stale-token alert via bot ({receive_id_type}) code={payload.get('code')} msg={payload.get('msg')}", flush=True)
+    except Exception as exc:
+        print(f"⚠ stale-token alert via bot ({receive_id_type}) failed: {exc!r}", flush=True)
+    return False
+
+
 def send_stale_token_alert(context: str, detail: str) -> bool:
     """Best-effort operator alert when auth still fails after one refresh retry."""
     # I4: persistent, cross-process throttle FIRST. Keyed by context only (not the
@@ -727,6 +755,7 @@ def send_stale_token_alert(context: str, detail: str) -> bool:
         f"Context: {context}",
         f"Detail: {detail}",
         "Manual re-authentication of runtime/lark_oauth_secret.json may be required.",
+        "If this is an AIME JWT problem: check the watchdog task and aime_env_refresh.json (iat/exp).",
     ]
     payload = {
         "zh_cn": {
@@ -736,13 +765,32 @@ def send_stale_token_alert(context: str, detail: str) -> bool:
     }
     msg_json = json.dumps(payload, ensure_ascii=False)
 
+    def _record_success():
+        # I4: record the successful alert time so we do not re-alert for this context
+        # until _ALERT_MIN_INTERVAL_SEC has elapsed. Only recorded on success so a
+        # transient send failure still retries.
+        with _AUTH_ALERT_LOCK:
+            state = _load_alert_state()
+            state[context] = now
+            _save_alert_state(state)
+
+    # 1) the bot's own credentials: works without the AIME JWT (which is the thing that
+    #    is broken when this alert fires) and without the optional feishu-im-send helper
+    #    (missing in the AIME sandbox: "DM helper not found").
+    for receive_id, id_type in ((_ALERT_EMAIL, "email"), (_ALERT_CHAT_ID, "chat_id")):
+        if _send_alert_via_bot(receive_id, id_type, msg_json):
+            print(f"⚠ stale-token alert sent via bot ({id_type})", flush=True)
+            _record_success()
+            return True
+
+    # 2) legacy helper script, when it exists
     attempts = [
         ["python3", "scripts/im_send.py", "send", _ALERT_EMAIL, "post", msg_json],
         ["python3", "scripts/im_send.py", "send", _ALERT_CHAT_ID, "post", msg_json, "--id-type=chat_id"],
     ]
     helper_script = _FEISHU_IM_DIR / "scripts" / "im_send.py"
     if not helper_script.exists():
-        print(f"⚠ stale-token alert skipped: Lark IM helper not found at {helper_script}", flush=True)
+        print(f"⚠ stale-token alert NOT delivered: bot send failed and Lark IM helper not found at {helper_script}", flush=True)
         return False
 
     for cmd in attempts:
@@ -756,13 +804,7 @@ def send_stale_token_alert(context: str, detail: str) -> bool:
             )
             if res.returncode == 0:
                 print(f"⚠ stale-token alert sent via {' '.join(cmd[3:5])}", flush=True)
-                # I4: record the successful alert time so we do not re-alert for
-                # this context until _ALERT_MIN_INTERVAL_SEC has elapsed. Only
-                # recorded on success so a transient send failure still retries.
-                with _AUTH_ALERT_LOCK:
-                    state = _load_alert_state()
-                    state[context] = now
-                    _save_alert_state(state)
+                _record_success()
                 return True
             print(f"⚠ stale-token alert failed rc={res.returncode}: {(res.stdout + res.stderr)[:400]}", flush=True)
         except Exception as exc:
