@@ -438,7 +438,10 @@ def search_inbox_messages(query, *, sender=None, start_time=None, end_time=None,
     items = []
     page_token = ""
     while True:
-        params = {"user_mailbox_id": "me", "page_size": 15}
+        # The claim/retraction mail lands in the SHARED mailbox, not in the personal mailbox
+        # that "me" resolves to for the AIME JWT user (filipe.cairo@): searching "me" returned
+        # 0 messages in every region, so no retraction was ever detected (2026-10-28).
+        params = {"user_mailbox_id": MAILBOX, "page_size": 15}
         if page_token:
             params["page_token"] = page_token
 
