@@ -238,3 +238,39 @@ def test_mail_search_targets_the_shared_mailbox_not_me(monkeypatch):
     assert dw.search_inbox_messages("withdrawn", sender="infringement-claim-response@spotify.com") == []
     params = json.loads(seen[0][seen[0].index("--params") + 1])
     assert params["user_mailbox_id"] == dw.MAILBOX == "soundon-copyright@bytedance.com"
+
+
+def _fake_search(monkeypatch, payload):
+    import json
+    import subprocess
+    import types
+    monkeypatch.setattr(dw.lark_auth, "ensure_jwt_fresh", lambda *a, **k: True)
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: types.SimpleNamespace(
+        returncode=0, stdout=json.dumps(payload), stderr=""))
+
+
+_HIT = {"meta_data": {"message_biz_id": "m1", "title": "Claim withdrawn", "create_time": "2026-10-28T10:05:38Z"}}
+
+
+def test_search_reads_the_bare_payload_shape(monkeypatch):
+    _fake_search(monkeypatch, {"items": [_HIT], "has_more": False})
+    assert [m["message_id"] for m in dw.search_inbox_messages("withdrawn")] == ["m1"]
+
+
+def test_search_reads_the_wrapped_payload_shape(monkeypatch):
+    """Regression: {"ok": true, "data": {"items": [...]}} used to parse as zero hits."""
+    _fake_search(monkeypatch, {"ok": True, "data": {"items": [_HIT], "has_more": False}})
+    hits = dw.search_inbox_messages("withdrawn")
+    assert [m["message_id"] for m in hits] == ["m1"] and hits[0]["subject"] == "Claim withdrawn"
+
+
+def test_search_finds_the_message_id_under_other_keys(monkeypatch):
+    _fake_search(monkeypatch, {"items": [{"id": "x1", "meta_data": {"title": "t"}},
+                                         {"message_id": "x2", "meta_data": {}}]})
+    assert [m["message_id"] for m in dw.search_inbox_messages("withdrawn")] == ["x1", "x2"]
+
+
+def test_search_logs_response_keys_when_it_finds_nothing(monkeypatch, capsys):
+    _fake_search(monkeypatch, {"ok": True, "data": {"items": []}})
+    assert dw.search_inbox_messages("withdrawn") == []
+    assert "0 items; response keys=" in capsys.readouterr().out
