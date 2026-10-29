@@ -61,3 +61,43 @@ def test_refresh_snapshot_fails_without_valid_live_token(tmp_path):
             snapshot_file=snapshot_file,
             log_file=log_file,
         )
+
+
+def test_failure_message_says_which_key_is_expired_or_missing_without_leaking_tokens(tmp_path):
+    expired = _make_jwt(1)
+    with pytest.raises(RuntimeError) as exc:
+        refresh_lark_jwt.refresh_snapshot(
+            env={"AIME_USER_CLOUD_JWT": expired},
+            snapshot_file=tmp_path / "s.json", log_file=tmp_path / "l.log",
+        )
+    msg = str(exc.value)
+    assert "AIME_USER_CLOUD_JWT=expired" in msg and "USER_CLOUD_JWT=not set" in msg
+    assert expired not in msg
+
+
+def test_snapshot_is_never_replaced_by_an_older_token(tmp_path):
+    newer = _make_jwt(1893456000 + 7200)
+    older = _make_jwt(1893456000)
+    snapshot_file = tmp_path / "s.json"
+    snapshot_file.write_text(json.dumps({"keys": {"AIME_USER_CLOUD_JWT": newer}, "updated_at": 5}), encoding="utf-8")
+    result = refresh_lark_jwt.refresh_snapshot(env={"AIME_USER_CLOUD_JWT": older},
+                                               snapshot_file=snapshot_file, log_file=tmp_path / "l.log")
+    assert result.get("kept_existing") is True
+    assert json.loads(snapshot_file.read_text())["keys"]["AIME_USER_CLOUD_JWT"] == newer
+    assert "refresh_skip" in (tmp_path / "l.log").read_text()
+
+
+def test_daily_workflow_publishes_its_token_at_start(monkeypatch, tmp_path):
+    from copyright_alert import daily_workflow as dw
+    token = _make_jwt(1893456000)
+    monkeypatch.setenv("AIME_USER_CLOUD_JWT", token)
+    dw._publish_jwt_snapshot()
+    saved = json.loads(refresh_lark_jwt.SNAPSHOT_FILE.read_text())
+    assert saved["keys"]["AIME_USER_CLOUD_JWT"] == token
+
+
+def test_publish_is_silent_when_there_is_no_live_token(monkeypatch):
+    from copyright_alert import daily_workflow as dw
+    for k in refresh_lark_jwt.JWT_KEYS:
+        monkeypatch.delenv(k, raising=False)
+    dw._publish_jwt_snapshot()   # must not raise

@@ -53,3 +53,13 @@ def _never_talk_to_live_lark(monkeypatch):
         return real_run(cmd, *a, **k)
 
     monkeypatch.setattr(subprocess, "run", _guarded_run)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_jwt_snapshot_files(monkeypatch, tmp_path):
+    """Runs that publish the JWT snapshot must not write the real aime_env_refresh.json
+    / jwt_refresh.log (the AIME sandbox has a live token in the environment)."""
+    from copyright_alert import refresh_lark_jwt
+
+    monkeypatch.setattr(refresh_lark_jwt, "SNAPSHOT_FILE", tmp_path / "snapshot" / "aime_env_refresh.json")
+    monkeypatch.setattr(refresh_lark_jwt, "LOG_FILE", tmp_path / "snapshot" / "jwt_refresh.log")
