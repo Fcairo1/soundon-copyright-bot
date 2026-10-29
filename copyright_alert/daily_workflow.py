@@ -735,6 +735,40 @@ def _parse_candidate(msg_id, subject, date, thread_id, seen_threads, summary):
 
 
 # ── PART 1A — incremental scan + post ────────────────────────────────────────
+def build_cards_finished_card(posted, region=None):
+    """Small green marker posted after the LAST new-claim card of a run, so the group
+    can tell the (several-minute) card burst is over."""
+    region = region or ACTIVE_REGION
+    noun = "card" if posted == 1 else "cards"
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {"template": "green",
+                   "title": {"tag": "plain_text", "content": f"✅ {region}: today's cards finished"}},
+        "elements": [{"tag": "markdown",
+                      "content": f"All done — **{posted} new claim {noun}** posted in this run. "
+                                 f"Nothing more is being sent for the {region} scan."}],
+    }
+
+
+def post_cards_finished_marker(posted):
+    """Best-effort 'finished' message after the card burst. Silent when nothing was
+    posted (no burst to mark). Never raises: it must not affect the run."""
+    if not posted:
+        return False
+    try:
+        ok, _ = post_card(
+            build_cards_finished_card(posted),
+            chat_id=TARGET_CHAT_ID,
+            expected_region=ACTIVE_REGION,
+            context=f"{ACTIVE_REGION} cards finished",
+        )
+        log("  ✓ Posted 'cards finished' marker." if ok else "  ⚠ Failed to post 'cards finished' marker.")
+        return bool(ok)
+    except Exception as exc:
+        log(f"  ⚠ 'cards finished' marker error: {exc!r}")
+        return False
+
+
 def run_scan():
     section("PART 1A — Incremental inbox scan + post cards")
     # Load the checkpoint BEFORE fetching so the fetch can paginate back to it and
@@ -974,6 +1008,7 @@ def run_scan():
             log(f"  ⚠ Could not DM ops about dropped retries: {exc!r}")
     save_checkpoint(new_checkpoint, failed_message_ids=failed_list, message_date=new_checkpoint_date)
     log(f"\n  Scan summary: {json.dumps(summary, ensure_ascii=False)}")
+    post_cards_finished_marker(summary["posted"])
     return summary
 
 
