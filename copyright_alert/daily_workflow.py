@@ -2194,11 +2194,29 @@ def _build_arg_parser():
     return parser
 
 
+def _publish_jwt_snapshot():
+    """Save this run's (fresh) AIME JWT to aime_env_refresh.json if it is newer than the
+    snapshot. A scheduled run starts in a fresh shell with the CURRENT token, so every
+    scan keeps the long-lived callback daemon's reload source fresh at no extra
+    scheduled-task cost. Best-effort; never affects the run."""
+    try:
+        from copyright_alert import refresh_lark_jwt
+        res = refresh_lark_jwt.refresh_snapshot(snapshot_file=refresh_lark_jwt.SNAPSHOT_FILE,
+                                                log_file=refresh_lark_jwt.LOG_FILE)
+        if res.get("kept_existing"):
+            log("  JWT snapshot already holds a newer token; left as is.")
+        else:
+            log(f"  JWT snapshot updated from this run's token (valid until {res.get('expires_at_iso')}).")
+    except Exception as exc:
+        log(f"  ⚠ JWT snapshot not updated: {exc}")
+
+
 def main(region=None, only=None, skip=None):
     if region:
         configure_region(region)
     log_path = _setup_logging()
     _PARTS_SEEN.clear()
+    _publish_jwt_snapshot()
     automation = "Daily Scan" + (f" (--only {' '.join(only)})" if only else "")
     rl = run_log.RunLog(automation, ACTIVE_REGION, log_file=log_path)
     try:

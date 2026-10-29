@@ -91,6 +91,33 @@ def _valid_live_tokens(env: Dict[str, str] | None = None, now_ts: int | None = N
     return tokens
 
 
+def _env_state(env: Dict[str, str], now_ts: int) -> str:
+    """Per-key description of the JWT env vars for the failure message. Never the token."""
+    parts = []
+    for key in JWT_KEYS:
+        value = str(env.get(key, "") or "").strip()
+        if not value:
+            parts.append(f"{key}=not set")
+            continue
+        claims = _decode_jwt_claims(value)
+        exp = int(claims.get("exp") or 0)
+        iat = int(claims.get("iat") or 0)
+        if not exp:
+            parts.append(f"{key}=unreadable")
+            continue
+        iat_iso = datetime.fromtimestamp(iat, tz=timezone.utc).strftime("%H:%M:%SZ") if iat else "n/a"
+        exp_iso = datetime.fromtimestamp(exp, tz=timezone.utc).strftime("%H:%M:%SZ")
+        left_min = (exp - now_ts) // 60
+        state = f"expired {-left_min} min ago" if left_min < 0 else f"{left_min} min left"
+        parts.append(f"{key}={state} (iat {iat_iso}, exp {exp_iso})")
+    return "; ".join(parts)
+
+
+def _snapshot_best_exp(snapshot: dict) -> int:
+    keys = snapshot.get("keys") if isinstance(snapshot.get("keys"), dict) else {}
+    return max([int(lark_auth._jwt_expiry(v) or 0) for v in keys.values() if isinstance(v, str)], default=0)
+
+
 def refresh_snapshot(
     env: Dict[str, str] | None = None,
     snapshot_file: Path = SNAPSHOT_FILE,
@@ -102,10 +129,28 @@ def refresh_snapshot(
     snapshot = _load_snapshot(snapshot_file)
     live_tokens = _valid_live_tokens(env=env, now_ts=now_ts)
     if not live_tokens:
-        raise RuntimeError("No non-expired live AIME JWT found in environment")
+        raise RuntimeError("No non-expired live AIME JWT found in environment: " + _env_state(env, now_ts))
 
     best_key, (best_token, best_exp) = max(live_tokens.items(), key=lambda item: item[1][1])
     start_diag = _jwt_diag_line(best_token, now_ts=now_ts)
+
+    # Never replace the snapshot with a token that expires EARLIER than the one it holds
+    # (e.g. a process that still carries an older env token must not undo a fresher snapshot).
+    existing_best_exp = _snapshot_best_exp(snapshot)
+    if existing_best_exp > best_exp:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        with log_file.open("a", encoding="utf-8") as fh:
+            fh.write(f"{now.isoformat()} refresh_skip snapshot_already_newer existing_exp={existing_best_exp} "
+                     f"env_exp={best_exp} {start_diag}\n")
+        return {
+            "updated_at": int(snapshot.get("updated_at") or 0),
+            "source_key": "snapshot",
+            "expires_at": existing_best_exp,
+            "expires_at_iso": datetime.fromtimestamp(existing_best_exp, tz=timezone.utc).isoformat(),
+            "snapshot_file": str(snapshot_file),
+            "log_file": str(log_file),
+            "kept_existing": True,
+        }
 
     existing_keys = snapshot.get("keys") if isinstance(snapshot.get("keys"), dict) else {}
     new_keys = dict(existing_keys)
