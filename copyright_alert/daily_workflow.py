@@ -430,6 +430,27 @@ def _mail_search_timestamp(value):
     return parsed.isoformat(timespec="seconds") if parsed is not None else None
 
 
+def _search_payload(parsed):
+    """The `mail user_mailboxes search` payload. lark-cli may print it bare
+    ({"items": [...], "has_more": ...}) or wrapped ({"ok": true, "data": {...}}); the
+    triage readers elsewhere already accept both, this one only knew the bare shape."""
+    if not isinstance(parsed, dict):
+        return {}
+    if "items" in parsed or "has_more" in parsed:
+        return parsed
+    data = parsed.get("data")
+    return data if isinstance(data, dict) else parsed
+
+
+def _search_item_id(item, meta):
+    for source in (meta, item):
+        for key in ("message_biz_id", "message_id", "id"):
+            value = source.get(key) if isinstance(source, dict) else None
+            if value:
+                return value
+    return None
+
+
 def search_inbox_messages(query, *, sender=None, start_time=None, end_time=None, limit=None):
     query = str(query or "").strip()[:50]
     if not query:
@@ -459,23 +480,31 @@ def search_inbox_messages(query, *, sender=None, start_time=None, end_time=None,
             filter_payload["create_time"] = create_time
 
         data = {"query": query, "filter": filter_payload}
-        lark_auth.ensure_jwt_fresh("daily_workflow mail search")
         cmd = [
             "lark-cli", "mail", "user_mailboxes", "search",
             "--params", json.dumps(params, ensure_ascii=False),
             "--data", json.dumps(data, ensure_ascii=False),
         ]
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        res = lark_auth.run_lark_cli(cmd, context="daily_workflow mail search", timeout=120)
         if res.returncode != 0:
             raise RuntimeError(f"mail search failed rc={res.returncode}: {(res.stdout + res.stderr)[:800]}")
         parsed = parse_lark_json(res.stdout)
         if not parsed:
             raise RuntimeError(f"mail search returned unreadable output: {res.stdout[:500]}")
 
-        for item in parsed.get("items") or []:
+        payload = _search_payload(parsed)
+        raw_items = payload.get("items") or []
+        if not raw_items and not items and not page_token:
+            # Zero hits on the first page: leave a trace of the response SHAPE (keys only) so
+            # "no mail" can be told apart from "response not understood".
+            log(f"  (mail search {query!r}: 0 items; response keys={sorted(parsed)[:8]}, "
+                f"payload keys={sorted(payload)[:8]})")
+        for item in raw_items:
             meta = item.get("meta_data") if isinstance(item.get("meta_data"), dict) else {}
-            message_id = meta.get("message_biz_id") or item.get("id")
+            message_id = _search_item_id(item, meta)
             if not message_id:
+                log(f"  ⚠ mail search item without a message id; item keys={sorted(item)[:8]}, "
+                    f"meta keys={sorted(meta)[:8]}")
                 continue
             items.append({
                 "message_id": str(message_id).strip(),
@@ -486,9 +515,9 @@ def search_inbox_messages(query, *, sender=None, start_time=None, end_time=None,
             if limit and len(items) >= limit:
                 return items[:limit]
 
-        if not parsed.get("has_more"):
+        if not payload.get("has_more"):
             break
-        page_token = str(parsed.get("page_token") or "").strip()
+        page_token = str(payload.get("page_token") or "").strip()
         if not page_token:
             break
     return items
@@ -1394,7 +1423,9 @@ def run_retraction_pass(values, *, since_timestamp=None, full_history=False, not
         # keyword and merge by message id; is_retraction_email() decides what counts.
         candidates, _seen_ids = [], set()
         for _query in RETRACTION_SEARCH_QUERIES:
-            for _c in search_inbox_messages(_query, **search_kwargs):
+            _hits = search_inbox_messages(_query, **search_kwargs)
+            log(f"  Retraction search {_query!r}: {len(_hits)} message(s)")
+            for _c in _hits:
                 _mid = _norm(_c.get("message_id"))
                 if _mid and _mid not in _seen_ids:
                     _seen_ids.add(_mid)
