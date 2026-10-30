@@ -1291,7 +1291,13 @@ def _set_row_value(values, row_num, col_index, value):
 
 
 
-def match_tracker_row_for_retraction(values, retraction_fields):
+def match_tracker_row_for_retraction(values, retraction_fields, fallback_date=None):
+    """Find the tracker row a retraction email belongs to.
+
+    A ref-code match is exact. A UPC-only match is a guess (older rows have no ref code,
+    and a UPC can have several claims), so it must not pick a claim that was filed AFTER
+    the retraction mail: a retraction cannot precede its claim. Without this, the retraction
+    of an old claim could mark a newer, still-active claim on the same UPC as Resolved."""
     if not values or len(values) < 2:
         return None
     headers = [_norm(h) for h in values[0]]
@@ -1301,6 +1307,7 @@ def match_tracker_row_for_retraction(values, retraction_fields):
     if not upc_target and not ref_target:
         return None
 
+    retracted_dt = _parse_iso_datetime((retraction_fields or {}).get("retracted_at") or fallback_date)
     matches = []
     for row_num, row in enumerate(values[1:], start=2):
         if not any(_norm(c) for c in row):
@@ -1315,6 +1322,12 @@ def match_tracker_row_for_retraction(values, retraction_fields):
             ref_match = False
         if not matched:
             continue
+        received_raw = _cell(row, idx.get(DATE_RECEIVED_HEADER))
+        if not ref_match and retracted_dt is not None:
+            received_dt = _parse_iso_datetime(received_raw)
+            # 1 day of slack: tracker dates are local time, mail dates are UTC.
+            if received_dt is not None and received_dt.date() > (retracted_dt + timedelta(days=1)).date():
+                continue
         status = _cell(row, idx.get("Status"))
         retracted = _cell(row, idx.get(RETRACTED_HEADER))
         matches.append({
@@ -1326,6 +1339,7 @@ def match_tracker_row_for_retraction(values, retraction_fields):
             "retracted": retracted,
             "ref_code": row_ref,
             "ref_match": ref_match,
+            "received": received_raw,
             "unresolved": not _is_resolved_status(status),
             "not_retracted": not _is_retracted_value(retracted),
         })
@@ -1487,7 +1501,7 @@ def run_retraction_pass(values, *, since_timestamp=None, full_history=False, not
         any_matched = False
         first_record = None
         for retraction in entries:
-            match = match_tracker_row_for_retraction(values, retraction)
+            match = match_tracker_row_for_retraction(values, retraction, fallback_date=candidate.get("date"))
             state_record = {
                 "region": ACTIVE_REGION,
                 "message_id": message_id,
@@ -1513,15 +1527,19 @@ def run_retraction_pass(values, *, since_timestamp=None, full_history=False, not
             wrote_ok = True
             changed = False
 
+            _why = (f"via={'ref' if match.get('ref_match') else 'UPC-only'} "
+                    f"claim_received={match.get('received') or '?'} "
+                    f"retracted_at={_norm(retraction.get('retracted_at') or candidate.get('date')) or '?'} "
+                    f"status_now={match.get('status') or '(empty)'}")
             if not _is_retracted_value(match["retracted"]):
                 if dry_run:
-                    log(f"  [dry-run] would set Retracted=Yes on row {row_num} (UPC {match.get('upc')})")
+                    log(f"  [dry-run] would set Retracted=Yes on row {row_num} (UPC {match.get('upc')}) {_why}")
                 else:
                     wrote_ok = write_cell(_col_letter(retracted_i), row_num, "Yes") and wrote_ok
                 changed = True
             if not _is_resolved_status(match["status"]):
                 if dry_run:
-                    log(f"  [dry-run] would set Status={STATUS_RESOLVED} on row {row_num} (UPC {match.get('upc')})")
+                    log(f"  [dry-run] would set Status={STATUS_RESOLVED} on row {row_num} (UPC {match.get('upc')}) {_why}")
                 else:
                     wrote_ok = write_cell(_col_letter(status_i), row_num, STATUS_RESOLVED) and wrote_ok
                 changed = True
