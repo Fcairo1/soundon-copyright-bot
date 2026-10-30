@@ -274,3 +274,37 @@ def test_search_logs_response_keys_when_it_finds_nothing(monkeypatch, capsys):
     _fake_search(monkeypatch, {"ok": True, "data": {"items": []}})
     assert dw.search_inbox_messages("withdrawn") == []
     assert "0 items; response keys=" in capsys.readouterr().out
+
+
+def _rows(*rows):
+    return [["UPC", "Title", "Artist", "Status", "ref_code", "Retracted", "Date Received"], *rows]
+
+
+def test_upc_only_match_never_picks_a_claim_filed_after_the_retraction():
+    """Regression guard: an old claim's retraction must not resolve a NEWER active claim."""
+    values = _rows(
+        ["123456789012", "Old claim", "A", "✅ Resolved", "", "", "2026-08-01 10:00"],
+        ["123456789012", "New active claim", "A", "🔍 Investigating", "", "", "2026-10-20 09:00"],
+    )
+    match = dw.match_tracker_row_for_retraction(
+        values, {"upc": "123456789012", "ref_id": "", "retracted_at": "2026-09-10T12:30:00Z"})
+    assert match["row_num"] == 2 and match["title"] == "Old claim"      # not the newer row 3
+
+
+def test_upc_only_match_with_only_a_newer_claim_finds_nothing():
+    values = _rows(["123456789012", "New active claim", "A", "🔍 Investigating", "", "", "2026-10-20 09:00"])
+    assert dw.match_tracker_row_for_retraction(
+        values, {"upc": "123456789012", "ref_id": "", "retracted_at": "2026-09-10T12:30:00Z"}) is None
+
+
+def test_ref_code_match_is_exact_even_if_dates_look_odd():
+    values = _rows(["123456789012", "Claim", "A", "🔍 Investigating", "ref:_x:ref", "", "2026-10-20 09:00"])
+    match = dw.match_tracker_row_for_retraction(
+        values, {"upc": "123456789012", "ref_id": "ref:_x:ref", "retracted_at": "2026-09-10T12:30:00Z"})
+    assert match["row_num"] == 2 and match["ref_match"] is True
+
+
+def test_unparseable_dates_keep_the_old_behaviour():
+    values = _rows(["123456789012", "Claim", "A", "🔍 Investigating", "", "", "N/A"])
+    assert dw.match_tracker_row_for_retraction(
+        values, {"upc": "123456789012", "ref_id": "", "retracted_at": "2026-09-10T12:30:00Z"})["row_num"] == 2
