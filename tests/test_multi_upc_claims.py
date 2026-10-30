@@ -236,3 +236,28 @@ def test_parse_candidate_is_region_agnostic_for_shared_multi_upc_scan_path(monke
         assert kind == "candidate"
         assert [candidate["ef"]["upc"] for candidate in info] == SECOND_EXPECTED_UPCS
         assert summary["skipped_no_identifier"] == 0
+
+
+INLINE_LIST_BODY = (
+    "Hi there, Hope you are well. Spotify has notified us about the DMCA claim below against the "
+    "following recording(s): UPC: 5064081012951, 5064081013187 Please contact the claimant directly at "
+    "lindsayf@subpop.com to resolve this claim. Thanks, Dan -- AudioSalad Support"
+)
+INLINE_LIST_SUBJECT = "Infringement Claim: Release 5064081012951, 5064081013187 (SoundOn)"
+
+
+def test_inline_upc_list_yields_one_entry_per_upc():
+    entries = run_alert.extract_claim_entries(INLINE_LIST_BODY, INLINE_LIST_SUBJECT, {})
+    assert [e["upc"] for e in entries] == ["5064081012951", "5064081013187"]
+
+
+def test_inline_upc_list_with_and_separator():
+    body = "Apple Music has notified us about the DMCA claim against: UPC: 5063968951130 and 5063968964789. Thanks"
+    entries = run_alert.extract_claim_entries(body, "Infringement Claim: Release (SoundOn)", {})
+    assert [e["upc"] for e in entries] == ["5063968951130", "5063968964789"]
+
+
+def test_single_upc_email_is_unchanged():
+    body = "Spotify has notified us about the DMCA claim against: UPC: 5064042409677 Please contact the claimant."
+    entries = run_alert.extract_claim_entries(body, "URGENT: Infringement Claim (UPC 5064042409677)", {})
+    assert [e["upc"] for e in entries] == ["5064042409677"]
