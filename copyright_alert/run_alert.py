@@ -457,6 +457,25 @@ def _extract_claim_blocks(body):
     return blocks
 
 
+_INLINE_UPC_LIST_RE = re.compile(
+    r"UPC(?:\(s\))?s?\s*[:\-]\s*[*\s]*(\d{10,14}(?:\s*(?:,|;|&|\band\b)\s*\d{10,14})*)",
+    re.IGNORECASE,
+)
+
+
+def _extract_inline_upc_list(body, subject=""):
+    """UPCs of a one-line list such as "UPC: 5064081012951, 5064081013187" (order kept, deduped)."""
+    upcs = []
+    for text in (_normalized_body(body), subject or ""):
+        for match in _INLINE_UPC_LIST_RE.finditer(text):
+            for upc in re.findall(r"\d{10,14}", match.group(1)):
+                if upc not in upcs:
+                    upcs.append(upc)
+        if len(upcs) > 1:
+            break
+    return upcs
+
+
 def extract_claim_entries(body, subject, meta):
     """Return one extracted field dict per independently-actionable claim entry.
 
@@ -468,6 +487,11 @@ def extract_claim_entries(body, subject, meta):
     base_fields = extract_fields(body, subject, meta)
     blocks = _extract_claim_blocks(body)
     if not blocks:
+        # AudioSalad/FUGA relays list several releases in one line ("UPC: A, B"):
+        # extract_fields only takes the first, so the others were silently dropped.
+        upcs = _extract_inline_upc_list(body, subject)
+        if len(upcs) > 1:
+            return [dict(base_fields, upc=upc) for upc in upcs]
         return [base_fields]
 
     entries = []
