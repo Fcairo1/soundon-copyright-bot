@@ -25,7 +25,7 @@ def qualifies_us_quality(row):
     region = (row.get("user_region") or "").strip().upper()
     tier = (row.get("User Tier") or "").strip()
     source = (row.get("source_type_name") or "").strip()
-    return region in US_REGION_CODES and (source in ("AP", "A&R") or tier == "High Quality")
+    return region in US_REGION_CODES and source in ("AP", "A&R")
 
 
 def is_us_region(row):

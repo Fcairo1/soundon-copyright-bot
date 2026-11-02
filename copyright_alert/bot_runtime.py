@@ -187,12 +187,11 @@ def qualifies_region(row: Dict[str, str], region: str) -> bool:
     if not cfg:
         return False
     data_region = (row.get("user_region") or "").strip().upper()
-    tier = (row.get("User Tier") or "").strip()
     source = (row.get("source_type_name") or "").strip()
     countries = cfg.get("countries") or set()
     if data_region not in countries:
         return False
-    return source in ("AP", "A&R") or tier == "High Quality"
+    return source in ra.ELIGIBLE_SOURCE_TYPES
 
 
 def _get_bot_access_token() -> str:

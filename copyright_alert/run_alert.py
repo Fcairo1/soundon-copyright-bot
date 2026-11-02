@@ -4,8 +4,8 @@ copyright_alert/run_alert.py
 
 Scans the copyright inbox (newest-first), extracts infringement claim fields,
 cross-checks the Aeolus Song Dimension dashboard, and posts a Lark card via
-the dedicated bot if the content qualifies (user_region=BR AND
-(source_tag IN [AP, A&R] OR user_tier=High Quality)).
+the dedicated bot if the content qualifies (user_region in the active region AND
+source_type_name IN [AP, A&R]; High Quality accounts of any other source do NOT qualify).
 
 Stops after the first qualifying alert is successfully posted.
 """
@@ -1942,6 +1942,15 @@ def is_claim_already_posted(claim_key_value, ef=None, ar=None, subject=""):
     return str(legacy_record.get("upc") or "").strip() == str(upc).strip()
 
 
+# Since Q3 2026 only AP and A&R accounts count as infringement claims. The user tier
+# ("High Quality") is deliberately NOT a reference any more.
+ELIGIBLE_SOURCE_TYPES = ("AP", "A&R")
+
+
+def is_eligible_source(row):
+    return str((row or {}).get("source_type_name") or "").strip() in ELIGIBLE_SOURCE_TYPES
+
+
 def qualifies(row):
     """Check if the Aeolus row meets the alert criteria for the active region."""
     region = (row.get("user_region") or "").strip().upper()
@@ -1950,10 +1959,10 @@ def qualifies(row):
     if region not in QUALIFY_COUNTRIES:
         print(f"  ✗ Filtered: user_region={region!r} (need one of {sorted(QUALIFY_COUNTRIES)} for {CURRENT_REGION})")
         return False
-    if source in ("AP", "A&R") or tier == "High Quality":
+    if source in ELIGIBLE_SOURCE_TYPES:
         print(f"  ✓ Qualifies: source={source!r}, tier={tier!r}")
         return True
-    print(f"  ✗ Filtered: source={source!r}, tier={tier!r} (need AP/A&R/High Quality)")
+    print(f"  ✗ Filtered: source={source!r}, tier={tier!r} (need AP/A&R)")
     return False
 
 def _canonical_alert_region(region: str = "", aeolus_row=None) -> str:
