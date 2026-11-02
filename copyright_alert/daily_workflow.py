@@ -7,7 +7,7 @@ Runs the following sections in sequence (see PART 1 of the spec):
 
   A) Incremental inbox scan + post cards
        - Checkpoint-aware: only processes emails newer than the last run.
-       - Filters BR + (source AP/A&R OR tier High Quality) via Aeolus.
+       - Filters BR + source AP/A&R (tier is ignored) via Aeolus.
        - Skips duplicates already in posted_claims.json.
        - Posts a Lark card per qualifying case to the alert group.
   D) Ensure the tracker sheet has an "Admin Action Taken" column (last header).
@@ -715,6 +715,8 @@ def _parse_candidate(msg_id, subject, date, thread_id, seen_threads, summary):
             log("     ⚠️ Spotify metadata/misrepresentation notice — routing to DM handler")
             result = metadata_notice.handle_metadata_notice(body, subject, meta, msg_id=msg_id)
             log(f"     metadata notice: {result}")
+            if result.get("status") == "no_aeolus_row":
+                return ("failed", "metadata notice: no Aeolus data yet")
             return ("skip", "metadata notice")
     except Exception as exc:
         log(f"     ⚠ metadata-notice routing error (continuing as normal claim): {exc!r}")

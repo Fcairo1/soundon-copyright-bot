@@ -43,6 +43,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 
 from copyright_alert.run_alert import (
+    ELIGIBLE_SOURCE_TYPES,
     RUNTIME_DIR,
     _canonical_alert_region,
     _clean_email_value,
@@ -1104,7 +1105,7 @@ def handle_metadata_notice(body, subject="", meta=None, msg_id="") -> dict:
     upc = str(fields.get("upc", "") or "").strip()
     aeolus_row = query_aeolus(upc) if upc and upc != "N/A" else {}
     if upc and upc != "N/A":
-        region, aeolus_row, region_status = resolve_notice_region(upc, aeolus_row)
+        region, aeolus_row, region_status = resolve_notice_region(upc, aeolus_row, ELIGIBLE_SOURCE_TYPES)
     else:
         region, region_status = "", "no_aeolus_row"
     if region_status == "out_of_region":
@@ -1112,8 +1113,14 @@ def handle_metadata_notice(body, subject="", meta=None, msg_id="") -> dict:
               f"{str(aeolus_row.get('user_region') or '?')!r} is outside BR/US/SPLA ({key})", flush=True)
         return {"status": "out_of_region", "key": key, "user_region": aeolus_row.get("user_region", "")}
     if region_status == "no_aeolus_row":
-        region = "BR"   # legacy default when the UPC can't be resolved at all
-        print(f"  ⚠ No Aeolus account found for UPC {upc}; defaulting the metadata notice to BR ({key})", flush=True)
+        # Only AP / A&R accounts are registered, and without an Aeolus account the source
+        # cannot be checked, so nothing is filed (the scan retries the email next run).
+        print(f"  ⚠ No Aeolus account found for UPC {upc}; metadata notice not registered ({key})", flush=True)
+        return {"status": "no_aeolus_row", "key": key}
+    source_type = str(aeolus_row.get("source_type_name", "") or "").strip()
+    if source_type not in ELIGIBLE_SOURCE_TYPES:
+        print(f"  • Metadata notice for UPC {upc} skipped — source {source_type!r} is not AP/A&R ({key})", flush=True)
+        return {"status": "ineligible_source", "key": key, "source_type_name": source_type}
 
     # Fill artist / title gaps from Aeolus when the email omitted them.
     if fields.get("artist", "N/A") == "N/A" and aeolus_row.get("display_artist"):

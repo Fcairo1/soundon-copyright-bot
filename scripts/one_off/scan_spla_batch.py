@@ -134,7 +134,7 @@ def main():
             row["stage"] = "outside_SPLA"
             summary_rows.append(row)
             continue
-        if not (source in ("AP", "A&R") or tier == "High Quality"):
+        if not source in ("AP", "A&R"):
             row["stage"] = "SPLA_but_low_quality"
             summary_rows.append(row)
             continue

@@ -118,7 +118,7 @@ def process_batch(messages, cfg, posted, scanned_summary, total_scanned):
         if region_val not in cfg["countries"]:
             row["stage"] = "outside_SPLA"
             scanned_summary.append(row); continue
-        if not (source in ("AP", "A&R") or tier == "High Quality"):
+        if not source in ("AP", "A&R"):
             row["stage"] = "SPLA_but_low_quality"
             scanned_summary.append(row); continue
         dup_key = ra.claim_key(ef, ar, p["subject"])
