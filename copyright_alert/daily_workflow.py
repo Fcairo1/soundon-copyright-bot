@@ -2304,7 +2304,8 @@ def _main(only, skip, log_path, rl):
              mode="partial" if only else "full")
     if not jwt_ok:
         log(f"  ✗ ABORT: AIME JWT has only ~{max(jwt_left or 0, 0) // 60} min left "
-            f"(need ≥ {need_sec // 60}) and no fresher snapshot is available. "
+            f"(need ≥ {need_sec // 60}) and no fresher snapshot arrived within "
+            f"{lark_auth.JWT_START_WAIT_SEC // 60} min. "
             f"Nothing was scanned or posted. Run refresh_lark_jwt.py from a fresh AIME shell, then rerun.")
         rl.finish("FAILED", "Aborted before scanning: JWT too close to expiry.",
                   problem=f"ABORT: token had ~{max(jwt_left or 0, 0) // 60} min, needs >= {need_sec // 60}",

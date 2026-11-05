@@ -676,14 +676,26 @@ def run_lark_cli(cmd, *, context: str, timeout: int, **kwargs):
 JWT_START_MIN_SEC = int(os.getenv("LARK_JWT_START_MIN_SEC", "3600"))
 
 
+# The AIME JWT phase is not fixed (observed :00:26 -> :09:37 -> :19:02 within three days) and a
+# scheduled run can start seconds after a roll while still holding the previous, nearly dead
+# token (US daily 2026-11-04 and 2026-11-05 aborted this way). A fresher token only reaches the
+# run through aime_env_refresh.json (the watchdog and every other run write it), so instead of
+# aborting at once the start gate waits for a fresher snapshot, up to this long.
+JWT_START_WAIT_SEC = int(os.getenv("LARK_JWT_START_WAIT_SEC", "1200"))
+_JWT_START_POLL_SEC = int(os.getenv("LARK_JWT_START_POLL_SEC", "60"))
+_sleep = time.sleep
+
+
 def jwt_start_gate(context: str = "jwt-start-gate", min_sec: Optional[int] = None):
     """Start-of-run gate: may a scan begin with the JWT currently in the environment?
 
     ensure_jwt_fresh only warns (and its callers ignore the result), so a run that
     starts with ~0 minutes left sails into the scan and dies half-way through the
     inbox, leaving cards/rows posted but the checkpoint behind. Call this ONCE before
-    any work: it first tries to reload a fresher snapshot (alerting the operator if
-    none exists), then requires at least ``min_sec`` of life left.
+    any work. It reloads a fresher snapshot if one exists (quietly), and if the token
+    still has less than ``min_sec`` left it WAITS up to JWT_START_WAIT_SEC, re-reading
+    the snapshot every minute, before giving up. Only a timeout alerts the operator
+    (via ensure_jwt_fresh), so a roll that is merely a few minutes late stays silent.
 
     Returns (ok, seconds_left); seconds_left is None when no JWT is configured
     (OAuth-only setups always pass).
@@ -691,8 +703,29 @@ def jwt_start_gate(context: str = "jwt-start-gate", min_sec: Optional[int] = Non
     need = JWT_START_MIN_SEC if min_sec is None else min_sec
     if not any(os.environ.get(k) for k in _JWT_ENV_KEYS):
         return True, None
+
+    def _left() -> int:
+        return _best_env_jwt_expiry() - int(time.time())
+
+    _refresh_aime_credentials()
+    left = _left()
+    started = time.time()
+    deadline = started + JWT_START_WAIT_SEC
+    while left < need and time.time() < deadline:
+        if time.time() - started < 1:
+            print(f"⏳ {context}: AIME JWT has ~{max(left, 0) // 60} min left (need ≥ {need // 60}); "
+                  f"waiting up to {JWT_START_WAIT_SEC // 60} min for a fresher snapshot.", flush=True)
+        _sleep(max(1, min(_JWT_START_POLL_SEC, deadline - time.time())))
+        _refresh_aime_credentials()
+        left = _left()
+    if left >= need:
+        waited = int(time.time() - started)
+        if waited >= 1:
+            print(f"↻ {context}: fresher JWT arrived after {waited // 60}m{waited % 60:02d}s "
+                  f"(now ~{left // 60} min left).", flush=True)
+        return True, left
     ensure_jwt_fresh(context)
-    left = _best_env_jwt_expiry() - int(time.time())
+    left = _left()
     return left >= need, left
 
 
