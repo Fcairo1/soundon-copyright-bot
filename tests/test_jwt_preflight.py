@@ -21,6 +21,7 @@ def _isolate(monkeypatch, tmp_path):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setattr(lark_auth, "_ENV_REFRESH_FILE", tmp_path / "aime_env_refresh.json")
     monkeypatch.setattr(lark_auth, "_jwt_preflight_last_attempt", 0.0)
+    monkeypatch.setattr(lark_auth, "JWT_START_WAIT_SEC", 0)       # no real waiting unless a test opts in
     alerts = []
     monkeypatch.setattr(lark_auth, "send_stale_token_alert", lambda ctx, detail: alerts.append((ctx, detail)) or True)
     yield alerts
@@ -122,6 +123,36 @@ def test_start_gate_reloads_a_fresher_snapshot_then_passes(monkeypatch, tmp_path
     _snapshot(tmp_path / "aime_env_refresh.json", _jwt(time.time() + 7000))
     ok, left = lark_auth.jwt_start_gate("t")
     assert ok is True and left > 6000 and not _isolate
+
+
+def test_start_gate_waits_for_a_fresher_snapshot_then_passes_silently(monkeypatch, tmp_path, _isolate):
+    monkeypatch.setenv("AIME_USER_CLOUD_JWT", _jwt(time.time() + 60))          # run fired just after a roll
+    snap = tmp_path / "aime_env_refresh.json"
+    _snapshot(snap, _jwt(time.time() + 30))                                    # snapshot no better yet
+    monkeypatch.setattr(lark_auth, "JWT_START_WAIT_SEC", 1200)
+    sleeps = []
+
+    def fake_sleep(sec):
+        sleeps.append(sec)
+        if len(sleeps) == 3:                                                   # the watchdog writes a fresh token
+            _snapshot(snap, _jwt(time.time() + 7000))
+
+    monkeypatch.setattr(lark_auth, "_sleep", fake_sleep)
+    ok, left = lark_auth.jwt_start_gate("t")
+    assert ok is True and left > 6000 and len(sleeps) == 3
+    assert not _isolate                                                        # no operator alert for a late roll
+
+
+def test_start_gate_alerts_and_fails_only_after_the_wait_times_out(monkeypatch, tmp_path, _isolate):
+    monkeypatch.setenv("AIME_USER_CLOUD_JWT", _jwt(time.time() + 60))
+    _snapshot(tmp_path / "aime_env_refresh.json", _jwt(time.time() + 30))
+    monkeypatch.setattr(lark_auth, "JWT_START_WAIT_SEC", 180)
+    clock = [time.time()]
+    monkeypatch.setattr(lark_auth.time, "time", lambda: clock[0])
+    monkeypatch.setattr(lark_auth, "_sleep", lambda sec: clock.__setitem__(0, clock[0] + sec))
+    ok, left = lark_auth.jwt_start_gate("t")
+    assert ok is False
+    assert len(_isolate) == 1                                                  # alerted once, at the end
 
 
 def test_start_gate_noop_without_jwt(_isolate):
