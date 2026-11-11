@@ -92,10 +92,19 @@ def market_for(region: str) -> str:
     return r if re.fullmatch(r"[A-Z]{2}", r) else "US"
 
 
+class SpotifyRateLimited(RuntimeError):
+    """Spotify asked us to wait longer than the client is willing to (Retry-After)."""
+
+    def __init__(self, wait: float):
+        super().__init__(f"Spotify rate limit: retry after {int(wait)}s")
+        self.wait = wait
+
+
 class SpotifyClient:
     def __init__(self, client_id: str, client_secret: str, http: HttpFn = _http, sleep=time.sleep):
         self._id, self._secret, self._http, self._sleep = client_id, client_secret, http, sleep
         self._token = ""
+        self.max_wait: Optional[float] = None   # set: a longer Retry-After raises SpotifyRateLimited
 
     @classmethod
     def from_env(cls) -> Optional["SpotifyClient"]:
@@ -125,7 +134,10 @@ class SpotifyClient:
                 continue
             if status == 429 and attempt < MAX_RETRIES:
                 wait = next((v for k, v in headers.items() if k.lower() == "retry-after"), "2")
-                self._sleep(min(float(wait) if str(wait).isdigit() else 2.0, 60.0) + 0.5)
+                secs = float(wait) if str(wait).isdigit() else 2.0
+                if self.max_wait is not None and secs > self.max_wait:
+                    raise SpotifyRateLimited(secs)
+                self._sleep(min(secs, 60.0) + 0.5)
                 continue
             return status, body
         return 429, ""
@@ -332,10 +344,15 @@ def plan_blank_status(rows: List[List[str]]) -> Dict[Tuple[str, str], List[int]]
 
 def fill_blank_status(tab_name: str, *, dry_run: bool = False, client: Optional[SpotifyClient] = None,
                       rows: Optional[List[List[str]]] = None, sheet_id: str = "", write=None,
-                      sleep=time.sleep) -> Dict[str, object]:
+                      sleep=time.sleep, progress_every: int = 25, flush_every: int = 50) -> Dict[str, object]:
     """One-off for a new scan tab: look up every row with an empty Status on
     Spotify and write Online or Offline into it. Unclear answers stay empty.
-    Unlike the weekly check this covers every row, reviewed or not."""
+    Unlike the weekly check this covers every row, reviewed or not.
+
+    Prints progress to stderr every `progress_every` tracks and writes results
+    every `flush_every` tracks, so a stopped run keeps what it found. If Spotify
+    rate-limits for more than a minute it stops and reports "stopped"; only rows
+    still empty are planned, so running it again resumes where it stopped."""
     client = client or SpotifyClient.from_env()
     if client is None:
         return {"skipped": "SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET not set"}
@@ -347,25 +364,47 @@ def fill_blank_status(tab_name: str, *, dry_run: bool = False, client: Optional[
     plan = plan_blank_status(rows)
     status_col = _col_letter(ad._header_index(rows[0])[ad.STATUS_HEADER])
     result: Dict[str, object] = {"tab": tab_name, "distinct_tracks": len(plan), "rows": sum(map(len, plan.values())),
-                                 "online": 0, "offline": 0, "unclear": 0, "dry_run": dry_run}
-    cells: List[Tuple[int, str]] = []
-    for (track_id, market), row_nos in plan.items():
-        verdict = client.check(track_id, market)
+                                 "checked": 0, "online": 0, "offline": 0, "unclear": 0, "written": 0, "dry_run": dry_run}
+    if not dry_run and write is None:
+        from copyright_alert.lark_auth import sheet_values_batch_update
+
+        def write(batch):
+            sheet_values_batch_update(ad.ACR_SHEET_URL, batch)
+
+    pending: List[Tuple[int, str]] = []
+
+    def flush() -> None:
+        if dry_run or not pending:
+            return
+        for i in range(0, len(pending), 200):
+            write([{"range": f"{sheet_id}!{status_col}{n}:{status_col}{n}", "values": [[v]]} for n, v in pending[i:i + 200]])
+        result["written"] += len(pending)
+        pending.clear()
+
+    if hasattr(client, "max_wait"):
+        client.max_wait = 60.0
+    total = len(plan)
+    print(f"  Spotify fill {tab_name!r}: {total} distinct tracks, {result['rows']} rows", file=sys.stderr, flush=True)
+    for i, ((track_id, market), row_nos) in enumerate(plan.items(), start=1):
+        try:
+            verdict = client.check(track_id, market)
+        except SpotifyRateLimited as exc:
+            result["stopped"] = f"{exc} after {i - 1}/{total} tracks; run again later to resume"
+            break
         sleep(CALL_PAUSE_SECONDS)
+        result["checked"] = i
         if verdict["state"] == "unknown":
             result["unclear"] += len(row_nos)
-            continue
-        value = "Online" if verdict["state"] == "online" else "Offline"
-        result[verdict["state"]] += len(row_nos)
-        cells += [(n, value) for n in row_nos]
-    if not dry_run and cells:
-        if write is None:
-            from copyright_alert.lark_auth import sheet_values_batch_update
-
-            def write(batch):
-                sheet_values_batch_update(ad.ACR_SHEET_URL, batch)
-        for i in range(0, len(cells), 200):
-            write([{"range": f"{sheet_id}!{status_col}{n}:{status_col}{n}", "values": [[v]]} for n, v in cells[i:i + 200]])
+        else:
+            value = "Online" if verdict["state"] == "online" else "Offline"
+            result[verdict["state"]] += len(row_nos)
+            pending.extend((n, value) for n in row_nos)
+        if i % flush_every == 0:
+            flush()
+        if i % progress_every == 0 or i == total:
+            print(f"  … {i}/{total} tracks · online {result['online']} · offline {result['offline']} · "
+                  f"unclear {result['unclear']} rows · written {result['written']}", file=sys.stderr, flush=True)
+    flush()
     return result
 
 
