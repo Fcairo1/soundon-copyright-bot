@@ -32,6 +32,8 @@ Credentials: SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET in the environment
 available to this app (403), so it is one request per distinct track.
 
 Run by hand:  python3 -m copyright_alert.spotify_status_check --dry-run
+New scan tab with an empty Status column (one-off, every row):
+              python3 -m copyright_alert.spotify_status_check --fill-blank-tab "Oct 15" [--dry-run]
 """
 from __future__ import annotations
 
@@ -309,12 +311,75 @@ def summary_lines(result: Dict[str, object]) -> List[str]:
     return lines
 
 
+def plan_blank_status(rows: List[List[str]]) -> Dict[Tuple[str, str], List[int]]:
+    """{(track_id, market): [sheet row numbers]} for every row of a scan tab whose
+    Status is empty and that has a Spotify track link, whatever its review result."""
+    plan: Dict[Tuple[str, str], List[int]] = {}
+    if not rows:
+        return plan
+    idx = ad._header_index(rows[0])
+    status_i, sp_i, region_i = idx.get(ad.STATUS_HEADER), idx.get(SPOTIFY_HEADER), idx.get(ad.REGION_HEADER)
+    if status_i is None or sp_i is None:
+        raise RuntimeError("tab has no Status or Spotify column")
+    for n, row in enumerate(rows[1:], start=2):
+        if ad._cell(row, status_i):
+            continue
+        track_id = track_id_from_link(ad._cell(row, sp_i))
+        if track_id:
+            plan.setdefault((track_id, market_for(ad._cell(row, region_i))), []).append(n)
+    return plan
+
+
+def fill_blank_status(tab_name: str, *, dry_run: bool = False, client: Optional[SpotifyClient] = None,
+                      rows: Optional[List[List[str]]] = None, sheet_id: str = "", write=None,
+                      sleep=time.sleep) -> Dict[str, object]:
+    """One-off for a new scan tab: look up every row with an empty Status on
+    Spotify and write Online or Offline into it. Unclear answers stay empty.
+    Unlike the weekly check this covers every row, reviewed or not."""
+    client = client or SpotifyClient.from_env()
+    if client is None:
+        return {"skipped": "SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET not set"}
+    if rows is None:
+        tab = next((t for t in ad.list_tabs(ad.ACR_SHEET_URL) if t["name"].strip() == tab_name.strip()), None)
+        if tab is None:
+            return {"skipped": f"no tab named {tab_name!r}"}
+        sheet_id, rows = tab["sheet_id"], ad.read_tab(ad.ACR_SHEET_URL, tab["sheet_id"])
+    plan = plan_blank_status(rows)
+    status_col = _col_letter(ad._header_index(rows[0])[ad.STATUS_HEADER])
+    result: Dict[str, object] = {"tab": tab_name, "distinct_tracks": len(plan), "rows": sum(map(len, plan.values())),
+                                 "online": 0, "offline": 0, "unclear": 0, "dry_run": dry_run}
+    cells: List[Tuple[int, str]] = []
+    for (track_id, market), row_nos in plan.items():
+        verdict = client.check(track_id, market)
+        sleep(CALL_PAUSE_SECONDS)
+        if verdict["state"] == "unknown":
+            result["unclear"] += len(row_nos)
+            continue
+        value = "Online" if verdict["state"] == "online" else "Offline"
+        result[verdict["state"]] += len(row_nos)
+        cells += [(n, value) for n in row_nos]
+    if not dry_run and cells:
+        if write is None:
+            from copyright_alert.lark_auth import sheet_values_batch_update
+
+            def write(batch):
+                sheet_values_batch_update(ad.ACR_SHEET_URL, batch)
+        for i in range(0, len(cells), 200):
+            write([{"range": f"{sheet_id}!{status_col}{n}:{status_col}{n}", "values": [[v]]} for n, v in cells[i:i + 200]])
+    return result
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Weekly Spotify Online/Offline check for the ACR sheet")
     parser.add_argument("--dry-run", action="store_true", help="check Spotify and report, change nothing")
     parser.add_argument("--force", action="store_true", help="run even if it ran in the last 7 days")
     parser.add_argument("--max-calls", type=int, default=0, help="stop after this many Spotify lookups (testing)")
+    parser.add_argument("--fill-blank-tab", metavar="TAB",
+                        help="one-off: fill every empty Status in this scan tab with Online/Offline from Spotify")
     args = parser.parse_args()
+    if args.fill_blank_tab:
+        print(json.dumps(fill_blank_status(args.fill_blank_tab, dry_run=args.dry_run), ensure_ascii=False, indent=2))
+        return 0
     if args.max_calls:
         print(json.dumps(run_check(dry_run=args.dry_run, max_calls=args.max_calls), ensure_ascii=False, indent=2))
     else:
