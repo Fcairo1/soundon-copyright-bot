@@ -235,3 +235,52 @@ def test_fill_blank_status_dry_run_writes_nothing():
     res = sc.fill_blank_status("T", client=Client(), rows=rows, sheet_id="s", dry_run=True,
                                write=lambda b: (_ for _ in ()).throw(AssertionError("wrote")), sleep=lambda s: None)
     assert res["offline"] == 1
+
+
+def test_fill_blank_status_stops_on_long_rate_limit_and_keeps_what_it_found():
+    link = lambda c: "https://open.spotify.com/track/" + c * 22
+    rows = [["Status", "Spotify"], ["", link("A")], ["", link("B")], ["", link("C")]]
+
+    class Client:
+        max_wait = None
+
+        def check(self, track_id, market):
+            if track_id == "B" * 22:
+                raise sc.SpotifyRateLimited(3600)
+            return {"state": "offline", "detail": ""}
+
+    written = []
+    res = sc.fill_blank_status("T", client=Client(), rows=rows, sheet_id="s",
+                               write=written.extend, sleep=lambda s: None)
+    assert "stopped" in res and res["checked"] == 1 and res["written"] == 1
+    assert [w["range"] for w in written] == ["s!A2:A2"]
+
+
+def test_client_raises_when_retry_after_exceeds_max_wait():
+    def http(url, data, headers):
+        if "token" in url:
+            return 200, {}, '{"access_token": "t"}'
+        return 429, {"Retry-After": "86400"}, ""
+
+    client = sc.SpotifyClient("id", "secret", http=http, sleep=lambda s: None)
+    client.max_wait = 60.0
+    try:
+        client.check("A" * 22, "BR")
+    except sc.SpotifyRateLimited as exc:
+        assert exc.wait == 86400
+    else:
+        raise AssertionError("expected SpotifyRateLimited")
+
+
+def test_fill_blank_status_writes_in_batches_during_the_run():
+    link = lambda i: "https://open.spotify.com/track/" + f"{i:022d}"
+    rows = [["Status", "Spotify"]] + [["", link(i)] for i in range(5)]
+
+    class Client:
+        def check(self, track_id, market):
+            return {"state": "online", "detail": ""}
+
+    calls = []
+    res = sc.fill_blank_status("T", client=Client(), rows=rows, sheet_id="s",
+                               write=lambda b: calls.append(len(b)), sleep=lambda s: None, flush_every=2)
+    assert calls == [2, 2, 1] and res["written"] == 5
