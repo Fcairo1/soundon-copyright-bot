@@ -199,3 +199,39 @@ def test_force_overrides_the_wait_and_dry_run_never_saves_state(state):
     state.unlink()
     sc.run_weekly(today=date(2026, 10, 13), dry_run=True)
     assert not state.exists()
+
+
+def test_fill_blank_status_writes_only_empty_status_rows():
+    header = ["SO Region", "Status", "Review Result", "Spotify"]
+    link = lambda c: "https://open.spotify.com/track/" + c * 22
+    rows = [header,
+            ["BR", "", "", link("A")],            # row 2 -> offline
+            ["BR", "Online", "", link("B")],      # already has a status: untouched
+            ["MX", "", "No Infringement", link("C")],  # row 4 -> online, any review result
+            ["BR", "", "", ""],                   # no link: skipped
+            ["BR", "", "", link("A")],            # row 6, same track as row 2
+            ["BR", "", "", link("D")]]            # row 7 -> unclear, stays empty
+    states = {"A" * 22: "offline", "C" * 22: "online", "D" * 22: "unknown"}
+
+    class Client:
+        def check(self, track_id, market):
+            return {"state": states[track_id], "detail": ""}
+
+    written = []
+    res = sc.fill_blank_status("Oct 15", client=Client(), rows=rows, sheet_id="s1",
+                               write=written.extend, sleep=lambda s: None)
+    assert res["distinct_tracks"] == 3 and res["offline"] == 2 and res["online"] == 1 and res["unclear"] == 1
+    assert sorted((w["range"], w["values"][0][0]) for w in written) == [
+        ("s1!B2:B2", "Offline"), ("s1!B4:B4", "Online"), ("s1!B6:B6", "Offline")]
+
+
+def test_fill_blank_status_dry_run_writes_nothing():
+    rows = [["Status", "Spotify"], ["", "https://open.spotify.com/track/" + "A" * 22]]
+
+    class Client:
+        def check(self, track_id, market):
+            return {"state": "offline", "detail": ""}
+
+    res = sc.fill_blank_status("T", client=Client(), rows=rows, sheet_id="s", dry_run=True,
+                               write=lambda b: (_ for _ in ()).throw(AssertionError("wrote")), sleep=lambda s: None)
+    assert res["offline"] == 1
