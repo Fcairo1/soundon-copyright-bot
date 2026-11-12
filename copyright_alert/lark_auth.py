@@ -683,7 +683,15 @@ JWT_START_MIN_SEC = int(os.getenv("LARK_JWT_START_MIN_SEC", "3600"))
 # aborting at once the start gate waits for a fresher snapshot, up to this long.
 JWT_START_WAIT_SEC = int(os.getenv("LARK_JWT_START_WAIT_SEC", "1200"))
 _JWT_START_POLL_SEC = int(os.getenv("LARK_JWT_START_POLL_SEC", "60"))
+# The scheduler's FIRST attempt sets LARK_JWT_START_QUIET=1: it already retries once in a new shell
+# (which holds the rolled token), so an operator alert at this point is noise. Without the flag
+# (the retry, or any manual run) a failed gate still alerts.
+JWT_START_QUIET_ENV = "LARK_JWT_START_QUIET"
 _sleep = time.sleep
+
+
+def _jwt_start_quiet() -> bool:
+    return os.getenv(JWT_START_QUIET_ENV, "").strip().lower() in ("1", "true", "yes")
 
 
 def jwt_start_gate(context: str = "jwt-start-gate", min_sec: Optional[int] = None):
@@ -696,6 +704,7 @@ def jwt_start_gate(context: str = "jwt-start-gate", min_sec: Optional[int] = Non
     still has less than ``min_sec`` left it WAITS up to JWT_START_WAIT_SEC, re-reading
     the snapshot every minute, before giving up. Only a timeout alerts the operator
     (via ensure_jwt_fresh), so a roll that is merely a few minutes late stays silent.
+    With LARK_JWT_START_QUIET=1 even the timeout is silent (the caller retries in a new shell).
 
     Returns (ok, seconds_left); seconds_left is None when no JWT is configured
     (OAuth-only setups always pass).
@@ -724,6 +733,11 @@ def jwt_start_gate(context: str = "jwt-start-gate", min_sec: Optional[int] = Non
             print(f"↻ {context}: fresher JWT arrived after {waited // 60}m{waited % 60:02d}s "
                   f"(now ~{left // 60} min left).", flush=True)
         return True, left
+    if _jwt_start_quiet():
+        print(f"⚠ {context}: AIME JWT still has ~{max(left, 0) // 60} min left (need ≥ {need // 60}) after "
+              f"waiting; exiting without an operator alert ({JWT_START_QUIET_ENV}=1, a retry in a new shell "
+              f"is expected).", flush=True)
+        return False, left
     ensure_jwt_fresh(context)
     left = _left()
     return left >= need, left

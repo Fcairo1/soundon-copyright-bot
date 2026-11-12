@@ -155,6 +155,22 @@ def test_start_gate_alerts_and_fails_only_after_the_wait_times_out(monkeypatch, 
     assert len(_isolate) == 1                                                  # alerted once, at the end
 
 
+def test_start_gate_quiet_flag_fails_without_alerting(monkeypatch, tmp_path, _isolate):
+    monkeypatch.setenv("AIME_USER_CLOUD_JWT", _jwt(time.time() + 60))
+    _snapshot(tmp_path / "aime_env_refresh.json", _jwt(time.time() + 30))
+    monkeypatch.setenv(lark_auth.JWT_START_QUIET_ENV, "1")
+    ok, left = lark_auth.jwt_start_gate("t")
+    assert ok is False and left < 600
+    assert not _isolate                                                        # first attempt: retry expected, no alert
+
+
+def test_start_gate_quiet_flag_still_passes_when_token_is_fresh(monkeypatch, _isolate):
+    monkeypatch.setenv("AIME_USER_CLOUD_JWT", _jwt(time.time() + 7000))
+    monkeypatch.setenv(lark_auth.JWT_START_QUIET_ENV, "1")
+    ok, left = lark_auth.jwt_start_gate("t")
+    assert ok is True and left > 6000 and not _isolate
+
+
 def test_start_gate_noop_without_jwt(_isolate):
     assert lark_auth.jwt_start_gate("t") == (True, None)
 
