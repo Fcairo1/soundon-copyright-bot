@@ -10,7 +10,7 @@ DAEMON_OUT="$RUNTIME_DIR/persistent_callback.out"
 PID_FILE="$RUNTIME_DIR/persistent_callback.pid"
 LOCK_DIR="$RUNTIME_DIR/watchdog.lock"
 ENV_FILE=""
-for candidate in "$BOT_DIR/.env" "$BOT_DIR/code/soundon-copyright-bot/.env" "$BOT_DIR/copyright_alert/.env"; do
+for candidate in "$BOT_DIR/.env" "$BOT_DIR/copyright_alert/.env"; do
   if [ -f "$candidate" ]; then
     ENV_FILE="$candidate"
     break
@@ -49,7 +49,7 @@ load_bot_secret() {
     return 0
   fi
 
-  for env_file in "$ENV_FILE" "$BOT_DIR/.env" "$BOT_DIR/code/soundon-copyright-bot/.env" "$BOT_DIR/copyright_alert/.env"; do
+  for env_file in "$ENV_FILE" "$BOT_DIR/.env" "$BOT_DIR/copyright_alert/.env"; do
     if [ -n "$env_file" ] && [ -f "$env_file" ]; then
       secret_line=$(grep -E '^(BOT_SECRET|LARK_APP_SECRET|APP_SECRET|app_secret)=' "$env_file" | tail -n 1 || true)
       if [ -n "$secret_line" ]; then
