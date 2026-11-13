@@ -434,6 +434,7 @@ def _send_notice_dm(fields: dict, region: str, *, resolved: bool = False,
     P2P chat_id, then bot-domain open_id, then a resolvable email address.
     """
     from copyright_alert.bot_runtime import _post_api  # lazy import (avoid cycles)
+    from copyright_alert.cairo_dm_pause import is_cairo_dm_paused
     from copyright_alert.dm_action_card import resolve_open_id  # lazy import
 
     ops = _ops_context_for_region(region)
@@ -446,6 +447,23 @@ def _send_notice_dm(fields: dict, region: str, *, resolved: bool = False,
     recipient_chat_id = ops.get("ops_dm_chat_id") or ""
     recipient_open_id = ops.get("ops_dm_open_id") or ""
     open_id = recipient_open_id or (resolve_open_id(recipient_email) if recipient_email else "")
+
+    if is_cairo_dm_paused(
+        recipient_email=recipient_email,
+        recipient_open_id=open_id,
+        recipient_chat_id=recipient_chat_id,
+    ):
+        print(
+            f"[CAIRO_DM_PAUSED] skipped DM: Spotify metadata notice [region {region} · UPC {fields.get('upc')}]",
+            flush=True,
+        )
+        return {
+            "ok": True,
+            "message_id": "",
+            "receive_id_type": "",
+            "receive_id": "",
+            "skipped": True,
+        }
 
     attempts = []
     if recipient_chat_id:
@@ -1281,9 +1299,12 @@ def resend_unresolved_notices() -> dict:
             if _send.get("ok"):
                 r["last_dm_sent"] = today
                 r["dm_count"] = int(r.get("dm_count", 0)) + 1
-                r["message_id"] = _send.get("message_id", r.get("message_id", ""))
-                r["receive_id_type"] = _send.get("receive_id_type", r.get("receive_id_type", ""))
-                r["receive_id"] = _send.get("receive_id", r.get("receive_id", ""))
+                if _send.get("message_id"):
+                    r["message_id"] = _send["message_id"]
+                if _send.get("receive_id_type"):
+                    r["receive_id_type"] = _send["receive_id_type"]
+                if _send.get("receive_id"):
+                    r["receive_id"] = _send["receive_id"]
         update_json_state(STATE_FILE, _update, default=lambda: {"notices": {}})
 
         if send.get("ok"):
