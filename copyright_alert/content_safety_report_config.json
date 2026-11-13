@@ -1,0 +1,10 @@
+{
+  "enabled": false,
+  "recipient": "me",
+  "me_email": "filipe.cairo@bytedance.com",
+  "report_day": 1,
+  "button_url": "https://acrcloud-dashboard.onrender.com/content-protection",
+  "excluded_spotify_tracks": {
+    "0QRhtV1MwywpkLTvCdMaWq": "the artist's own earlier release, not an infringing track"
+  }
+}

@@ -306,6 +306,7 @@ VALID_PARTS = (
     "K",
     "L",
     "M",
+    "N",
 )
 
 
@@ -2540,6 +2541,21 @@ def _main(only, skip, log_path, rl):
         except Exception as e:
             log(f"  ✗ Spotify status check error: {e!r}")
             results["spotify_status_check"] = {"error": repr(e)}
+
+    # N) Monthly Content Safety report card (content_safety_report.py): what
+    # the ACRCloud takedowns protected (streams, revenue, growth of our songs).
+    # Self-throttled to once per calendar month with a run lock, so every
+    # regional run can call it; recipient (Filipe's DM or the Content Safety
+    # group) comes from content_safety_report_config.json.
+    if run_part["N"]:
+        try:
+            section("PART N — Monthly Content Safety report")
+            from copyright_alert import content_safety_report
+            results["content_safety_report"] = content_safety_report.run_monthly_safe()
+            log(f"  content safety report: {json.dumps(results['content_safety_report'], ensure_ascii=False, default=str)[:1500]}")
+        except Exception as e:
+            log(f"  ✗ Content safety report error: {e!r}")
+            results["content_safety_report"] = {"error": repr(e)}
 
     section("RUN COMPLETE")
     log(json.dumps(results, ensure_ascii=False, indent=2))
