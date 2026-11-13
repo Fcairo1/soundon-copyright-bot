@@ -641,6 +641,7 @@ def _send_outcome_card(chat_id, reply_type, value, mode, draft_url="",
     is always a card per product spec.
     """
     from copyright_alert.bot_runtime import _post_api  # lazy import (avoid cycle)
+    from copyright_alert.cairo_dm_pause import is_cairo_dm_paused
     from copyright_alert.dm_action_card import resolve_open_id, OPERATOR_EMAIL
 
     upc = value.get("upc") or "N/A"
@@ -731,6 +732,9 @@ def _send_outcome_card(chat_id, reply_type, value, mode, draft_url="",
 
     # Delivery: prefer the chat where the click happened.
     if chat_id:
+        if is_cairo_dm_paused(recipient_chat_id=chat_id):
+            print(f"[CAIRO_DM_PAUSED] skipped DM: Spotify reply outcome card [{reply_type} · mode={mode}]", flush=True)
+            return True
         try:
             resp = _post_api(
                 "/im/v1/messages?receive_id_type=chat_id",
@@ -753,6 +757,13 @@ def _send_outcome_card(chat_id, reply_type, value, mode, draft_url="",
     recipient_chat_id = value.get("ops_dm_chat_id") or ""
     recipient_open_id = value.get("ops_dm_open_id") or ""
     open_id = recipient_open_id or resolve_open_id(recipient_email)
+    if is_cairo_dm_paused(
+        recipient_email=recipient_email,
+        recipient_open_id=open_id,
+        recipient_chat_id=recipient_chat_id,
+    ):
+        print(f"[CAIRO_DM_PAUSED] skipped DM: Spotify reply outcome fallback [{reply_type} · mode={mode}]", flush=True)
+        return True
     attempts = []
     if recipient_chat_id:
         attempts.append(("chat_id", recipient_chat_id))
@@ -1184,10 +1195,14 @@ def _post_card_to_destination(card: dict, *, chat_id: str = "", open_id: str = "
     type's fixed regional ops owner (mirrors dm_action_card.send_dm_action_card's
     own destination-priority order for the normal-claim case)."""
     from copyright_alert.bot_runtime import _post_api
+    from copyright_alert.cairo_dm_pause import is_cairo_dm_paused
     from copyright_alert.dm_action_card import resolve_open_id
 
     content = json.dumps(card, ensure_ascii=False)
     open_id = open_id or (resolve_open_id(email) if email else "")
+    if is_cairo_dm_paused(recipient_email=email, recipient_open_id=open_id, recipient_chat_id=chat_id):
+        print("[CAIRO_DM_PAUSED] skipped DM: /card destination resend", flush=True)
+        return {"ok": True, "message_id": "", "skipped": True}
     attempts = []
     if chat_id:
         attempts.append(("chat_id", chat_id))

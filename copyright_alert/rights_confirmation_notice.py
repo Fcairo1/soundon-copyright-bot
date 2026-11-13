@@ -520,6 +520,7 @@ def _send_to_ops(region: str, card: dict, *, log_context: str = "") -> dict:
     chat_id / open_id / email in that order (same fallback order used
     everywhere else this project DMs a fixed regional contact)."""
     from copyright_alert.bot_runtime import _post_api
+    from copyright_alert.cairo_dm_pause import is_cairo_dm_paused
     from copyright_alert.dm_action_card import resolve_open_id
 
     ops = _ops_context_for_region(region)
@@ -529,6 +530,15 @@ def _send_to_ops(region: str, card: dict, *, log_context: str = "") -> dict:
     recipient_chat_id = ops.get("ops_dm_chat_id") or ""
     recipient_open_id = ops.get("ops_dm_open_id") or ""
     open_id = recipient_open_id or (resolve_open_id(recipient_email) if recipient_email else "")
+
+    if is_cairo_dm_paused(
+        recipient_email=recipient_email,
+        recipient_open_id=open_id,
+        recipient_chat_id=recipient_chat_id,
+    ):
+        suffix = f" · {log_context}" if log_context else ""
+        print(f"[CAIRO_DM_PAUSED] skipped DM: Spotify rights confirmation [region {region}{suffix}]", flush=True)
+        return {"ok": True, "message_id": "", "skipped": True}
 
     attempts = []
     if recipient_chat_id:
@@ -752,7 +762,8 @@ def resend_unanswered_notices() -> dict:
                 return
             if _dm.get("ok"):
                 r["last_dm_sent"] = today
-                r["message_id"] = _dm.get("message_id", r.get("message_id", ""))
+                if _dm.get("message_id"):
+                    r["message_id"] = _dm["message_id"]
         update_json_state(STATE_FILE, _update, default=lambda: {"notices": {}})
 
         if dm.get("ok"):

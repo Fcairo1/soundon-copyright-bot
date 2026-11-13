@@ -404,6 +404,7 @@ def send_dm_action_card(case: dict, return_result: bool = False):
     ``OPERATOR_EMAIL`` (BR/filipe.cairo).
     """
     from copyright_alert.bot_runtime import _post_api  # lazy import (avoids circular import)
+    from copyright_alert.cairo_dm_pause import is_cairo_dm_paused
 
     card = build_dm_action_card(case)
     content = json.dumps(card, ensure_ascii=False)
@@ -412,6 +413,23 @@ def send_dm_action_card(case: dict, return_result: bool = False):
     recipient_chat_id = case.get("ops_dm_chat_id") or ""
     recipient_open_id = case.get("ops_dm_open_id") or ""
     open_id = recipient_open_id or resolve_open_id(recipient_email)
+
+    if is_cairo_dm_paused(
+        recipient_email=recipient_email,
+        recipient_open_id=open_id,
+        recipient_chat_id=recipient_chat_id,
+    ):
+        print(f"[CAIRO_DM_PAUSED] skipped DM: Spotify claim action card [UPC {case.get('upc')}]", flush=True)
+        result = {
+            "ok": True,
+            "code": 0,
+            "msg": "CAIRO_DM_PAUSED",
+            "message_id": "",
+            "receive_id_type": "",
+            "receive_id": "",
+            "skipped": True,
+        }
+        return result if return_result else True
 
     attempts = []
     if recipient_chat_id:

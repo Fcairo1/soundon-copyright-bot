@@ -1234,6 +1234,15 @@ def send_dm_post(title, content_lines):
     the bot-by-email step the takedown/assert action alerts were silently never
     delivered there ("DM helper not found ... skipping DM fallback").
     """
+    from copyright_alert.cairo_dm_pause import is_cairo_dm_paused
+
+    if is_cairo_dm_paused(
+        recipient_email=RECIPIENT_EMAIL,
+        recipient_open_id=RECIPIENT_OPEN_ID,
+        recipient_chat_id=RECIPIENT_CHAT_ID,
+    ):
+        log(f"[CAIRO_DM_PAUSED] skipped DM: {title}")
+        return True
     if RECIPIENT_CHAT_ID:
         return _send_dm_post_via_bot(RECIPIENT_CHAT_ID, title, content_lines, "chat_id")
     if RECIPIENT_OPEN_ID:

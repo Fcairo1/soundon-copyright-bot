@@ -21,9 +21,14 @@ from copyright_alert.tag_managers import (
     TRACKER_SHEET_URL
 )
 from copyright_alert.run_alert import _get_bot_access_token
+from copyright_alert.cairo_dm_pause import is_cairo_dm_paused
 import urllib.request
 
+
 def send_dm_post(email, title, content_lines):
+    if is_cairo_dm_paused(recipient_email=email):
+        print(f"[CAIRO_DM_PAUSED] skipped DM: {title}")
+        return True
     token = _get_bot_access_token()
     if not token:
         print("✗ Could not obtain bot token.")
