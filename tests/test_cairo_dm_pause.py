@@ -74,3 +74,47 @@ def test_resolve_cairo_open_id_does_not_cache_empty_result(monkeypatch):
     assert cdp._resolve_cairo_open_id() == "ou_cairo"
     assert cdp._resolve_cairo_open_id() == "ou_cairo"
     assert len(calls) == 2
+
+
+def test_stale_token_alert_paused_without_throttle_state_write(monkeypatch, capsys):
+    from copyright_alert import lark_auth
+
+    _freeze_brt(monkeypatch, 2026, 11, 14)
+    monkeypatch.setattr(lark_auth, "_ALERT_EMAIL", cdp.CAIRO_EMAIL)
+    fingerprints = {"existing-alert"}
+    monkeypatch.setattr(lark_auth, "_AUTH_ALERT_FINGERPRINTS", fingerprints)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Paused auth alert must not send or touch throttle state")
+
+    monkeypatch.setattr(lark_auth, "_load_alert_state", forbidden)
+    monkeypatch.setattr(lark_auth, "_save_alert_state", forbidden)
+    monkeypatch.setattr(lark_auth, "_send_alert_via_bot", forbidden)
+    monkeypatch.setattr(lark_auth.subprocess, "run", forbidden)
+
+    assert lark_auth.send_stale_token_alert("test-context", "test-detail") is False
+    assert fingerprints == {"existing-alert"}
+    assert capsys.readouterr().out.strip() == (
+        "[CAIRO_DM_PAUSED] skipped DM: stale-token auth alert"
+    )
+
+
+def test_stale_token_alert_resumes_on_december_first(monkeypatch):
+    from copyright_alert import lark_auth
+
+    _freeze_brt(monkeypatch, 2026, 12, 1)
+    monkeypatch.setattr(lark_auth, "_ALERT_EMAIL", cdp.CAIRO_EMAIL)
+    monkeypatch.setattr(lark_auth, "_AUTH_ALERT_FINGERPRINTS", set())
+    monkeypatch.setattr(lark_auth, "_load_alert_state", lambda: {})
+    writes = []
+    sends = []
+    monkeypatch.setattr(lark_auth, "_save_alert_state", lambda state: writes.append(state))
+    monkeypatch.setattr(
+        lark_auth, "_send_alert_via_bot",
+        lambda *args: sends.append(True) or True,
+    )
+
+    assert lark_auth.send_stale_token_alert("test-context", "test-detail") is True
+    assert len(sends) == 1
+    assert len(writes) == 1
+    assert "test-context" in writes[0]
