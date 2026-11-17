@@ -773,6 +773,13 @@ def _send_alert_via_bot(receive_id: str, receive_id_type: str, msg_json: str) ->
 
 def send_stale_token_alert(context: str, detail: str) -> bool:
     """Best-effort operator alert when auth still fails after one refresh retry."""
+    from copyright_alert.cairo_dm_pause import is_cairo_dm_paused
+
+    # Skip before either persistent throttle state or in-memory dedupe is touched.
+    if is_cairo_dm_paused(recipient_email=_ALERT_EMAIL):
+        print("[CAIRO_DM_PAUSED] skipped DM: stale-token auth alert", flush=True)
+        return False
+
     # I4: persistent, cross-process throttle FIRST. Keyed by context only (not the
     # detail, which embeds a changing "expires in Xs" and would defeat dedupe).
     # A stale token seen on every cron run only alerts once per interval.

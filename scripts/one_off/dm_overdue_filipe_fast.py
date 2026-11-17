@@ -5,13 +5,18 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT)); os.chdir(ROOT)
 from copyright_alert.tag_managers import read_sheet_values, today_brt, _parse_date_received, _add_workdays, _net_workdays, _format_sla_suffix, SLA_WORKDAYS, ADMIN_UPC_URL_TEMPLATE
 from copyright_alert.run_alert import _get_bot_access_token, TRACKER_SHEET_URL
+from copyright_alert.cairo_dm_pause import is_cairo_dm_paused
 ADMIN_ACTION_HEADER='Admin Action Taken'
 PENDING_STATUSES={'🔍 Investigating',''}
+
 
 def norm(v): return str(v if v is not None else '').strip()
 def cell(row,i): return norm(row[i]) if i is not None and len(row)>i else ''
 
 def send(email, title, lines):
+    if is_cairo_dm_paused(recipient_email=email):
+        print(f"[CAIRO_DM_PAUSED] skipped DM: {title}")
+        return True
     token=_get_bot_access_token()
     content=[]
     for line in lines:
